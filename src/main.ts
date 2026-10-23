@@ -21,7 +21,7 @@ import { InteractionSystem } from './systems/InteractionSystem';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { drawTrap } from './systems/TrapArt';
-import { play as sfx, setSoundEnabled } from './systems/Sound';
+import { play as sfx, setSoundEnabled, unlockSound } from './systems/Sound';
 import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
 import { HUD } from './ui/HUD';
 import { LobbyUI, type MapInfo, type StartState } from './ui/LobbyUI';
@@ -657,6 +657,8 @@ async function boot() {
         me.facing = 'down';
         title.setBusy(false);
         setScene('lobby');
+        const help = document.querySelector<HTMLElement>('#hud .help');
+        if (help) help.textContent = 'WASD move · Shift sprint · E action · Q ability · Esc safehouse';
         // The server forgets nothing between heists, but tell it again after (re)joining.
         lobby.setMap(myMap);
         net.send({ t: 'map', map: myMap });
@@ -835,9 +837,13 @@ async function boot() {
         break;
       case 'gun': {
         const wasReloading = performance.now() < gun.reloadEnd;
+        const previousHp = gun.hp;
         gun = { ammo: msg.ammo, reloadEnd: performance.now() + msg.reloadMs, hp: msg.hp };
         if (msg.reloadMs > 0 && !wasReloading) sfx('reload');
-        if (match?.saboteur) hud.setHealth(gun.hp);
+        if (match?.saboteur) {
+          hud.setHealth(gun.hp);
+          if (gun.hp < previousHp) sfx('hurt');
+        }
         break;
       }
       case 'shot':
@@ -851,14 +857,14 @@ async function boot() {
         break;
       case 'hidden':
         hiddenIn = msg.spot;
-        sfx('hideIn');
+        sfx(msg.spot ? 'hideIn' : 'hideOut');
         me.x = msg.x;
         me.y = msg.y;
         if (!msg.spot) toast('Out of hiding');
         break;
       case 'searched': {
         const name = hideSpotName(msg.spot);
-        sfx(msg.found ? 'caught' : 'click');
+        sfx(msg.found ? 'caught' : 'empty');
         hud.alert(msg.found ? `<span class="who">The Seeker</span> <b>found ${msg.found === myId ? 'you' : esc(msg.name)}</b><span class="where">in the ${esc(name)}</span>` : `<span class="who">The Seeker</span> searched the ${esc(name)}<span class="where">nobody there</span>`, msg.found ? 'danger' : 'good');
         break;
       }
@@ -1001,8 +1007,12 @@ async function boot() {
     title.setBusy(false);
   };
   setSoundEnabled(settings.values.sound);
+  // Web Audio must be started during a real user gesture; most game sounds arrive later via WS.
+  window.addEventListener('pointerdown', unlockSound, { once: true });
+  window.addEventListener('keydown', unlockSound, { once: true });
   settings.onChange(() => {
     setSoundEnabled(settings.values.sound);
+    if (settings.values.sound) unlockSound();
     frameCamera(true);
   });
 
@@ -1480,7 +1490,7 @@ async function boot() {
     hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${stage}`, left);
     // Hide & Seek: a cue when the hunt starts and when the main entrance opens.
     if (hideSeek() && phase !== 'over' && stage !== lastStage) {
-      if (stage === 'HUNT' && lastStage === 'HIDE') sfx('alert');
+      if (stage === 'HUNT' && lastStage === 'HIDE') sfx('huntStart');
       if (stage === 'ESCAPE' && lastStage) {
         sfx('gateOpen');
         hud.alert(`<span class="who">The main entrance</span> <b>is open!</b><span class="where">${match?.saboteur ? 'stop them escaping' : 'get to the gangway'}</span>`, 'good');

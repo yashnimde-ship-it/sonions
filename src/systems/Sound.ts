@@ -4,7 +4,7 @@
 
 import type { TrapKindId } from '../data/trapKinds';
 
-export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'gateOpen';
+export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen';
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -12,6 +12,12 @@ let enabled = true;
 
 export function setSoundEnabled(on: boolean) {
   enabled = on;
+}
+
+/** Create/resume the context during a user gesture so later server events can make sound. */
+export function unlockSound() {
+  const a = audio();
+  if (a?.state === 'suspended') void a.resume();
 }
 
 function audio() {
@@ -177,6 +183,16 @@ export function play(id: SoundId) {
       // A wardrobe door swinging shut.
       noise(a, 0.12, 0, 0.35, 'lowpass', 600);
       tone(a, 'triangle', 220, 140, 0.12, 0.05, 0.3);
+      break;
+    case 'hideOut':
+      // A hiding place opens and the hider slips back out.
+      tone(a, 'triangle', 140, 280, 0.1, 0, 0.25);
+      noise(a, 0.1, 0.03, 0.25, 'highpass', 900);
+      break;
+    case 'huntStart':
+      // A short rising warning that marks the end of the hiding countdown.
+      tone(a, 'square', 440, 660, 0.13, 0, 0.18);
+      tone(a, 'square', 660, 990, 0.16, 0.14, 0.2);
       break;
     case 'gateOpen':
       // The main entrance grinds open, then a bright chime.
