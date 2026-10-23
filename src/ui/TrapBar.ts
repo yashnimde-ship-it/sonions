@@ -1,4 +1,4 @@
-import { kindLimit, TRAP_SLOTS } from '../data/round';
+import { kindLimit, trapSlots } from '../data/round';
 import { TRAP_KINDS, type TrapKind, type TrapKindId } from '../data/trapKinds';
 import { trapSprite } from '../systems/TrapArt';
 
@@ -66,13 +66,14 @@ export class TrapBar {
   }
 
   /** How many of each are down, against the round's limits. */
-  setCounts(placed: TrapKindId[]) {
-    this.slots.innerHTML = `TRAPS<b>${placed.length}/${TRAP_SLOTS}</b>`;
+  setCounts(placed: TrapKindId[], crew: number) {
+    const slots = trapSlots(crew);
+    this.slots.innerHTML = `TRAPS<b>${placed.length}/${slots}</b>`;
     for (const kind of TRAP_KINDS) {
       const n = placed.filter((k) => k === kind.id).length;
       const card = this.cards.get(kind.id)!;
-      card.querySelector('.trap-count')!.textContent = `${n}/${kindLimit(kind.id)}`;
-      card.classList.toggle('maxed', n >= kindLimit(kind.id) || placed.length >= TRAP_SLOTS);
+      card.querySelector('.trap-count')!.textContent = `${n}/${kindLimit(kind.id, crew)}`;
+      card.classList.toggle('maxed', n >= kindLimit(kind.id, crew) || placed.length >= slots);
     }
   }
 

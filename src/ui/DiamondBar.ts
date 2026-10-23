@@ -6,8 +6,9 @@ export class DiamondBar {
   private note = document.createElement('div');
   private buttons = new Map<string, HTMLButtonElement>();
   private ready: HTMLButtonElement;
+  private room: HTMLSelectElement;
 
-  constructor(items: Interactable[], onSelect: (id: string) => void, onReady: () => void) {
+  constructor(items: Interactable[], rooms: string[], onSelect: (id: string) => void, onHide: (room: string) => void, onReady: () => void) {
     this.root.id = 'diamond-bar';
     this.root.hidden = true;
     const head = document.createElement('header');
@@ -29,8 +30,27 @@ export class DiamondBar {
     });
     this.root.append(gems);
 
+    const hideRow = document.createElement('div');
+    hideRow.className = 'diamond-hide-row';
+    this.room = document.createElement('select');
+    this.room.className = 'diamond-room';
+    this.room.setAttribute('aria-label', 'Choose a room to hide the selected diamond');
+    for (const name of rooms) {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      this.room.append(option);
+    }
+    const hide = document.createElement('button');
+    hide.type = 'button';
+    hide.className = 'hide-diamond';
+    hide.textContent = 'HIDE HERE';
+    hide.addEventListener('click', () => onHide(this.room.value));
+    hideRow.append(this.room, hide);
+    this.root.append(hideRow);
+
     this.note.className = 'diamond-note';
-    this.note.textContent = 'Select a diamond, then click an open spot in the house.';
+    this.note.textContent = 'Select a diamond and room. It will be tucked into a reachable spot there.';
     this.root.append(this.note);
 
     this.ready = document.createElement('button');

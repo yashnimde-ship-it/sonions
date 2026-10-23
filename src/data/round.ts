@@ -9,22 +9,31 @@ export type Phase = 'setup' | 'live' | 'over';
 export const SETUP_MS = 120_000;
 export const LIVE_MS = 240_000;
 
-/** Traps the Saboteur may place during setup, and how many of one kind. */
-export const TRAP_SLOTS = 10;
-export const MAX_PER_KIND = 2;
-export const MAX_FAKE_LOOT = 1;
-export const SABOTEUR_BASE_ENERGY = 200;
+/** Up to this many players in one heist (one Saboteur, the rest Runners). */
+export const MIN_CREW = 2;
+export const MAX_CREW = 9;
+
+// The Saboteur's kit grows with the crew: more Runners, more traps to stop them with.
+// 2 players: 8 slots, 3: 10, 4: 12 ... 9: 22.
+/** Trap slots for a heist of `crew` players. */
+export const trapSlots = (crew: number) => 6 + 2 * Math.max(1, crew - 1);
+/** Copies of one trap allowed: 2, then 3 from 5 Runners up. Fake Loot: 1, then 2 from 4 Runners. */
+export const kindLimit = (kind: TrapKindId, crew: number) => {
+  const runners = Math.max(1, crew - 1);
+  return kind === 'fakeLoot' ? (runners >= 4 ? 2 : 1) : runners >= 5 ? 3 : 2;
+};
+/** Energy pays for placing traps: about 25 per slot, so the slots can actually be filled. */
+export const SABOTEUR_ENERGY_PER_SLOT = 25;
 export const DEEP_POCKETS_BONUS = 30;
 
-export const saboteurMaxEnergy = (character: CharacterId) => SABOTEUR_BASE_ENERGY + (character === 'zoya' ? DEEP_POCKETS_BONUS : 0);
-
-/** How many of this kind may go down, given what's already placed. */
-export const kindLimit = (kind: TrapKindId) => (kind === 'fakeLoot' ? MAX_FAKE_LOOT : MAX_PER_KIND);
+export const saboteurMaxEnergy = (character: CharacterId, crew: number) => trapSlots(crew) * SABOTEUR_ENERGY_PER_SLOT + (character === 'zoya' ? DEEP_POCKETS_BONUS : 0);
 
 /** Why another trap of this kind can't be placed, or null if it can. */
-export function placementRefusal(placedKinds: Iterable<TrapKindId>, kind: TrapKindId): string | null {
+export function placementRefusal(placedKinds: Iterable<TrapKindId>, kind: TrapKindId, crew: number): string | null {
   const all = [...placedKinds];
-  if (all.length >= TRAP_SLOTS) return `All ${TRAP_SLOTS} trap slots are used`;
-  if (all.filter((k) => k === kind).length >= kindLimit(kind)) return `${trapKind(kind)!.name}: ${kindLimit(kind)} per round at most`;
+  const slots = trapSlots(crew);
+  if (all.length >= slots) return `All ${slots} trap slots are used`;
+  const limit = kindLimit(kind, crew);
+  if (all.filter((k) => k === kind).length >= limit) return `${trapKind(kind)!.name}: ${limit} per round at most`;
   return null;
 }

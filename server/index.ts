@@ -10,8 +10,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
-import { ABILITIES, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
-import { LIVE_MS, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
+import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
+import { LIVE_MS, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
 import { JAM_MS, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
@@ -25,7 +25,11 @@ const readJson = (rel: string) => JSON.parse(fs.readFileSync(path.join(ROOT, rel
 const lobbyMap = readJson('public/assets/lobby/lobby.json');
 // Every heist map's data: its spawn point and door ids are all the server needs.
 const mapData = Object.fromEntries(MAP_IDS.map((id) => [id, readJson(`public${MAPS[id].json}`)])) as Record<MapId, { width: number; height: number; spawn: { x: number; y: number }; doors: { id: string }[]; interactables: { id: string; rect: number[]; loot?: number }[] }>;
-const PORTALS: { size: number; x: number; y: number; w: number; h: number }[] = lobbyMap.portals;
+const PADS: { size: number; x: number; y: number; w: number; h: number }[] = lobbyMap.portals;
+// The lobby's pads (2, 3, 4 players) plus custom parties of any other size up to MAX_CREW,
+// joined from the Heist Lobby panel. A custom party has no pad: you stay where you are.
+interface Portal { size: number; pad: (typeof PADS)[number] | null }
+const PORTALS: Portal[] = Array.from({ length: MAX_CREW - MIN_CREW + 1 }, (_, i) => MIN_CREW + i).map((size) => ({ size, pad: PADS.find((p) => p.size === size) ?? null }));
 const LOBBY_SPAWN = { x: lobbyMap.spawn.x * TILE, y: lobbyMap.spawn.y * TILE };
 
 interface Client {
@@ -71,6 +75,22 @@ const saboteurEnergy = new Map<string, { current: number; max: number }>();
 const placedTraps = new Map<string, Map<string, PlacedTrap>>();
 const diamondPositions = new Map<string, Map<string, { x: number; y: number }>>();
 const phases = new Map<string, { phase: Phase; endsAt: number }>();
+/** When each player last reported a trap hit (ms), so a flood of reports can't spam the crew. */
+const lastTrapHit = new Map<string, number>();
+/** Per match: ability uses spent this round, keyed by player id and ability. */
+const abilityUses = new Map<string, Map<string, number>>();
+
+/** Spend one use of an ability; false once its uses for the round are gone. */
+function spendUse(c: Client, ability: AbilityId) {
+  const limit = ABILITIES[ability].perRound;
+  const uses = abilityUses.get(c.room);
+  if (!uses || limit === undefined) return true;
+  const key = `${c.state.id}:${ability}`;
+  const used = uses.get(key) ?? 0;
+  if (used >= limit) return false;
+  uses.set(key, used + 1);
+  return true;
+}
 const portalEnds = new Map<number, number>(); // portal size -> when its countdown ends (ms)
 let nextId = 1;
 let nextMatch = 1;
@@ -86,11 +106,12 @@ const send = (c: Client, msg: ServerMsg) => {
 const inRoom = (room: string) => [...clients.values()].filter((c) => c.room === room && c.state.name);
 
 function portalAt(s: PlayerState) {
-  return PORTALS.find((p) => s.x >= p.x * TILE && s.x < (p.x + p.w) * TILE && s.y >= p.y * TILE && s.y < (p.y + p.h) * TILE);
+  return PADS.find((p) => s.x >= p.x * TILE && s.x < (p.x + p.w) * TILE && s.y >= p.y * TILE && s.y < (p.y + p.h) * TILE);
 }
 
 function chosenPortal(c: Client) {
-  return PORTALS.find((p) => p.size === c.portalChoice) ?? portalAt(c.state);
+  const pad = portalAt(c.state);
+  return PORTALS.find((p) => p.size === (pad?.size ?? c.portalChoice));
 }
 
 function distanceToSegment(x: number, y: number, ax: number, ay: number, bx: number, by: number) {
@@ -154,6 +175,7 @@ function endMatch(matchId: string) {
   placedTraps.delete(matchId);
   diamondPositions.delete(matchId);
   phases.delete(matchId);
+  abilityUses.delete(matchId);
 }
 
 function startMatch(size: number, crew: Client[]) {
@@ -166,8 +188,11 @@ function startMatch(size: number, crew: Client[]) {
     c.room = matchId;
     c.portalSince.clear();
     c.portalChoice = null;
-    c.state.x = spawn.x * TILE + (i - (crew.length - 1) / 2) * 36;
-    c.state.y = spawn.y * TILE;
+    // Rows of five, so a big crew doesn't spawn inside the walls.
+    const row = Math.floor(i / 5);
+    const inRow = Math.min(5, crew.length - row * 5);
+    c.state.x = spawn.x * TILE + ((i % 5) - (inRow - 1) / 2) * 36;
+    c.state.y = spawn.y * TILE + row * 28;
     c.state.facing = 'up';
     c.state.moving = false;
     c.state.carrying = false;
@@ -178,7 +203,7 @@ function startMatch(size: number, crew: Client[]) {
   const saboteur = crew[Math.floor(Math.random() * crew.length)].state.id;
   saboteurs.set(matchId, saboteur);
   const sabCharacter = crew.find((c) => c.state.id === saboteur)!.state.character;
-  const maxEnergy = saboteurMaxEnergy(sabCharacter);
+  const maxEnergy = saboteurMaxEnergy(sabCharacter, crew.length);
   saboteurEnergy.set(matchId, { current: maxEnergy, max: maxEnergy });
   placedTraps.set(matchId, new Map());
   diamondPositions.set(matchId, new Map(mapData[map].interactables.filter((i: { loot?: number }) => i.loot).map((i: { id: string; rect: number[] }) => [i.id, { x: ((i.rect[0] + i.rect[2] + 1) / 2) * TILE, y: ((i.rect[1] + i.rect[3] + 1) / 2) * TILE }])));
@@ -190,6 +215,7 @@ function startMatch(size: number, crew: Client[]) {
   trapRefreshUsed.set(matchId, false);
   doorJamReadyAt.set(matchId, 0);
   doorLocks.set(matchId, new Map());
+  abilityUses.set(matchId, new Map());
   const players = crew.map((c) => ({ ...c.state }));
   // Each player learns only their own role, so the Saboteur stays secret.
   for (const c of crew) {
@@ -266,13 +292,10 @@ function handle(c: Client, msg: ClientMsg) {
   switch (msg.t) {
     case 'hello': {
       if (s.name) break;
-      // Your last character if it's free, otherwise the first free one; nobody gets a duplicate.
-      const free = [msg.character, ...CHARACTERS].find((id) => CHARACTERS.includes(id) && !takenBy(id));
-      if (!free) {
-        send(c, { t: 'full' });
-        c.ws.close();
-        break;
-      }
+      // Your last character if it's free, otherwise the first free one. Once all five are
+      // taken (big parties of up to 9), characters repeat: the least-used one is shared.
+      const uses = (id: CharacterId) => joined().filter((o) => o.state.character === id).length;
+      const free = [msg.character, ...CHARACTERS].find((id) => CHARACTERS.includes(id) && !takenBy(id)) ?? [...CHARACTERS].sort((a, b) => uses(a) - uses(b))[0];
       s.name = String(msg.name).slice(0, 14) || `Bandit ${s.id}`;
       s.character = free;
       toLobby(c);
@@ -290,7 +313,9 @@ function handle(c: Client, msg: ClientMsg) {
       s.x = msg.x;
       s.y = msg.y;
       // Once a selected-party player walks off the chosen pad, leave that party.
-      if (c.room === 'lobby' && c.portalChoice !== null && portalAt(s)?.size !== c.portalChoice) c.portalChoice = null;
+      // A custom party (no pad) is kept until the player leaves it or steps onto a pad.
+      const choicePad = PORTALS.find((p) => p.size === c.portalChoice)?.pad;
+      if (c.room === 'lobby' && c.portalChoice !== null && (choicePad ? portalAt(s)?.size !== c.portalChoice : !!portalAt(s))) c.portalChoice = null;
       s.facing = msg.facing;
       s.moving = msg.moving;
       s.sprint = msg.sprint;
@@ -396,6 +421,7 @@ function handle(c: Client, msg: ClientMsg) {
       const trap = trapState.get(c.room)?.get(msg.id);
       const spot = spotOf(c.room, msg.id);
       if (!trap || !spot || (spot.kind && spot.kind !== 'plate') || trap.tripwired || trap.jammedUntil > now || !trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(spot))) break;
+      if (!spendUse(c, 'tripwire')) break;
       trap.tripwired = true;
       tripwireReadyAt.set(c.room, now + TRIPWIRE_COOLDOWN_MS);
       send(c, { t: 'tripwireArmed', id: msg.id });
@@ -419,7 +445,7 @@ function handle(c: Client, msg: ClientMsg) {
       if (now < (doorJamReadyAt.get(c.room) ?? 0)) break;
       if (!doorsOf(c.room).some((door) => door.id === msg.id)) break;
       const locks = doorLocks.get(c.room);
-      if (!locks) break;
+      if (!locks || !spendUse(c, 'doorJam')) break;
       locks.set(msg.id, now + DOOR_JAM_DURATION_MS);
       doorJamReadyAt.set(c.room, now + ABILITIES.doorJam.cooldown * 1000);
       for (const id of matches.get(c.room) ?? []) {
@@ -442,7 +468,7 @@ function handle(c: Client, msg: ClientMsg) {
       if (msg.t === 'place') {
         const trap = msg.trap;
         if (!trap || !trapKind(trap.kind) || !Number.isFinite(trap.x) || !Number.isFinite(trap.y) || typeof trap.id !== 'string' || placed.has(trap.id)) break;
-        if (placementRefusal([...placed.values()].map((p) => p.kind), trap.kind)) break;
+        if (placementRefusal([...placed.values()].map((p) => p.kind), trap.kind, matches.get(c.room)?.size ?? 2)) break;
         const energy = saboteurEnergy.get(c.room);
         if (!energy || energy.current < trapKind(trap.kind)!.cost) {
           send(c, { t: 'placementRejected', id: trap.id, reason: 'Not enough energy' });
@@ -463,11 +489,24 @@ function handle(c: Client, msg: ClientMsg) {
       if (energy) send(c, { t: 'energy', current: energy.current, max: energy.max });
       break;
     }
+    case 'trapHit': {
+      // A Runner was caught: the whole crew (and the Saboteur) gets a pop-up naming them.
+      const now = Date.now();
+      if (!saboteurs.has(c.room) || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live') break;
+      if (now - (lastTrapHit.get(s.id) ?? 0) < 400) break;
+      lastTrapHit.set(s.id, now);
+      const alert: ServerMsg = { t: 'trapAlert', id: s.id, name: s.name, trap: String(msg.trap).slice(0, 24), area: String(msg.area).slice(0, 32) };
+      for (const id of matches.get(c.room) ?? []) {
+        const member = clients.get(id);
+        if (member) send(member, alert);
+      }
+      break;
+    }
     case 'heal': {
       // Runner to Runner, in the same heist; the healer's game checks reach and cooldown.
       const sab = saboteurs.get(c.room);
       const target = clients.get(msg.target);
-      if (!sab || sab === s.id || !target || target.room !== c.room || msg.target === sab) break;
+      if (!sab || sab === s.id || !target || target.room !== c.room || msg.target === sab || !spendUse(c, 'firstAid')) break;
       send(target, { t: 'healed', by: s.id });
       break;
     }
@@ -475,7 +514,7 @@ function handle(c: Client, msg: ClientMsg) {
       // Runners only (not the Saboteur). The game checks reach and the ability's cooldown.
       if (!saboteurs.has(c.room) || saboteurs.get(c.room) === s.id) break;
       const trap = trapState.get(c.room)?.get(msg.id);
-      if (!trap) break;
+      if (!trap || !spendUse(c, 'trapJam')) break;
       trap.jammedUntil = Date.now() + JAM_MS;
       trap.tripwired = false;
       for (const id of matches.get(c.room) ?? []) {
@@ -488,8 +527,9 @@ function handle(c: Client, msg: ClientMsg) {
       if (isMapId(msg.map)) c.mapPref = msg.map;
       break;
     case 'character':
-      // Refused if someone else has it; either way the player hears what they ended up with.
-      if (CHARACTERS.includes(msg.character) && !takenBy(msg.character, c)) s.character = msg.character;
+      // Refused if someone else has it while a free one exists; either way the player hears
+      // what they ended up with.
+      if (CHARACTERS.includes(msg.character) && (!takenBy(msg.character, c) || CHARACTERS.every((id) => takenBy(id, c)))) s.character = msg.character;
       send(c, { t: 'character', character: s.character });
       break;
     case 'ability': {
@@ -499,7 +539,7 @@ function handle(c: Client, msg: ClientMsg) {
       if (isSaboteur) {
         if (msg.ability !== 'overclock' || CHARACTER_INFO[s.character].saboteur !== 'overclock' || phases.get(c.room)?.phase !== 'live') break;
         const startsAt = Date.now();
-        if (startsAt < (overclockReadyAt.get(c.room) ?? 0)) break;
+        if (startsAt < (overclockReadyAt.get(c.room) ?? 0) || !spendUse(c, 'overclock')) break;
         overclockWindows.set(c.room, { startsAt, endsAt: startsAt + OVERCLOCK_MS });
         overclockReadyAt.set(c.room, startsAt + OVERCLOCK_COOLDOWN_MS);
         break;

@@ -21,7 +21,7 @@ export interface Ability {
   blurb: string;
   /** Seconds between uses; 0 for passives. */
   cooldown: number;
-  /** Uses per round, when limited (Shake It Off, Trap Refresh). */
+  /** Uses per round (every active ability is limited; passives aren't). */
   perRound?: number;
   passive?: boolean;
   /**
@@ -33,16 +33,16 @@ export interface Ability {
 
 /** Every character has one ability per role, so any pick works whichever role you get. */
 export const ABILITIES: Record<AbilityId, Ability> = {
-  quickstep: { id: 'quickstep', name: 'Quickstep', blurb: 'Dash 4 steps ahead, even from standing still.', cooldown: 10 },
-  overclock: { id: 'overclock', name: 'Overclock', blurb: 'Trap cooldowns tick twice as fast for 5s.', cooldown: 20 },
-  trapJam: { id: 'trapJam', name: 'Trap Jam', blurb: 'Jams the trap plate in reach for 3s, even mid-flash.', cooldown: 15 },
-  tripwire: { id: 'tripwire', name: 'Tripwire', blurb: 'Aim at a Shock Plate and rig it to fire on the next Runner who steps on it.', cooldown: 20 },
+  quickstep: { id: 'quickstep', name: 'Quickstep', blurb: 'Dash 4 steps ahead, even from standing still.', cooldown: 10, perRound: 5 },
+  overclock: { id: 'overclock', name: 'Overclock', blurb: 'Trap cooldowns tick twice as fast for 5s.', cooldown: 20, perRound: 3 },
+  trapJam: { id: 'trapJam', name: 'Trap Jam', blurb: 'Jams the trap plate in reach for 3s, even mid-flash.', cooldown: 15, perRound: 3 },
+  tripwire: { id: 'tripwire', name: 'Tripwire', blurb: 'Aim at a Shock Plate and rig it to fire on the next Runner who steps on it.', cooldown: 20, perRound: 3 },
   steadyCarry: { id: 'steadyCarry', name: 'Steady Carry', blurb: 'Loot slows her down half as much. Always on.', cooldown: 0, passive: true },
   deepPockets: { id: 'deepPockets', name: 'Deep Pockets', blurb: 'Starts every round with +30 max energy.', cooldown: 0, passive: true },
-  shakeItOff: { id: 'shakeItOff', name: 'Shake It Off', blurb: 'Instantly break free of a trap stun or knockout.', cooldown: 35 },
+  shakeItOff: { id: 'shakeItOff', name: 'Shake It Off', blurb: 'Instantly break free of a trap stun or knockout.', cooldown: 35, perRound: 3 },
   trapRefresh: { id: 'trapRefresh', name: 'Trap Refresh', blurb: "Aim at a cooling Shock Plate to reset it once per round.", cooldown: 0, perRound: 1 },
-  firstAid: { id: 'firstAid', name: 'First Aid', blurb: 'Heals herself or the most hurt Runner nearby to full HP, even from a knockout.', cooldown: 30 },
-  doorJam: { id: 'doorJam', name: 'Door Jam', blurb: 'Aim at a door to slam it shut and lock it for 8s.', cooldown: 15 },
+  firstAid: { id: 'firstAid', name: 'First Aid', blurb: 'Heals herself or the most hurt Runner nearby to full HP, even from a knockout.', cooldown: 30, perRound: 3 },
+  doorJam: { id: 'doorJam', name: 'Door Jam', blurb: 'Aim at a door to slam it shut and lock it for 8s.', cooldown: 15, perRound: 3 },
 };
 
 export interface CharacterInfo {

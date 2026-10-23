@@ -11,6 +11,7 @@ export class HUD {
   private healthFill = document.getElementById('health-fill')!;
   private healthText = document.getElementById('health-text')!;
   private timer = document.getElementById('timer')!;
+  private alerts = document.getElementById('alerts')!;
   private lastArea = '';
   private lastTimer = '';
 
@@ -32,6 +33,17 @@ export class HUD {
   setCarrying(text: string | null) {
     this.carrying.hidden = !text;
     if (text) this.carrying.textContent = text;
+  }
+
+  /** A pop-up everyone sees when someone is caught by a trap; it fades out on its own. */
+  alert(html: string) {
+    const el = document.createElement('div');
+    el.className = 'trap-alert';
+    el.innerHTML = html;
+    this.alerts.prepend(el);
+    while (this.alerts.children.length > 3) this.alerts.lastElementChild!.remove();
+    setTimeout(() => el.classList.add('gone'), 3200);
+    setTimeout(() => el.remove(), 3700);
   }
 
   /** The round clock, e.g. SETUP 1:15; null hides it. */

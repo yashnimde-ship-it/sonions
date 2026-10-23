@@ -1,5 +1,6 @@
 // Test bots for the lobby: they join the server, wander, then walk into a portal.
-// Handy for trying a 3- or 4-player portal alone.
+// Handy for trying a 3- or 4-player portal alone. Sizes without a pad (5-9) join a custom
+// party from where they stand, like the Heist Lobby panel's CUSTOM row.
 //
 // Usage: npm run bots -- [count=1] [portal size=2] [server=ws://localhost:3001/ws]
 
@@ -15,7 +16,7 @@ const TILE = 16;
 
 const lobby = JSON.parse(fs.readFileSync(new URL('../public/assets/lobby/lobby.json', import.meta.url), 'utf8'));
 const portal = lobby.portals.find((p: { size: number }) => p.size === portalSize);
-if (!portal) throw new Error(`No ${portalSize}-player portal`);
+if (!portal && !(portalSize >= 2 && portalSize <= 9)) throw new Error(`No ${portalSize}-player party`);
 
 for (let i = 0; i < count; i++) {
   const ws = new WebSocket(url);
@@ -32,8 +33,8 @@ for (let i = 0; i < count; i++) {
   let lastCarriers = '';
   let lastHurt = '';
   // Each bot heads to its own spot inside the portal.
-  const tx = (portal.x + 1 + (i % 3) * 1.4) * TILE;
-  const ty = (portal.y + 1.5 + Math.floor(i / 3) * 1.4) * TILE;
+  let tx = portal ? (portal.x + 1 + (i % 3) * 1.4) * TILE : 0;
+  let ty = portal ? (portal.y + 1.5 + Math.floor(i / 3) * 1.4) * TILE : 0;
 
   ws.onopen = () => send({ t: 'hello', name: `Bot ${i + 1}`, character: CHARACTERS[(i + 1) % CHARACTERS.length] });
   ws.onmessage = (e) => {
@@ -43,6 +44,10 @@ for (let i = 0; i < count; i++) {
       x = msg.x;
       y = msg.y;
       inMatch = false;
+      if (!portal) {
+        [tx, ty] = [x, y];
+        send({ t: 'portal', size: portalSize });
+      }
     }
     if (msg.t === 'match') {
       inMatch = true;

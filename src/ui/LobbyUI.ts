@@ -1,6 +1,7 @@
 import { CHARACTERS, type CharacterId } from '../config';
 import { abilityFor, CHARACTER_INFO } from '../data/characters';
 import type { Profile } from '../data/profile';
+import { MAX_CREW, MIN_CREW } from '../data/round';
 import type { MapId } from '../data/maps';
 import type { PortalState, Taken } from '../net/protocol';
 import { iconHtml, type IconName } from './pixelIcons';
@@ -64,6 +65,10 @@ export class LobbyUI {
   private startStatus = $('start-status');
   private abort = new AbortController();
   private lastPortals = '';
+  /** Party sizes that have a pad in the safehouse; other sizes are custom parties. */
+  private padSizes = new Set<number>();
+  private customSize = 5;
+  private custom = document.createElement('div');
   private lastCard = '';
   private lastStart = '';
   /** A START HEIST explanation stays up until then (ms), instead of the live status. */
@@ -110,6 +115,20 @@ export class LobbyUI {
       const row = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-size]');
       if (row) this.onPortal(Number(row.dataset.size));
       row?.blur();
+    }, opts);
+    // Custom party: any size from MIN_CREW to MAX_CREW, joined from here (no pad needed).
+    this.custom.className = 'custom-party';
+    this.custom.innerHTML = `<span class="label">CUSTOM</span><button type="button" data-step="-1" aria-label="Fewer players">-</button><b class="n"></b><button type="button" data-step="1" aria-label="More players">+</button><button type="button" class="join">JOIN</button>`;
+    this.portalList.after(this.custom);
+    this.renderCustom();
+    this.custom.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
+      if (!btn) return;
+      if (btn.dataset.step) {
+        this.customSize = Math.min(MAX_CREW, Math.max(MIN_CREW, this.customSize + Number(btn.dataset.step)));
+        this.renderCustom();
+      } else this.onPortal(this.customSize);
+      btn.blur();
     }, opts);
     this.startBtn.addEventListener('click', () => {
       this.onStart();
@@ -212,7 +231,19 @@ export class LobbyUI {
 
   private mapName = (id: MapId | null) => this.maps.find((m) => m.id === id)?.name ?? '';
 
-  setPortals(portals: PortalState[], online: number, mine: number | null) {
+  /** The pads in the safehouse; their rows always show. */
+  setPadSizes(sizes: number[]) {
+    this.padSizes = new Set(sizes);
+    this.lastPortals = '';
+  }
+
+  private renderCustom() {
+    this.custom.querySelector('.n')!.textContent = `${this.customSize}P`;
+  }
+
+  setPortals(all: PortalState[], online: number, mine: number | null) {
+    // Pads always show; a custom size only once someone is waiting in it (or it's yours).
+    const portals = all.filter((p) => this.padSizes.has(p.size) || p.count > 0 || p.size === mine);
     this.online.textContent = String(online);
     const key = JSON.stringify([portals, mine]);
     if (key === this.lastPortals) return;
@@ -228,7 +259,7 @@ export class LobbyUI {
         this.portalList.insertBefore(row, this.portalList.children[i] ?? null);
       }
       const me = p.size === mine;
-      row.className = `portal-row p${p.size}${me ? ' mine' : ''}`;
+      row.className = `portal-row p${p.size}${this.padSizes.has(p.size) ? '' : ' custom'}${me ? ' mine' : ''}`;
       row.title = `${me ? 'Leave' : 'Join'} the ${p.size}-player party`;
       row.querySelector('.dots')!.innerHTML = Array.from({ length: p.size }, (_, k) => `<i class="${k < p.count ? 'on' : ''}"></i>`).join('');
       const status = row.querySelector('.status')!;

@@ -155,17 +155,18 @@ export class AbilitySystem {
     const overclockLeft = this.overclock ? Math.max(0, this.overclock.endsAt - now) : 0;
     this.root.classList.toggle('active', a.id === 'overclock' && overclockLeft > 0);
     if (now < this.noteUntil) return;
-    this.stateEl.textContent = a.id === 'overclock' && overclockLeft > 0
+    const usesNote = Number.isFinite(this.usesLeft) && !spent ? ` · ${this.usesLeft} LEFT` : '';
+    this.stateEl.textContent = (a.id === 'overclock' && overclockLeft > 0
       ? `ACTIVE ${Math.ceil(overclockLeft / 1000)}s`
       : a.needs
       ? 'Coming soon'
       : a.passive
         ? 'Passive'
         : spent
-          ? 'Used this round'
+          ? 'No uses left'
           : left
             ? `${Math.ceil(left / 1000)}s`
-            : 'READY';
+            : 'READY') + usesNote;
   }
 }
 

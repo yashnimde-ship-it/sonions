@@ -1236,8 +1236,9 @@ kbd {
 
 #trapbar {
   position: absolute;
-  right: 16px;
+  left: 50%;
   bottom: 14px;
+  transform: translateX(-50%);
   display: flex;
   gap: 5px;
   padding: 6px;
@@ -1276,6 +1277,29 @@ kbd {
   cursor: pointer;
 }
 .diamond-slot.selected { border-color: #fff2a6; background: #39576a; box-shadow: 0 0 8px #83eeff; }
+.diamond-hide-row { display: flex; gap: 6px; }
+.diamond-room {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 6px;
+  border: 2px solid #547b99;
+  border-radius: 4px;
+  color: #d4f5ff;
+  background: #1b2740;
+  font: inherit;
+  font-size: 8px;
+}
+.hide-diamond {
+  padding: 7px 9px;
+  border: 2px solid #7ce6dc;
+  border-radius: 4px;
+  color: #101c24;
+  background: #6de6df;
+  font: inherit;
+  font-size: 8px;
+  cursor: pointer;
+}
+.hide-diamond:hover { background: #a8f1e8; }
 .diamond-note { margin: 8px 0; color: #d8d2e7; font-size: 7px; line-height: 1.7; }
 .ready-heist {
   width: 100%;
@@ -1377,6 +1401,7 @@ kbd {
     padding: 4px;
   }
   #diamond-bar { top: 52px; right: 8px; width: min(290px, calc(100vw - 16px)); padding: 7px; }
+  #trapbar { left: 50%; right: auto; bottom: 8px; max-width: calc(100vw - 12px); overflow-x: auto; }
 }
 
 .trap-slots {
@@ -1432,4 +1457,103 @@ kbd {
 .timer.urgent {
   color: #ff5a5a;
   border-color: #ff5a5a;
+}
+
+/* Trap-hit pop-ups: everyone in the heist sees who got caught, and where. */
+.alerts {
+  position: absolute;
+  top: 112px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.trap-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(40, 8, 18, 0.92);
+  border: 3px solid #ff4a5a;
+  border-radius: 6px;
+  box-shadow: 0 0 0 2px #0a0a0e, 0 0 14px rgba(255, 74, 90, 0.45);
+  font-size: 9px;
+  color: #ffe0e3;
+  white-space: nowrap;
+  animation: alert-in 0.25s ease-out;
+  transition: opacity 0.5s;
+}
+
+.trap-alert .who {
+  color: #ffe39a;
+}
+
+.trap-alert b {
+  color: #ff8a94;
+  font-weight: normal;
+}
+
+.trap-alert .where {
+  color: #9a94b0;
+  font-size: 7px;
+}
+
+.trap-alert.gone {
+  opacity: 0;
+}
+
+@keyframes alert-in {
+  from {
+    transform: translateY(-8px) scale(0.92);
+    opacity: 0;
+  }
+}
+
+/* Custom party size (2-9 players) under the pad rows */
+.portal-row.custom { --c: #9b6cff; }
+
+.custom-party {
+  display: flex;
+  align-items: center;
+  gap: 0.6vw;
+  margin: 0.6vh 0 0.2vh;
+  padding: 0.55vh 0.5vw;
+  border: 2px dashed color-mix(in srgb, #9b6cff 60%, transparent);
+  border-radius: 4px;
+  font-size: calc(var(--u) * 1.2);
+}
+
+.custom-party .label {
+  color: #c8b8ff;
+  flex: 1;
+}
+
+.custom-party .n {
+  min-width: 3ch;
+  text-align: center;
+  color: #fff;
+  font-weight: normal;
+}
+
+.custom-party button {
+  font: inherit;
+  color: #fff;
+  background: #2b2250;
+  border: 2px solid #9b6cff;
+  border-radius: 3px;
+  padding: 0.2vh 0.5vw;
+  cursor: pointer;
+}
+
+.custom-party button:hover {
+  background: #3d3170;
+}
+
+.custom-party .join {
+  color: #101018;
+  background: #9b6cff;
 }
