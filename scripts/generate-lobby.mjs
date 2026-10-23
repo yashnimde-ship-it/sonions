@@ -1,233 +1,373 @@
-// Paints the safehouse lobby (where players gather before a heist) with the same
-// pixel-art painters as the estate, and writes:
-//   public/assets/lobby/lobby.png    the whole room, one image (floor, walls, furniture)
-//   public/assets/lobby/lobby.json   size, collision grid, portals, wardrobe, lights, spawn
+// Builds the safehouse lobby from the lobby reference (map/lobbyLayout.mjs), the same way
+// the estate is built from its reference:
+//   public/assets/lobby/lobby.png        the room as shown: floor layer + every prop placed back
+//   public/assets/lobby/floor.png        the floor/wall layer alone (props removed, filled in)
+//   public/assets/lobby/props/<id>.png   each prop as its own transparent sprite
+//   public/assets/lobby/props.json       where each prop sits, and whether it's solid
+//   public/assets/lobby/lobby.json       size, collision grid, portals, wardrobe, lights, spawn
+//   public/assets/ui/mascot.png          the masked-burglar mascot for the title badge
 //
-// The portals, the lamplight and the wardrobe prompt are drawn by the game at runtime,
-// since they glow and show live player counts. Usage: npm run lobby
+// Steps: scale the reference to the estate's art scale (16 px per tile) and reduce it to
+// a fixed palette; repair the areas where the reference has UI painted in; print the
+// real estate map on the planning table; cut each prop out (its floor removed by a
+// flood fill from the box edge); fill the floor under the props; collision from the
+// walls and solid props. Portals, lamplight and prompts are drawn live by the game.
+//
+// Usage: npm run lobby
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { encode } from 'fast-png';
-import { Layer, sprite, TILE } from '../map/draw.mjs';
-import * as F from '../map/furniture.mjs';
-import { PAINTERS } from '../map/mapBuilder.mjs';
-import * as T from '../map/tileDefinitions.mjs';
+import { decode, encode } from 'fast-png';
+import * as L from '../map/lobbyLayout.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const OUT = path.join(ROOT, 'public', 'assets', 'lobby');
+const TILE = 16;
+const W = L.WIDTH * TILE;
+const H = L.HEIGHT * TILE;
+const px = (t) => Math.round(t * TILE);
+const lum = (r, g, b) => 0.3 * r + 0.59 * g + 0.11 * b;
 
-// ---------- Layout (tiles) ----------
+const readPng = (file) => {
+  const p = decode(fs.readFileSync(file));
+  const rgb = new Uint8Array(p.width * p.height * 3);
+  for (let i = 0; i < p.width * p.height; i++) rgb.set(p.data.subarray(i * p.channels, i * p.channels + 3), i * 3);
+  return { w: p.width, h: p.height, rgb };
+};
+const writeRgba = (rel, w, h, data) => {
+  const file = path.join(OUT, rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, encode({ width: w, height: h, data, channels: 4, depth: 8 }));
+};
 
-const WIDTH = 40;
-const HEIGHT = 26;
-const t = (n) => Math.round(n * TILE);
+/** Area-average resample (each output pixel is the mean of the source pixels it covers). */
+function resample(src, w, h) {
+  const out = new Uint8Array(w * h * 3);
+  const sx = src.w / w;
+  const sy = src.h / h;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const [x0, x1, y0, y1] = [x * sx, (x + 1) * sx, y * sy, (y + 1) * sy];
+      const acc = [0, 0, 0];
+      let n = 0;
+      for (let yy = Math.floor(y0); yy < Math.ceil(y1); yy++)
+        for (let xx = Math.floor(x0); xx < Math.ceil(x1); xx++) {
+          const a = (Math.min(xx + 1, x1) - Math.max(xx, x0)) * (Math.min(yy + 1, y1) - Math.max(yy, y0));
+          const i = (yy * src.w + xx) * 3;
+          acc[0] += src.rgb[i] * a;
+          acc[1] += src.rgb[i + 1] * a;
+          acc[2] += src.rgb[i + 2] * a;
+          n += a;
+        }
+      out.set(acc.map((v) => Math.round(v / n)), (y * w + x) * 3);
+    }
+  return { w, h, rgb: out };
+}
 
-/** Floor zones: [kind, x0, y0, x1, y1] inclusive; later zones paint over earlier ones. */
-const FLOORS = [
-  ['wood', 1, 1, 38, 24],
-  ['concrete', 28, 1, 38, 14],
-];
-/** Window runs in the top wall: [x0, x1] inclusive. */
-const WINDOWS = [
-  [3, 6],
-  [24, 26],
-  [31, 35],
-];
-
-// Same object format as mapData: type, x, y, w, h in tiles; solid: false for floor decor.
-const OBJECTS = [
-  // Reading corner (top left)
-  { type: 'bookshelf', x: 1.4, y: 1.3, w: 5.2, h: 2.6, seed: 5 },
-  { type: 'dresser', x: 7, y: 1.3, w: 2.8, h: 2.4 },
-  { type: 'plant', x: 10.2, y: 1.5 },
-  { type: 'rug', x: 5.6, y: 5, w: 6.4, h: 3.6, colors: ['r2', 'r1', 'r4'], solid: false },
-  { type: 'desk', x: 1.4, y: 6.4, w: 2, h: 4.6, items: ['book', 'lamp'] },
-  // Lounge (bottom left)
-  { type: 'rug', x: 1.4, y: 14, w: 10.2, h: 8.4, colors: ['r2', 'r1', 'r4'], solid: false },
-  { type: 'floorLamp', x: 1.6, y: 12 },
-  { type: 'sofa', x: 1.6, y: 14.4, w: 2.8, h: 6.6, facing: 'right' },
-  { type: 'sofa', x: 4.4, y: 20.8, w: 6.6, h: 2.6, facing: 'up' },
-  { type: 'coffeeTable', x: 5.6, y: 15.8, w: 4.2, h: 3.2 },
-  { type: 'plant', x: 11, y: 14.4, size: 'big' },
-  // Long cabinet under the pictures (top center)
-  { type: 'dresser', x: 12.6, y: 1.3, w: 10.4, h: 2, top: ['plantSmall'] },
-  // Planning table (center), with the estate's map spread on it
-  { type: 'rug', x: 12, y: 5.8, w: 14.6, h: 8.4, colors: ['bb2', 'bb1', 'y2'], solid: false },
-  { type: 'dining', x: 14.6, y: 7.6, w: 9.6, h: 4.8 },
-  { type: 'plant', x: 26.8, y: 1.5 },
-  // Garage bay (top right): the getaway car and gear
-  { type: 'car', x: 32.4, y: 2.2, w: 4.6, h: 9.4 },
-  { type: 'shelf', x: 37.6, y: 2.4, w: 1, h: 8 },
-  { type: 'crate', x: 29, y: 1.5 },
-  { type: 'crate', x: 29, y: 3.3 },
-  { type: 'crate', x: 30.6, y: 1.5 },
-  { type: 'workbench', x: 28.8, y: 9.6, w: 3, h: 1.8 },
-  // Wardrobe corner (bottom right): where players change character
-  { type: 'rug', x: 30.4, y: 19.6, w: 7.8, h: 3.6, colors: ['pp2', 'pp1', 'y2'], solid: false },
-  { type: 'wardrobe', x: 30.6, y: 15.4, w: 2.4, h: 3.4 },
-  { type: 'plant', x: 37.2, y: 15.6, size: 'small' },
-];
-
-// Portals in a row above the stairs: walk in with your crew to start a heist.
-const PORTALS = [
-  { size: 2, x: 12.6, y: 16.2, w: 5, h: 4.6 },
-  { size: 3, x: 18.6, y: 16.2, w: 5, h: 4.6 },
-  { size: 4, x: 24.6, y: 16.2, w: 5, h: 4.6 },
-];
-// The spot in front of the wardrobe and clothes rack where players change character.
-const WARDROBE = { x: 30.4, y: 19, w: 7.8, h: 4.4 };
-// Lamps, for the runtime lighting: x, y and radius in tiles.
-const LIGHTS = [
-  { x: 2.1, y: 12.4, r: 5 }, // floor lamp by the sofa
-  { x: 19.4, y: 9.6, r: 8 }, // pendant over the planning table
-  { x: 4, y: 2.6, r: 4 }, // reading lamp
-  { x: 17.8, y: 2.4, r: 5 }, // cabinet lamps
-  { x: 34.7, y: 6.5, r: 6 }, // garage light
-  { x: 34, y: 17, r: 5 }, // wardrobe corner
-  { x: 12, y: 23, r: 3.5 }, // stair lamps
-  { x: 30, y: 23, r: 3.5 },
-  { x: 21, y: 18.5, r: 6 }, // the portals' own glow
-];
-const SPAWN = { x: 19.4, y: 14.6 };
-const STAIRS = { x0: 17, x1: 23 }; // the opening in the south wall, tiles
-
-// ---------- Custom props ----------
-
-/** A rail of hanging clothes in the crew's colours, shoes lined up underneath. */
-function clothesRack(L, x, y, w) {
-  const s = sprite(w + 2, 36);
-  s.rect(1, 2, w, 2, 'm2');
-  s.vl(1, 2, 30, 'm2');
-  s.vl(w, 2, 30, 'm2');
-  const colors = [['tc2', 'tc3'], ['g3', 'g4'], ['bb2', 'bb3'], ['pk1', 'pk2'], ['y1', 'y2'], ['pp2', 'pp3'], ['r2', 'r3']];
-  let cx = 4;
-  for (let i = 0; cx < w - 4; i++, cx += 6) {
-    const [d, l] = colors[i % colors.length];
-    s.rect(cx, 4, 5, 18 + (i % 3) * 2, d);
-    s.vl(cx + 1, 5, 14, l);
-    s.hl(cx, 4, 5, 'K');
+/** Median-cut palette: `count` colors, every pixel snapped to the nearest. Crisp, pixel-art look. */
+function quantize(img, count) {
+  const n = img.w * img.h;
+  let boxes = [Uint32Array.from({ length: n }, (_, i) => i)];
+  while (boxes.length < count) {
+    // Split the box with the widest channel range.
+    let best = -1;
+    let bestRange = -1;
+    let bestCh = 0;
+    boxes.forEach((b, k) => {
+      if (b.length < 2) return;
+      for (let c = 0; c < 3; c++) {
+        let lo = 255;
+        let hi = 0;
+        for (let j = 0; j < b.length; j += 7) {
+          const v = img.rgb[b[j] * 3 + c];
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+        if (hi - lo > bestRange) [best, bestRange, bestCh] = [k, hi - lo, c];
+      }
+    });
+    if (best < 0) break;
+    const b = Array.from(boxes[best]).sort((p, q) => img.rgb[p * 3 + bestCh] - img.rgb[q * 3 + bestCh]);
+    const mid = b.length >> 1;
+    boxes.splice(best, 1, Uint32Array.from(b.slice(0, mid)), Uint32Array.from(b.slice(mid)));
   }
-  for (let sx = 4; sx < w - 4; sx += 5) s.rect(sx, 30, 4, 3, (sx / 5) % 2 ? 'lw2' : 'r3');
-  s.outline();
-  L.stamp(s, x, y);
-}
-
-/** A tall mirror with a warm frame. */
-function mirror(L, x, y) {
-  L.box(x, y, 14, 30, 'fw4');
-  L.rect(x + 2, y + 2, 10, 26, 'w4');
-  L.vl(x + 4, y + 4, 18, 'lw3');
-  L.vl(x + 5, y + 6, 10, 'lw3');
-}
-
-/** The estate's plan, printed and spread across the planning table. */
-function heistMap(L, x, y, w, h) {
-  L.box(x, y, w, h, 'kt3');
-  L.rect(x + 2, y + 2, w - 4, h - 4, 'g5');
-  for (const [px, py, pw, ph] of [[0.15, 0.2, 0.3, 0.35], [0.5, 0.15, 0.3, 0.3], [0.2, 0.6, 0.25, 0.25], [0.55, 0.55, 0.3, 0.3]])
-    L.box(x + Math.round(w * px), y + Math.round(h * py), Math.round(w * pw), Math.round(h * ph), 'kt2', 'fw2');
-  L.hl(x + 3, y + Math.round(h / 2), w - 6, 'ps3');
-  L.vl(x + Math.round(w * 0.47), y + 3, h - 6, 'ps3');
-  // The target, circled in red.
-  L.ellipse(x + w * 0.7, y + h * 0.35, 4, 3, 'r3');
-  L.ellipse(x + w * 0.7, y + h * 0.35, 2.5, 1.6, 'kt2');
-  // Notes pinned around it.
-  L.box(x - 6, y + 4, 8, 9, 'y3');
-  L.box(x + w - 3, y + h - 12, 8, 9, 'lw3');
-}
-
-function stairs(L, x0, x1) {
-  const y = t(HEIGHT - 2) + 6;
-  const h = t(HEIGHT) - y;
-  for (let j = 0; j < h; j++) L.hl(x0, y + j, x1 - x0, j % 6 === 0 ? 'K' : j % 6 === 1 ? 'fw4' : 'fw2');
-  L.vl(x0, y, h, 'K');
-  L.vl(x1 - 1, y, h, 'K');
-}
-
-/** A wooden balustrade along the stair opening. */
-function railing(L, x0, x1, y) {
-  L.rect(x0, y, x1 - x0, 3, 'fw4');
-  L.hl(x0, y + 3, x1 - x0, 'fw1');
-  for (let x = x0; x < x1; x += 8) {
-    L.rect(x, y + 3, 2, 9, 'fw2');
-    L.vl(x, y + 3, 9, 'fw4');
+  const palette = boxes.map((b) => {
+    const s = [0, 0, 0];
+    for (const i of b) for (let c = 0; c < 3; c++) s[c] += img.rgb[i * 3 + c];
+    return s.map((v) => Math.round(v / b.length));
+  });
+  const cache = new Map();
+  for (let i = 0; i < n; i++) {
+    const key = (img.rgb[i * 3] << 16) | (img.rgb[i * 3 + 1] << 8) | img.rgb[i * 3 + 2];
+    let c = cache.get(key);
+    if (!c) {
+      let bd = Infinity;
+      for (const p of palette) {
+        const d = (p[0] - img.rgb[i * 3]) ** 2 + (p[1] - img.rgb[i * 3 + 1]) ** 2 + (p[2] - img.rgb[i * 3 + 2]) ** 2;
+        if (d < bd) [bd, c] = [d, p];
+      }
+      cache.set(key, c);
+    }
+    img.rgb.set(c, i * 3);
   }
-  L.rect(x0 - 2, y - 3, 6, 15, 'fw3');
-  L.rect(x1 - 4, y - 3, 6, 15, 'fw3');
+  return palette;
 }
 
-// ---------- Paint ----------
+/**
+ * Fills a UI area: by tiling a clean patch (`tile`), or by repeating the strip on one
+ * side of it (`from`). Both mirror at the seams so edges meet cleanly.
+ */
+function repair(img, { box, from, span = 1, tile, shade = 1 }) {
+  const [x0, y0, x1, y1] = box.map(px);
+  const s = Math.max(1, px(span));
+  const mirror = (d, n = s) => {
+    const k = d % (2 * n);
+    return k < n ? k : 2 * n - 1 - k;
+  };
+  const [tx0, ty0, tx1, ty1] = tile ? tile.map(px) : [0, 0, 1, 1];
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++) {
+      let sx = x;
+      let sy = y;
+      if (tile) {
+        sx = tx0 + mirror(x - x0, tx1 - tx0);
+        sy = ty0 + mirror(y - y0, ty1 - ty0);
+      }
+      if (from === 'right') sx = x1 + mirror(x1 - 1 - x);
+      if (from === 'left') sx = x0 - 1 - mirror(x - x0);
+      if (from === 'down') sy = y1 + mirror(y1 - 1 - y);
+      if (from === 'up') sy = y0 - 1 - mirror(y - y0);
+      sx = Math.min(img.w - 1, Math.max(0, sx));
+      sy = Math.min(img.h - 1, Math.max(0, sy));
+      const si = (sy * img.w + sx) * 3;
+      img.rgb.set([img.rgb[si] * shade, img.rgb[si + 1] * shade, img.rgb[si + 2] * shade].map(Math.round), (y * img.w + x) * 3);
+    }
+}
 
-const W = WIDTH * TILE;
-const H = HEIGHT * TILE;
-const L = new Layer(W, H);
-const isWall = (x, y) => x <= 0 || y <= 0 || x >= WIDTH - 1 || y >= HEIGHT - 1;
+/** Prints the real estate map (its composited preview) on the planning table. */
+function printEstateMap(img) {
+  const [x0, y0, x1, y1] = L.TABLE_MAP.map(px);
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++) {
+      const edge = x === x0 || y === y0 || x === x1 - 1 || y === y1 - 1;
+      img.rgb.set(edge ? [120, 96, 64] : [226, 212, 176], (y * img.w + x) * 3);
+    }
+  const estate = readPng(path.join(ROOT, 'public/assets/map/preview.png'));
+  const room = [x1 - x0 - 6, y1 - y0 - 6];
+  const k = Math.min(room[0] / estate.w, room[1] / estate.h);
+  const mw = Math.round(estate.w * k);
+  const mh = Math.round(estate.h * k);
+  const map = resample(estate, mw, mh);
+  const ox = x0 + Math.round((x1 - x0 - mw) / 2);
+  const oy = y0 + Math.round((y1 - y0 - mh) / 2);
+  for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) img.rgb.set(map.rgb.subarray((y * mw + x) * 3, (y * mw + x) * 3 + 3), ((oy + y) * img.w + ox + x) * 3);
+}
 
-for (const [kind, x0, y0, x1, y1] of FLOORS) T.FLOORS[kind](L, t(x0), t(y0), t(x1 + 1), t(y1 + 1));
-for (let x = 1; x < WIDTH - 1; x++) T.wallFace(L, x, 1);
-for (let y = 0; y < HEIGHT; y++) for (let x = 0; x < WIDTH; x++) if (isWall(x, y)) T.wallTile(L, x, y, isWall);
-for (const [x0, x1] of WINDOWS) T.wallWindow(L, t(x0), 0, t(x1 - x0 + 1), true);
-// Hazard stripes along the edge of the garage bay.
-for (let y = t(1); y < t(15); y += 8) L.rect(t(28) - 2, y, 3, 5, 'y2');
-for (let x = t(28); x < t(39); x += 8) L.rect(x, t(15) - 2, 5, 3, 'y2');
+/** The most common colors among some pixels (quantized to 5 bits per channel). */
+function dominant(img, pixels, share = 0.8, max = 16) {
+  const hist = new Map();
+  for (const i of pixels) {
+    const k = ((img.rgb[i * 3] >> 3) << 10) | ((img.rgb[i * 3 + 1] >> 3) << 5) | (img.rgb[i * 3 + 2] >> 3);
+    hist.set(k, (hist.get(k) ?? 0) + 1);
+  }
+  const out = [];
+  let acc = 0;
+  for (const [k, c] of [...hist].sort((a, b) => b[1] - a[1])) {
+    out.push([((k >> 10) & 31) * 8 + 4, ((k >> 5) & 31) * 8 + 4, (k & 31) * 8 + 4]);
+    acc += c;
+    if (acc >= pixels.length * share || out.length >= max) break;
+  }
+  return out;
+}
 
-for (const o of OBJECTS) PAINTERS[o.type](L, o);
-heistMap(L, t(16.8), t(8.6), t(5.2), t(2.8));
-clothesRack(L, t(33.4), t(15.3), t(3.6));
-mirror(L, t(37.3) - 6, t(17.2));
-F.wallPicture(L, t(14), t(1) - 2, 22, 12);
-F.wallPicture(L, t(18.6), t(1) - 2, 26, 12);
-F.wallPicture(L, t(8), t(1) - 1);
-F.floorLamp(L, t(11.5), t(21.6));
-F.floorLamp(L, t(29.6), t(21.6));
-stairs(L, t(STAIRS.x0), t(STAIRS.x1 + 1));
-railing(L, t(12), t(STAIRS.x0), t(23.2));
-railing(L, t(STAIRS.x1 + 1), t(29.4), t(23.2));
+/**
+ * The prop's own pixels inside its box: flood-fill the surroundings (colors seen in a ring
+ * just outside the box) in from the box edge, stopping at dark outlines; whatever the
+ * flood can't reach is the prop. Enclosed gaps are filled back in.
+ */
+function propMask(img, box) {
+  const [x0, y0, x1, y1] = box.map(px);
+  const w = x1 - x0;
+  const h = y1 - y0;
+  const ring = [];
+  for (let y = y0 - 3; y < y1 + 3; y++)
+    for (let x = x0 - 3; x < x1 + 3; x++) {
+      if (x >= x0 && x < x1 && y >= y0 && y < y1) continue;
+      if (x >= 0 && y >= 0 && x < img.w && y < img.h) ring.push(y * img.w + x);
+    }
+  const around = dominant(img, ring);
+  const passable = (i) => {
+    const [r, g, b] = [img.rgb[i * 3], img.rgb[i * 3 + 1], img.rgb[i * 3 + 2]];
+    if (lum(r, g, b) < 34) return false;
+    return around.some((c) => (c[0] - r) ** 2 + (c[1] - g) ** 2 + (c[2] - b) ** 2 < 26 * 26);
+  };
+  const seen = new Uint8Array(w * h);
+  const stack = [];
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      if (x && y && x < w - 1 && y < h - 1) continue;
+      const i = (y0 + y) * img.w + x0 + x;
+      if (passable(i)) {
+        seen[y * w + x] = 1;
+        stack.push(y * w + x);
+      }
+    }
+  while (stack.length) {
+    const k = stack.pop();
+    const x = k % w;
+    const y = (k - x) / w;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h || seen[ny * w + nx]) continue;
+      if (!passable((y0 + ny) * img.w + x0 + nx)) continue;
+      seen[ny * w + nx] = 1;
+      stack.push(ny * w + nx);
+    }
+  }
+  // Keep what the flood missed; then drop tiny specks (floor grain caught as "prop").
+  const mask = new Uint8Array(w * h);
+  for (let k = 0; k < w * h; k++) mask[k] = seen[k] ? 0 : 1;
+  const comp = new Int32Array(w * h).fill(-1);
+  for (let s = 0; s < w * h; s++) {
+    if (!mask[s] || comp[s] >= 0) continue;
+    const list = [s];
+    comp[s] = s;
+    for (let j = 0; j < list.length; j++) {
+      const k = list[j];
+      const x = k % w;
+      const y = (k - x) / w;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const n = ny * w + nx;
+        if (mask[n] && comp[n] < 0) {
+          comp[n] = s;
+          list.push(n);
+        }
+      }
+    }
+    if (list.length < 20) for (const k of list) mask[k] = 0;
+  }
+  return { x0, y0, w, h, mask };
+}
 
-// ---------- Collision (8 px cells), like the estate's ----------
+/** Fills masked pixels from the nearest unmasked pixel along the same row (planks run sideways). */
+function fillUnder(img, masked) {
+  const out = img.rgb.slice();
+  for (let y = 0; y < img.h; y++)
+    for (let x = 0; x < img.w; x++) {
+      const i = y * img.w + x;
+      if (!masked[i]) continue;
+      for (let d = 16; d < img.w; d += 16) {
+        const l = x - d;
+        const r = x + d;
+        const s = l >= 0 && !masked[y * img.w + l] ? y * img.w + l : r < img.w && !masked[y * img.w + r] ? y * img.w + r : -1;
+        if (s >= 0) {
+          out.set(img.rgb.subarray(s * 3, s * 3 + 3), i * 3);
+          break;
+        }
+      }
+    }
+  return out;
+}
+
+// ---------- Build ----------
+
+const t0 = Date.now();
+const reference = readPng(path.join(ROOT, L.REFERENCE));
+
+// The mascot, cut from the reference's title badge as a round sprite.
+{
+  const { cx, cy, r } = L.MASCOT;
+  const size = r * 2;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      if ((x - r + 0.5) ** 2 + (y - r + 0.5) ** 2 > r * r) continue;
+      const i = ((cy - r + y) * reference.w + cx - r + x) * 3;
+      data.set([reference.rgb[i], reference.rgb[i + 1], reference.rgb[i + 2], 255], (y * size + x) * 4);
+    }
+  const file = path.join(ROOT, 'public', 'assets', 'ui', 'mascot.png');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, encode({ width: size, height: size, data, channels: 4, depth: 8 }));
+}
+
+const img = resample(reference, W, H);
+const palette = quantize(img, 128);
+for (const r of L.REPAIRS) repair(img, r);
+printEstateMap(img);
+
+fs.rmSync(path.join(OUT, 'props'), { recursive: true, force: true });
+const masked = new Uint8Array(W * H);
+const props = [];
+for (const p of L.PROPS) {
+  const m = propMask(img, p.box);
+  const data = new Uint8Array(m.w * m.h * 4);
+  let opaque = 0;
+  for (let y = 0; y < m.h; y++)
+    for (let x = 0; x < m.w; x++) {
+      if (!m.mask[y * m.w + x]) continue;
+      const i = (m.y0 + y) * W + m.x0 + x;
+      data.set([img.rgb[i * 3], img.rgb[i * 3 + 1], img.rgb[i * 3 + 2], 255], (y * m.w + x) * 4);
+      masked[i] = 1;
+      opaque++;
+    }
+  writeRgba(`props/${p.id}.png`, m.w, m.h, data);
+  props.push({ id: p.id, file: `props/${p.id}.png`, x: m.x0, y: m.y0, w: m.w, h: m.h, solid: p.solid, coverage: +(opaque / (m.w * m.h)).toFixed(2) });
+}
+
+// Floor layer (props removed), then the room as shown: the floor with every prop placed back.
+const floor = fillUnder(img, masked);
+const toRgba = (rgb) => {
+  const d = new Uint8Array(W * H * 4);
+  for (let i = 0; i < W * H; i++) d.set([rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2], 255], i * 4);
+  return d;
+};
+writeRgba('floor.png', W, H, toRgba(floor));
+const room = toRgba(floor);
+for (const p of props) {
+  const sprite = decode(fs.readFileSync(path.join(OUT, p.file)));
+  for (let y = 0; y < p.h; y++)
+    for (let x = 0; x < p.w; x++) {
+      const s = (y * p.w + x) * 4;
+      if (sprite.data[s + 3]) room.set(sprite.data.subarray(s, s + 4), ((p.y + y) * W + p.x + x) * 4);
+    }
+}
+writeRgba('lobby.png', W, H, room);
+
+// ---------- Collision (8 px cells, like the estate's) ----------
 
 const CELL = 8;
-const PER = TILE / CELL;
-const CW = WIDTH * PER;
-const CH = HEIGHT * PER;
+const CW = W / CELL;
+const CH = H / CELL;
 const grid = new Uint8Array(CW * CH);
-const solidBox = (x, y, w, h) => {
-  for (let cy = 0; cy < CH; cy++)
-    for (let cx = 0; cx < CW; cx++) {
-      const mx = (cx + 0.5) / PER;
-      const my = (cy + 0.5) / PER;
-      if (mx > x && mx < x + w && my > y && my < y + h) grid[cy * CW + cx] = 1;
-    }
+/** Every cell the box overlaps by more than 2 px is solid. */
+const cover = ([x0, y0, x1, y1]) => {
+  const m = 2 / TILE;
+  for (let cy = Math.max(0, Math.floor(((y0 + m) * TILE) / CELL)); cy < Math.min(CH, Math.ceil(((y1 - m) * TILE) / CELL)); cy++)
+    for (let cx = Math.max(0, Math.floor(((x0 + m) * TILE) / CELL)); cx < Math.min(CW, Math.ceil(((x1 - m) * TILE) / CELL)); cx++) grid[cy * CW + cx] = 1;
 };
-for (let y = 0; y < HEIGHT; y++) for (let x = 0; x < WIDTH; x++) if (isWall(x, y)) solidBox(x, y, 1, 1);
-solidBox(1, 1, WIDTH - 2, 0.9); // the north wall's face
-// Furniture blocks its lower part, so players can stand "behind" its top edge.
-for (const o of OBJECTS) {
-  if (o.solid === false) continue;
-  const w = o.w ?? 1;
-  const h = o.h ?? 1;
-  const top = h > 1.5 ? h * 0.35 : 0;
-  solidBox(o.x + 0.1, o.y + top, w - 0.2, h - top);
-}
-solidBox(33.4, 16.4, 3.6, 1.6); // clothes rack
-solidBox(11.6, 22.6, 18, 2.4); // railings and the stair well
+L.WALLS.forEach(cover);
+for (const p of L.PROPS) if (p.solid) cover(p.hit ?? p.box);
 
-// ---------- Write ----------
-
-fs.mkdirSync(OUT, { recursive: true });
-fs.writeFileSync(path.join(OUT, 'lobby.png'), encode({ width: W, height: H, data: L.data, channels: 4, depth: 8 }));
-const json = {
-  name: 'Safehouse',
-  tileSize: TILE,
-  width: WIDTH,
-  height: HEIGHT,
-  collision: { cell: CELL, width: CW, height: CH, data: Buffer.from(grid).toString('base64') },
-  portals: PORTALS,
-  wardrobe: WARDROBE,
-  lights: LIGHTS,
-  spawn: SPAWN,
-};
-fs.writeFileSync(path.join(OUT, 'lobby.json'), JSON.stringify(json));
-console.log(`lobby: ${W}x${H} px, ${grid.reduce((a, b) => a + b, 0)} solid cells`);
+fs.writeFileSync(path.join(OUT, 'props.json'), JSON.stringify(props, null, 1));
+fs.writeFileSync(
+  path.join(OUT, 'lobby.json'),
+  JSON.stringify({
+    name: 'Safehouse',
+    tileSize: TILE,
+    width: L.WIDTH,
+    height: L.HEIGHT,
+    collision: { cell: CELL, width: CW, height: CH, data: Buffer.from(grid).toString('base64') },
+    portals: L.PORTALS,
+    wardrobe: L.WARDROBE,
+    lights: L.LIGHTS,
+    spawn: L.SPAWN,
+  }),
+);
+console.log(`lobby: ${W}x${H} px (${L.WIDTH}x${L.HEIGHT} tiles), ${palette.length}-color palette`);
+console.log(`props: ${props.length} sprites; low coverage: ${props.filter((p) => p.coverage < 0.25).map((p) => `${p.id} ${p.coverage}`).join(', ') || 'none'}`);
+console.log(`collision: ${grid.reduce((a, b) => a + b, 0)} solid cells; done in ${Date.now() - t0} ms`);

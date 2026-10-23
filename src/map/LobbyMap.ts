@@ -15,17 +15,22 @@ export interface LobbyJson {
   height: number;
   collision: { cell: number; width: number; height: number; data: string };
   portals: Portal[];
-  wardrobe: { x: number; y: number; w: number; h: number };
+  /** Where to stand to customize; `prompt` is where its sign hangs (tiles). */
+  wardrobe: { x: number; y: number; w: number; h: number; prompt?: { x: number; y: number } };
   /** Lamps: x, y and radius in tiles. */
   lights: { x: number; y: number; r: number }[];
   spawn: { x: number; y: number };
 }
 
-// Evening in the safehouse: the room sits in a soft purple shade, lamps carve warm pools out of it.
-const SHADE = 'rgba(14, 8, 30, 0.5)';
-const GLOW = 'rgba(255, 170, 80, 0.22)';
+// Evening in the safehouse: a light purple shade with warm pools around the lamps. The art
+// is already lit, so this mostly ties the players into the scene.
+const SHADE = 'rgba(14, 8, 30, 0.22)';
+const GLOW = 'rgba(255, 170, 80, 0.14)';
 
-/** The safehouse lobby: one pre-painted image plus a collision grid (see scripts/generate-lobby.mjs). */
+/**
+ * The safehouse lobby: the room image (floor layer plus props, composed by
+ * scripts/generate-lobby.mjs) and a collision grid.
+ */
 export class LobbyMap {
   readonly data: LobbyJson;
   readonly image: HTMLImageElement;

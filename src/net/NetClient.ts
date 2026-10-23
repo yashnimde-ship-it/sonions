@@ -23,6 +23,15 @@ export class NetClient {
     });
   }
 
+  /** Closes the connection on purpose (Exit): onClose isn't called for this one. */
+  disconnect() {
+    const ws = this.ws;
+    this.ws = null;
+    if (!ws) return;
+    ws.onclose = null;
+    ws.close();
+  }
+
   get connected() {
     return this.ws?.readyState === WebSocket.OPEN;
   }

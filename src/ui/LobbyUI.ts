@@ -1,69 +1,147 @@
 import { CHARACTERS, type CharacterId } from '../config';
 import { abilityFor, CHARACTER_INFO } from '../data/characters';
+import type { Profile } from '../data/profile';
 import type { PortalState, Taken } from '../net/protocol';
+import { iconHtml, type IconName } from './pixelIcons';
+import { SETTING_LABELS, type Settings, type SettingsValues } from './Settings';
 
-const abilityLine = (id: CharacterId, role: 'runner' | 'saboteur') => {
-  const a = abilityFor(id, role);
-  return `<span class="ability"><span class="role ${role}">${role === 'runner' ? 'RUN' : 'SAB'}</span> ${a.name} <span class="blurb">${a.blurb}</span></span>`;
-};
+export type NavId = 'lobby' | 'loadout' | 'map' | 'settings' | 'exit';
 
-const cardHtml = (id: CharacterId, title: string) => {
-  const info = CHARACTER_INFO[id];
-  return `
-    <img class="portrait" src="/assets/characters/${id}-portrait.png" alt="">
-    <div class="info">
-      <span class="slot">${title}</span>
-      <span class="nick">${info.nick} <span class="muted">${info.name}</span></span>
-      ${abilityLine(id, 'runner')}
-      ${abilityLine(id, 'saboteur')}
-    </div>`;
-};
+/** What the Map Info panel shows about the heist's map (from the estate's data). */
+export interface MapInfo {
+  name: string;
+  width: number;
+  height: number;
+  rooms: string[];
+  outdoor: string[];
+  doors: number;
+  loot: { name: string; value: number }[];
+  preview: string;
+}
 
-/** The safehouse HUD: portal status, who's online, your crew card, and the wardrobe picker. */
+/** Where your party stands, for the Start Heist box. */
+export type StartState =
+  | { kind: 'none' }
+  | { kind: 'waiting'; size: number; count: number }
+  | { kind: 'countdown'; size: number; seconds: number }
+  | { kind: 'offline' };
+
+const NAV: { id: NavId; label: string; icon: IconName }[] = [
+  { id: 'lobby', label: 'LOBBY', icon: 'home' },
+  { id: 'loadout', label: 'LOADOUT', icon: 'loadout' },
+  { id: 'map', label: 'MAP INFO', icon: 'map' },
+  { id: 'settings', label: 'SETTINGS', icon: 'settings' },
+  { id: 'exit', label: 'EXIT', icon: 'exit' },
+];
+
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/**
+ * The safehouse UI over the lobby scene: title badge, menu, Heist Lobby panel, profile card,
+ * Start Heist box, and the Loadout (wardrobe), Map Info, Settings and Exit panels. It only
+ * shows state and reports clicks; main.ts owns the game and network state.
+ */
 export class LobbyUI {
-  private root = document.getElementById('lobby')!;
-  private portalList = document.getElementById('portal-list')!;
-  private online = document.getElementById('online-count')!;
-  private myCard = document.getElementById('my-card')!;
-  private picker = document.getElementById('picker')!;
-  private pickerCards = document.getElementById('picker-cards')!;
-  private disconnected = document.getElementById('disconnected')!;
-  private startBtn = document.getElementById('start-btn') as HTMLButtonElement;
+  private root = $('lobby');
+  private nav = $('lobby-nav');
+  private portalList = $('portal-list');
+  private online = $('online-count');
+  private partyStatus = $('party-status');
+  private profileCard = $('my-card');
+  private picker = $('picker');
+  private pickerCards = $('picker-cards');
+  private mapPanel = $('map-panel');
+  private settingsPanel = $('settings-panel');
+  private exitPanel = $('exit-panel');
+  private disconnected = $('disconnected');
+  private startBtn = $<HTMLButtonElement>('start-btn');
+  private startStatus = $('start-status');
+  private abort = new AbortController();
   private lastPortals = '';
   private lastCard = '';
+  private lastStart = '';
+  /** A START HEIST explanation stays up until then (ms), instead of the live status. */
+  private nudgeUntil = 0;
+  private nudgeKind = '';
+  private startKind = '';
   private choice = 0;
   /** Characters other players have, and who has them. */
   private taken = new Map<CharacterId, string>();
-  /** Called with the chosen character when the picker is confirmed. */
-  onPick: (id: CharacterId) => void = () => {};
-  /** START HEIST: jump into the portal closest to filling up. */
-  onQuickJoin: () => void = () => {};
+  private selectedNav: NavId = 'lobby';
 
-  constructor() {
+  /** The wardrobe or Loadout picker confirmed a character. */
+  onPick: (id: CharacterId) => void = () => {};
+  /** A party row was clicked: join (or leave) that portal. */
+  onPortal: (size: number) => void = () => {};
+  /** START HEIST was pressed. */
+  onStart: () => void = () => {};
+  /** Exit was confirmed. */
+  onExit: () => void = () => {};
+  /** Loadout was opened from the menu: the picker needs the current character. */
+  onLoadout: () => void = () => {};
+
+  private settings: Settings;
+
+  constructor(mapInfo: MapInfo, settings: Settings) {
+    this.settings = settings;
+    const opts = { signal: this.abort.signal };
+    this.nav.innerHTML = NAV.map(
+      (n) => `<button class="nav-item" data-nav="${n.id}" type="button">${iconHtml(n.icon)}<span>${n.label}</span></button>`,
+    ).join('');
+    this.nav.addEventListener('click', (e) => {
+      const item = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-nav]');
+      if (item) this.navigate(item.dataset.nav as NavId);
+      item?.blur();
+    }, opts);
+    this.portalList.addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-size]');
+      if (row) this.onPortal(Number(row.dataset.size));
+      row?.blur();
+    }, opts);
     this.startBtn.addEventListener('click', () => {
-      this.onQuickJoin();
+      this.onStart();
       this.startBtn.blur();
-    });
+    }, opts);
+    this.root.addEventListener('click', (e) => {
+      const close = (e.target as HTMLElement).closest('[data-close]');
+      if (close) this.navigate('lobby');
+    }, opts);
+    $('exit-confirm').addEventListener('click', () => {
+      this.navigate('lobby');
+      this.onExit();
+    }, opts);
+
     CHARACTERS.forEach((id, i) => {
       const el = document.createElement('button');
       el.className = 'pick';
+      el.type = 'button';
       el.style.setProperty('--accent', CHARACTER_INFO[id].color);
       el.innerHTML = `<img src="/assets/characters/${id}-portrait.png" alt=""><span>${CHARACTER_INFO[id].nick}</span><small><b class="runner">RUN</b> ${abilityFor(id, 'runner').name}</small><small><b class="saboteur">SAB</b> ${abilityFor(id, 'saboteur').name}</small><em class="owner"></em>`;
       el.addEventListener('click', () => {
         if (this.taken.has(id)) return;
         this.choice = i;
         this.confirmPick();
-      });
+      }, opts);
       el.addEventListener('mouseenter', () => {
         if (!this.taken.has(id)) this.select(i);
-      });
+      }, opts);
       this.pickerCards.append(el);
     });
+
+    this.renderMapInfo(mapInfo);
+    this.renderSettings();
+    this.selectNav('lobby');
+  }
+
+  /** Removes every listener this UI added (if the lobby is ever torn down). */
+  destroy() {
+    this.abort.abort();
   }
 
   show(visible: boolean) {
     this.root.hidden = !visible;
-    if (!visible) this.closePicker();
+    if (!visible) this.navigate('lobby');
   }
 
   showDisconnected() {
@@ -71,18 +149,66 @@ export class LobbyUI {
     this.disconnected.hidden = false;
   }
 
-  setPortals(portals: PortalState[], online: number) {
+  /** Is any panel open over the lobby (so the player shouldn't move)? */
+  get panelOpen() {
+    return this.pickerOpen || !this.mapPanel.hidden || !this.settingsPanel.hidden || !this.exitPanel.hidden;
+  }
+
+  // ---------- Menu ----------
+
+  navigate(id: NavId) {
+    this.picker.hidden = id !== 'loadout';
+    this.mapPanel.hidden = id !== 'map';
+    this.settingsPanel.hidden = id !== 'settings';
+    this.exitPanel.hidden = id !== 'exit';
+    if (id === 'loadout') this.onLoadout();
+    this.selectNav(id);
+  }
+
+  private selectNav(id: NavId) {
+    this.selectedNav = id;
+    this.nav.querySelectorAll<HTMLElement>('[data-nav]').forEach((el) => {
+      const on = el.dataset.nav === id;
+      el.classList.toggle('selected', on);
+      el.setAttribute('aria-pressed', String(on));
+    });
+  }
+
+  get selected() {
+    return this.selectedNav;
+  }
+
+  // ---------- Heist Lobby panel ----------
+
+  /** Live portal counts from the server; `mine` is the party size you're standing in. */
+  setPortals(portals: PortalState[], online: number, mine: number | null) {
     this.online.textContent = String(online);
-    const key = JSON.stringify(portals);
+    const key = JSON.stringify([portals, mine]);
     if (key === this.lastPortals) return;
     this.lastPortals = key;
-    this.portalList.innerHTML = portals
-      .map((p) => {
-        const status = p.countdown !== null ? `<span class="go">GO ${p.countdown}</span>` : `<span class="count">${p.count}/${p.size}</span>`;
-        const dots = Array.from({ length: p.size }, (_, i) => `<i class="${i < p.count ? 'on' : ''}"></i>`).join('');
-        return `<div class="portal-row p${p.size}"><span class="size">${p.size}P</span><span class="dots">${dots}</span>${status}</div>`;
-      })
-      .join('');
+    // Rows are updated in place (not rebuilt), so a click isn't lost when a count changes under it.
+    portals.forEach((p, i) => {
+      let row = this.portalList.children[i] as HTMLButtonElement | undefined;
+      if (!row || row.dataset.size !== String(p.size)) {
+        row = document.createElement('button');
+        row.type = 'button';
+        row.dataset.size = String(p.size);
+        row.innerHTML = `<span class="size">${p.size}P</span><span class="dots"></span><span class="status"></span>`;
+        this.portalList.insertBefore(row, this.portalList.children[i] ?? null);
+      }
+      const me = p.size === mine;
+      row.className = `portal-row p${p.size}${me ? ' mine' : ''}`;
+      row.title = `${me ? 'Leave' : 'Join'} the ${p.size}-player party`;
+      row.querySelector('.dots')!.innerHTML = Array.from({ length: p.size }, (_, k) => `<i class="${k < p.count ? 'on' : ''}"></i>`).join('');
+      const status = row.querySelector('.status')!;
+      status.className = `status ${p.countdown !== null ? 'go' : 'count'}`;
+      status.textContent = p.countdown !== null ? `GO ${p.countdown}` : `${p.count}/${p.size}`;
+    });
+    while (this.portalList.children.length > portals.length) this.portalList.lastElementChild!.remove();
+    const mineState = portals.find((p) => p.size === mine);
+    this.partyStatus.innerHTML = mineState
+      ? `Your party: <b class="c${mineState.size}">${mineState.size} players</b> · ${mineState.count}/${mineState.size} ready`
+      : 'No party yet · pick a portal';
   }
 
   /** Who has which character (from the server); `mine` is never shown as taken. */
@@ -99,15 +225,103 @@ export class LobbyUI {
     if (this.pickerOpen && this.taken.has(CHARACTERS[this.choice])) this.select(CHARACTERS.indexOf(mine));
   }
 
-  setMe(name: string, id: CharacterId) {
-    const key = name + id;
+  // ---------- Profile ----------
+
+  setMe(name: string, character: CharacterId, profile: Profile) {
+    const info = CHARACTER_INFO[character];
+    const key = [name, character, profile.level, profile.tag].join('|');
     if (key === this.lastCard) return;
     this.lastCard = key;
-    this.myCard.style.setProperty('--accent', CHARACTER_INFO[id].color);
-    this.myCard.innerHTML = cardHtml(id, name);
+    const rank = profile.rank;
+    this.profileCard.style.setProperty('--accent', info.color);
+    this.profileCard.innerHTML = `
+      <div class="avatar"><img src="/assets/characters/${character}-portrait.png" alt=""><span class="level">Lv. ${profile.level}</span></div>
+      <div class="who">
+        <span class="name">${esc(name)}<span class="tag">#${profile.tag}</span></span>
+        <span class="title">${rank.title}</span>
+        <span class="crewline">${info.nick} · ${abilityFor(character, 'runner').name} / ${abilityFor(character, 'saboteur').name}</span>
+        <span class="quote">"${rank.quote}"</span>
+      </div>`;
   }
 
-  // ---------- Wardrobe picker ----------
+  // ---------- Start Heist ----------
+
+  setStart(state: StartState) {
+    // An explanation is dropped as soon as your party situation changes.
+    if (state.kind !== this.nudgeKind) this.nudgeUntil = 0;
+    this.startKind = state.kind;
+    const nudging = performance.now() < this.nudgeUntil;
+    const key = JSON.stringify(state) + (nudging ? '!' : '');
+    if (key === this.lastStart) return;
+    this.lastStart = key;
+    const ready = state.kind === 'countdown';
+    this.startBtn.classList.toggle('blocked', !ready);
+    this.startBtn.classList.toggle('go', ready);
+    this.startBtn.setAttribute('aria-disabled', String(!ready));
+    this.startBtn.innerHTML = ready ? `STARTING ${state.seconds} <span class="arrow">&gt;</span>` : 'START HEIST <span class="arrow">&gt;</span>';
+    if (nudging) return; // the explanation stays up for a moment
+    this.startStatus.className = `start-status ${state.kind}`;
+    this.startStatus.textContent =
+      state.kind === 'none'
+        ? 'Pick a party size: click a portal or walk into one.'
+        : state.kind === 'waiting'
+          ? `Waiting for your crew: ${state.count}/${state.size} in the ${state.size}-player portal.`
+          : state.kind === 'countdown'
+            ? `Crew ready! The heist starts in ${state.seconds}...`
+            : 'Not connected to the game server.';
+  }
+
+  /** Pressing START HEIST when it can't start: say why, a little louder. */
+  nudgeStart(reason: string) {
+    this.nudgeUntil = performance.now() + 2500;
+    this.nudgeKind = this.startKind;
+    this.startStatus.textContent = reason;
+    this.startStatus.classList.remove('shake');
+    void this.startStatus.offsetWidth; // restart the animation
+    this.startStatus.classList.add('shake');
+    this.lastStart = '';
+  }
+
+  // ---------- Map Info ----------
+
+  private renderMapInfo(m: MapInfo) {
+    const total = m.loot.reduce((s, l) => s + l.value, 0);
+    $('map-panel-body').innerHTML = `
+      <div class="map-info">
+        <img class="map-preview" src="${m.preview}" alt="Map of ${esc(m.name)}">
+        <div class="map-facts">
+          <h3>${esc(m.name)}</h3>
+          <dl>
+            <dt>Size</dt><dd>${m.width} x ${m.height} tiles</dd>
+            <dt>Rooms</dt><dd>${m.rooms.length}</dd>
+            <dt>Doors</dt><dd>${m.doors}</dd>
+            <dt>Loot</dt><dd>${m.loot.length} items · $${total.toLocaleString('en-US')}</dd>
+            <dt>Crew</dt><dd>2 to 4 players</dd>
+          </dl>
+        </div>
+      </div>
+      <p class="map-list"><b>Inside:</b> ${m.rooms.map(esc).join(', ')}</p>
+      <p class="map-list"><b>Grounds:</b> ${m.outdoor.map(esc).join(', ')}</p>
+      <p class="map-list"><b>Worth stealing:</b> ${m.loot.map((l) => `${esc(l.name)} ($${l.value})`).join(', ')}</p>`;
+  }
+
+  // ---------- Settings ----------
+
+  private renderSettings() {
+    const body = $('settings-panel-body');
+    body.innerHTML = (Object.keys(SETTING_LABELS) as (keyof SettingsValues)[])
+      .map((k) => {
+        const [label, help] = SETTING_LABELS[k];
+        return `<label class="setting"><input type="checkbox" data-setting="${k}" ${this.settings.values[k] ? 'checked' : ''}><span class="switch"></span><span class="label">${label}<small>${help}</small></span></label>`;
+      })
+      .join('');
+    body.addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      if (input.dataset.setting) this.settings.set(input.dataset.setting as keyof SettingsValues, input.checked);
+    }, { signal: this.abort.signal });
+  }
+
+  // ---------- Wardrobe / Loadout picker ----------
 
   get pickerOpen() {
     return !this.picker.hidden;
@@ -115,12 +329,12 @@ export class LobbyUI {
 
   openPicker(current: CharacterId) {
     this.choice = CHARACTERS.indexOf(current);
-    this.picker.hidden = false;
+    if (this.picker.hidden) this.navigate('loadout');
     this.movePick(0);
   }
 
   closePicker() {
-    this.picker.hidden = true;
+    if (!this.picker.hidden) this.navigate('lobby');
   }
 
   /** Moves the cursor left or right, skipping characters other players have. */

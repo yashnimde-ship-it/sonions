@@ -173,6 +173,29 @@ If the sheet uses a different frame size or order, change `BANDIT_FRAME_W/H` in
   screen beyond a message when all nine items are taken.
 - Loot is not saved between sessions.
 
+## The waiting lobby
+
+Built from `public/reference/lobby-reference.png` the same way the estate is built from its
+reference (`npm run lobby`, see `map/lobbyLayout.mjs` and `scripts/generate-lobby.mjs`): the
+reference is scaled to 70 x 40 tiles at 16 px, reduced to a 128-colour palette, the areas
+where UI was painted into it are repaired, the real estate map is printed on the planning
+table, and 32 props (fireplace, sofas, table, car, wardrobe, plants, lamps, railings...)
+are cut out as separate sprites in `public/assets/lobby/props/` and placed back by the layout.
+Collision comes from the layout's walls and solid props.
+
+| Control | What it does |
+| --- | --- |
+| Portals (click, or walk in) | Join that party size; click again to leave. The server counts whoever stands in a portal |
+| Heist Lobby rows | Same as clicking that portal; your party is outlined |
+| START HEIST | Explains what's missing (no party / crew incomplete); turns into a countdown when the portal is full and the server is starting the heist |
+| Loadout / wardrobe (E) | Pick a crew member; the profile card and your sprite update |
+| Map Info | The estate's real stats: size, rooms, doors, loot and a preview |
+| Settings | Name tags, lighting, sharp (whole-number) pixels; saved in this browser |
+| Exit | Confirms, disconnects, back to the title screen |
+
+The profile (Name#tag, level, title, quote) is stored in this browser: there are no accounts
+yet, so the titles and quotes are development defaults and the level rises every 3 heists.
+
 ## Online multiplayer (safehouse lobby)
 
 Everyone who opens the game joins one **safehouse lobby**. Walk into the **2**, **3** or

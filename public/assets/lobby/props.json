@@ -1,0 +1,322 @@
+[
+ {
+  "id": "fireplace",
+  "file": "props/fireplace.png",
+  "x": 496,
+  "y": 0,
+  "w": 138,
+  "h": 85,
+  "solid": true,
+  "coverage": 0.82
+ },
+ {
+  "id": "plant-fireplace",
+  "file": "props/plant-fireplace.png",
+  "x": 414,
+  "y": 18,
+  "w": 40,
+  "h": 64,
+  "solid": true,
+  "coverage": 0.88
+ },
+ {
+  "id": "bookshelf",
+  "file": "props/bookshelf.png",
+  "x": 643,
+  "y": 0,
+  "w": 103,
+  "h": 75,
+  "solid": true,
+  "coverage": 1
+ },
+ {
+  "id": "table-lamp",
+  "file": "props/table-lamp.png",
+  "x": 768,
+  "y": 6,
+  "w": 35,
+  "h": 72,
+  "solid": true,
+  "coverage": 0.48
+ },
+ {
+  "id": "sofa-north",
+  "file": "props/sofa-north.png",
+  "x": 501,
+  "y": 96,
+  "w": 118,
+  "h": 48,
+  "solid": true,
+  "coverage": 0.3
+ },
+ {
+  "id": "lamp-west",
+  "file": "props/lamp-west.png",
+  "x": 440,
+  "y": 109,
+  "w": 24,
+  "h": 40,
+  "solid": true,
+  "coverage": 0.27
+ },
+ {
+  "id": "plant-west",
+  "file": "props/plant-west.png",
+  "x": 464,
+  "y": 104,
+  "w": 37,
+  "h": 42,
+  "solid": true,
+  "coverage": 0.68
+ },
+ {
+  "id": "plant-east",
+  "file": "props/plant-east.png",
+  "x": 622,
+  "y": 99,
+  "w": 39,
+  "h": 42,
+  "solid": true,
+  "coverage": 0.71
+ },
+ {
+  "id": "lamp-east",
+  "file": "props/lamp-east.png",
+  "x": 661,
+  "y": 114,
+  "w": 16,
+  "h": 36,
+  "solid": true,
+  "coverage": 0.67
+ },
+ {
+  "id": "planning-table",
+  "file": "props/planning-table.png",
+  "x": 403,
+  "y": 152,
+  "w": 314,
+  "h": 168,
+  "solid": true,
+  "coverage": 0.8
+ },
+ {
+  "id": "sofa-south",
+  "file": "props/sofa-south.png",
+  "x": 483,
+  "y": 310,
+  "w": 154,
+  "h": 34,
+  "solid": true,
+  "coverage": 0.58
+ },
+ {
+  "id": "side-table",
+  "file": "props/side-table.png",
+  "x": 512,
+  "y": 344,
+  "w": 96,
+  "h": 38,
+  "solid": true,
+  "coverage": 0.37
+ },
+ {
+  "id": "plant-hall-east",
+  "file": "props/plant-hall-east.png",
+  "x": 803,
+  "y": 306,
+  "w": 29,
+  "h": 70,
+  "solid": true,
+  "coverage": 0.86
+ },
+ {
+  "id": "cabinet-hall",
+  "file": "props/cabinet-hall.png",
+  "x": 805,
+  "y": 374,
+  "w": 25,
+  "h": 47,
+  "solid": true,
+  "coverage": 0.25
+ },
+ {
+  "id": "lamp-plant-hall",
+  "file": "props/lamp-plant-hall.png",
+  "x": 787,
+  "y": 437,
+  "w": 45,
+  "h": 64,
+  "solid": true,
+  "coverage": 0.43
+ },
+ {
+  "id": "plant-hall-west",
+  "file": "props/plant-hall-west.png",
+  "x": 323,
+  "y": 242,
+  "w": 31,
+  "h": 75,
+  "solid": true,
+  "coverage": 0.8
+ },
+ {
+  "id": "plant-stairs-west",
+  "file": "props/plant-stairs-west.png",
+  "x": 330,
+  "y": 496,
+  "w": 54,
+  "h": 94,
+  "solid": true,
+  "coverage": 0.77
+ },
+ {
+  "id": "railing-west",
+  "file": "props/railing-west.png",
+  "x": 384,
+  "y": 510,
+  "w": 98,
+  "h": 58,
+  "solid": true,
+  "coverage": 0.41
+ },
+ {
+  "id": "lamp-post-west",
+  "file": "props/lamp-post-west.png",
+  "x": 437,
+  "y": 533,
+  "w": 29,
+  "h": 61,
+  "solid": true,
+  "coverage": 0.37
+ },
+ {
+  "id": "pillar-west",
+  "file": "props/pillar-west.png",
+  "x": 477,
+  "y": 496,
+  "w": 22,
+  "h": 102,
+  "solid": true,
+  "coverage": 0.79
+ },
+ {
+  "id": "plant-step-west",
+  "file": "props/plant-step-west.png",
+  "x": 496,
+  "y": 566,
+  "w": 24,
+  "h": 32,
+  "solid": true,
+  "coverage": 0.92
+ },
+ {
+  "id": "plant-step-east",
+  "file": "props/plant-step-east.png",
+  "x": 602,
+  "y": 566,
+  "w": 22,
+  "h": 32,
+  "solid": true,
+  "coverage": 0.9
+ },
+ {
+  "id": "pillar-east",
+  "file": "props/pillar-east.png",
+  "x": 622,
+  "y": 496,
+  "w": 24,
+  "h": 102,
+  "solid": true,
+  "coverage": 0.85
+ },
+ {
+  "id": "railing-east",
+  "file": "props/railing-east.png",
+  "x": 645,
+  "y": 510,
+  "w": 101,
+  "h": 58,
+  "solid": true,
+  "coverage": 0.39
+ },
+ {
+  "id": "lamp-post-east",
+  "file": "props/lamp-post-east.png",
+  "x": 656,
+  "y": 533,
+  "w": 30,
+  "h": 61,
+  "solid": true,
+  "coverage": 0.37
+ },
+ {
+  "id": "plant-stairs-east",
+  "file": "props/plant-stairs-east.png",
+  "x": 736,
+  "y": 496,
+  "w": 56,
+  "h": 94,
+  "solid": true,
+  "coverage": 0.8
+ },
+ {
+  "id": "car",
+  "file": "props/car.png",
+  "x": 925,
+  "y": 154,
+  "w": 75,
+  "h": 158,
+  "solid": true,
+  "coverage": 0.94
+ },
+ {
+  "id": "garage-shelves-west",
+  "file": "props/garage-shelves-west.png",
+  "x": 848,
+  "y": 141,
+  "w": 37,
+  "h": 184,
+  "solid": true,
+  "coverage": 0.94
+ },
+ {
+  "id": "garage-shelves-east",
+  "file": "props/garage-shelves-east.png",
+  "x": 1040,
+  "y": 154,
+  "w": 24,
+  "h": 136,
+  "solid": true,
+  "coverage": 0.95
+ },
+ {
+  "id": "compressor",
+  "file": "props/compressor.png",
+  "x": 1024,
+  "y": 294,
+  "w": 40,
+  "h": 31,
+  "solid": true,
+  "coverage": 0.9
+ },
+ {
+  "id": "wardrobe",
+  "file": "props/wardrobe.png",
+  "x": 870,
+  "y": 386,
+  "w": 157,
+  "h": 94,
+  "solid": true,
+  "coverage": 0.58
+ },
+ {
+  "id": "cabinet-wardrobe",
+  "file": "props/cabinet-wardrobe.png",
+  "x": 1024,
+  "y": 376,
+  "w": 59,
+  "h": 122,
+  "solid": true,
+  "coverage": 0.65
+ }
+]

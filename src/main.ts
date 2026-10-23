@@ -2,6 +2,7 @@ import '@fontsource/press-start-2p';
 import { ART_TILE, CHAR_GLOW, CHARACTERS, type CharacterId, characterSheet, HITBOX, ZOOM } from './config';
 import { CHARACTER_INFO } from './data/characters';
 import { JAM_REACH, MAX_HP, TRAP_ACTIVE_MS, TRAP_ARM_MS, TRAP_COOLDOWN_MS, TRAP_DAMAGE, TRAP_RADIUS, TRAP_STUN_MS, TRAPS } from './data/traps';
+import { Profile } from './data/profile';
 import { Bandit, DRAW_H } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
@@ -13,7 +14,8 @@ import { InteractionSystem } from './systems/InteractionSystem';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { HUD } from './ui/HUD';
-import { LobbyUI } from './ui/LobbyUI';
+import { LobbyUI, type MapInfo, type StartState } from './ui/LobbyUI';
+import { Settings } from './ui/Settings';
 import { TitleUI } from './ui/TitleUI';
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -32,6 +34,26 @@ const fetchJson = <T,>(src: string) =>
   });
 
 type Scene = 'title' | 'lobby' | 'match';
+
+/** What the Map Info panel says about the estate, straight from its map data. */
+function mapInfo(data: EstateJson): MapInfo {
+  const names = data.areas.names;
+  const indoor = new Set<string>();
+  // Area 0 is the default (walls and lawn), so it never counts as a room.
+  data.areas.data.forEach((a, i) => {
+    if (data.indoor[i] && a !== 0) indoor.add(names[a]);
+  });
+  return {
+    name: data.name,
+    width: data.width,
+    height: data.height,
+    rooms: names.filter((n) => indoor.has(n)),
+    outdoor: names.filter((n) => !indoor.has(n)),
+    doors: data.doors.length,
+    loot: data.interactables.filter((i) => i.loot).map((i) => ({ name: i.name, value: i.loot! })),
+    preview: '/assets/map/preview.png',
+  };
+}
 
 interface Remote {
   state: PlayerState;
@@ -68,7 +90,9 @@ async function boot() {
   const camera = new CameraSystem(lobbyMap.widthPx, lobbyMap.heightPx);
   const hud = new HUD();
   const title = new TitleUI();
-  const lobby = new LobbyUI();
+  const settings = new Settings();
+  const profile = new Profile();
+  const lobby = new LobbyUI(mapInfo(estateData), settings);
   const net = new NetClient();
   const abilities = new AbilitySystem();
 
@@ -95,6 +119,12 @@ async function boot() {
   const me = new Bandit(sheets.maya, 0, 0, 'down');
   const remotes = new Map<string, Remote>();
   let portals: PortalState[] = [];
+  let online = 0;
+  /** The portal under the mouse, and until when START HEIST's "pick a portal" flash runs. */
+  let hoverPortal: number | null = null;
+  let flashUntil = 0;
+  let viewX = 0;
+  let viewY = 0;
   let match: { id: string; size: number; saboteur: string } | null = null;
   let bannerUntil = 0;
   let serverFull = false;
@@ -126,8 +156,13 @@ async function boot() {
   function frameCamera(snap: boolean) {
     const { w, h } = world();
     camera.setWorld(w, h);
-    // The safehouse fits the window when it can; the estate is played up close.
-    scale = scene === 'match' ? ZOOM * dpr : Math.max(1.5 * dpr, Math.min(canvas.width / w, canvas.height / h));
+    // The safehouse fills the window (UI panels sit over its edges); the estate is played up
+    // close. Sharp pixels rounds the lobby's scale up to a whole number.
+    if (scene === 'match') scale = ZOOM * dpr;
+    else {
+      scale = Math.max(canvas.width / w, canvas.height / h);
+      if (settings.values.pixelPerfect) scale = Math.max(1, Math.ceil(scale));
+    }
     camera.resize(canvas.width / scale, canvas.height / scale);
     let [tx, ty] = [me.x, me.y - DRAW_H / 2];
     if (scene === 'title') {
@@ -159,7 +194,7 @@ async function boot() {
   function setCharacter(id: CharacterId) {
     myCharacter = id;
     me.sheet = sheets[id];
-    lobby.setMe(myName, id);
+    lobby.setMe(myName, id, profile);
   }
 
   async function play() {
@@ -200,6 +235,8 @@ async function boot() {
     hud.setCarrying(null);
     hud.hideMessage();
     match = { id: msg.matchId, size: msg.size, saboteur: msg.saboteur };
+    profile.recordHeist();
+    lobby.setMe(myName, myCharacter, profile);
     remotes.clear();
     for (const p of msg.players) {
       if (p.id !== myId) {
@@ -247,7 +284,7 @@ async function boot() {
       case 'snapshot': {
         if ((msg.room === 'match') !== (scene === 'match')) break;
         portals = msg.portals;
-        lobby.setPortals(portals, msg.online);
+        online = msg.online;
         if (msg.room === 'lobby') lobby.setTaken(msg.taken, myCharacter);
         const seen = new Set<string>();
         for (const p of msg.players) {
@@ -304,27 +341,94 @@ async function boot() {
   title.onPlay = play;
   // The server confirms (or refuses) the pick with a 'character' message.
   lobby.onPick = (id) => net.send({ t: 'character', character: id });
-  // START HEIST: step into the portal closest to filling up (most players still needed least).
-  lobby.onQuickJoin = () => {
-    if (scene !== 'lobby' || lobby.pickerOpen) return;
-    const open = lobbyData.portals
-      .map((p) => ({ p, count: portals.find((s) => s.size === p.size)?.count ?? 0 }))
-      .filter(({ p, count }) => count < p.size && !LobbyMap.inside(p, me.x, me.y))
-      .sort((a, b) => a.p.size - a.count - (b.p.size - b.count) || a.p.size - b.p.size);
-    const pick = open[0];
-    if (!pick) return;
-    const seat = pick.count;
-    me.x = (pick.p.x + 1.2 + (seat % 3) * 1.3) * ART_TILE;
-    me.y = (pick.p.y + 2.2 + Math.floor(seat / 3) * 1.4) * ART_TILE;
-    me.facing = 'down';
-    frameCamera(true);
+  lobby.onLoadout = () => lobby.openPicker(myCharacter);
+  lobby.onPortal = (size) => joinPortal(size);
+  lobby.onStart = () => {
+    const s = startState();
+    if (s.kind === 'none') {
+      flashUntil = performance.now() + 1500;
+      lobby.nudgeStart('Choose a party size first: click a portal below the table, or walk into one.');
+    } else if (s.kind === 'waiting') {
+      const missing = s.size - s.count;
+      lobby.nudgeStart(`Can't start yet: ${missing} more crew member${missing > 1 ? 's' : ''} needed in the ${s.size}-player portal.`);
+    } else if (s.kind === 'countdown') {
+      lobby.nudgeStart(`Starting in ${s.seconds}... hold tight!`);
+    } else {
+      lobby.nudgeStart('Not connected to the game server.');
+    }
   };
+  // Exit: leave the server on purpose and go back to the title screen.
+  lobby.onExit = () => {
+    setScene('title');
+    net.disconnect();
+    remotes.clear();
+    portals = [];
+    online = 0;
+    title.setBusy(false);
+  };
+  settings.onChange(() => frameCamera(true));
+
+  /** The party size you're standing in, if any. */
+  function myPortal(): number | null {
+    return lobbyData.portals.find((p) => LobbyMap.inside(p, me.x, me.y))?.size ?? null;
+  }
+
+  /**
+   * Picking a portal (click, or a row in the Heist Lobby panel): step into its next free
+   * seat. Picking the one you're in steps you back out. The server counts whoever stands
+   * in a portal, so this is the same as walking in.
+   */
+  function joinPortal(size: number) {
+    if (scene !== 'lobby' || lobby.panelOpen) return;
+    const p = lobbyData.portals.find((q) => q.size === size);
+    if (!p) return;
+    if (myPortal() === size) {
+      me.x = (p.x + p.w / 2) * ART_TILE;
+      me.y = (p.y - 0.9) * ART_TILE;
+      me.facing = 'up';
+    } else {
+      const seat = Math.min(portals.find((s) => s.size === size)?.count ?? 0, size - 1);
+      me.x = (p.x + 1.2 + (seat % 3) * ((p.w - 2.4) / 2)) * ART_TILE;
+      me.y = (p.y + 2.4 + Math.floor(seat / 3) * 1.3) * ART_TILE;
+      me.facing = 'down';
+    }
+    frameCamera(true);
+  }
+
+  function startState(): StartState {
+    if (!net.connected) return { kind: 'offline' };
+    const size = myPortal();
+    const state = portals.find((s) => s.size === size);
+    if (size === null || !state) return { kind: 'none' };
+    if (state.countdown !== null) return { kind: 'countdown', size, seconds: state.countdown };
+    return { kind: 'waiting', size, count: state.count };
+  }
+
+  // Portals are real controls: hover highlights one, click joins (or leaves) it.
+  const portalAtScreen = (clientX: number, clientY: number) => {
+    const wx = viewX + (clientX * dpr) / scale;
+    const wy = viewY + (clientY * dpr) / scale;
+    // The pad and its sign above it.
+    return lobbyData.portals.find((p) => LobbyMap.inside({ x: p.x, y: p.y - 1.1, w: p.w, h: p.h + 1.1 }, wx, wy))?.size ?? null;
+  };
+  canvas.addEventListener('mousemove', (e) => {
+    hoverPortal = scene === 'lobby' && !lobby.panelOpen ? portalAtScreen(e.clientX, e.clientY) : null;
+    canvas.style.cursor = hoverPortal ? 'pointer' : '';
+  });
+  canvas.addEventListener('mouseleave', () => {
+    hoverPortal = null;
+    canvas.style.cursor = '';
+  });
+  canvas.addEventListener('click', (e) => {
+    const size = scene === 'lobby' ? portalAtScreen(e.clientX, e.clientY) : null;
+    if (size) joinPortal(size);
+  });
   setScene('title');
   window.addEventListener('resize', resize);
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile } }); // for playtests
 
   // ---------- Update ----------
 
@@ -404,16 +508,21 @@ async function boot() {
     for (const r of remotes.values()) r.bandit.follow(r.state.x, r.state.y, r.state.facing, r.state.moving, r.state.sprint, r.state.stunned);
 
     if (scene === 'lobby') {
-      if (lobby.pickerOpen) {
-        if (keyPressed('Escape')) lobby.closePicker();
-        else if (keyPressed('KeyA') || keyPressed('ArrowLeft')) lobby.movePick(-1);
-        else if (keyPressed('KeyD') || keyPressed('ArrowRight')) lobby.movePick(1);
-        else if (input.action) lobby.confirmPick();
+      if (lobby.panelOpen) {
+        // A panel is open (Loadout, Map Info, Settings, Exit): the player stands still.
+        if (keyPressed('Escape')) lobby.navigate('lobby');
+        else if (lobby.pickerOpen) {
+          if (keyPressed('KeyA') || keyPressed('ArrowLeft')) lobby.movePick(-1);
+          else if (keyPressed('KeyD') || keyPressed('ArrowRight')) lobby.movePick(1);
+          else if (input.action) lobby.confirmPick();
+        }
         me.update({ dx: 0, dy: 0, sprint: false }, lobbyMap);
       } else {
         me.update(input, lobbyMap);
         if (input.action && nearWardrobe()) lobby.openPicker(myCharacter);
       }
+      lobby.setPortals(portals, online, myPortal());
+      lobby.setStart(startState());
       sendPosition();
       frameCamera(false);
       return;
@@ -482,6 +591,8 @@ async function boot() {
     // Snap the camera to whole screen pixels so the art stays crisp.
     const camX = Math.round(camera.x * scale) / scale;
     const camY = Math.round(camera.y * scale) / scale;
+    viewX = camX;
+    viewY = camY;
     const vw = camera.viewW;
     const vh = camera.viewH;
     ctx.imageSmoothingEnabled = false;
@@ -511,11 +622,13 @@ async function boot() {
         ctx.restore();
       }
       // Lamplight over the room (and the players in it).
-      blit(lobbyMap.shade, lobbyMap.widthPx, lobbyMap.heightPx);
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      blit(lobbyMap.glow, lobbyMap.widthPx, lobbyMap.heightPx);
-      ctx.restore();
+      if (settings.values.lighting) {
+        blit(lobbyMap.shade, lobbyMap.widthPx, lobbyMap.heightPx);
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        blit(lobbyMap.glow, lobbyMap.widthPx, lobbyMap.heightPx);
+        ctx.restore();
+      }
       if (scene === 'title') return;
       ctx.save();
       ctx.scale(scale, scale);
@@ -525,7 +638,7 @@ async function boot() {
       ctx.restore();
       drawPortalLabels(camX, camY);
       drawWardrobePrompt(camX, camY);
-      drawNameTags(camX, camY);
+      if (settings.values.nameTags) drawNameTags(camX, camY);
       return;
     }
 
@@ -538,7 +651,7 @@ async function boot() {
     actors.forEach((b) => b.draw(ctx, camX, camY));
     ctx.restore();
     blit(estate.above, estate.widthPx, estate.heightPx);
-    lighting.draw(ctx, camX, camY, vw, vh, scale);
+    if (settings.values.lighting) lighting.draw(ctx, camX, camY, vw, vh, scale);
     // Characters again over the darkness, so players can always see each other.
     ctx.save();
     ctx.scale(scale, scale);
@@ -550,7 +663,7 @@ async function boot() {
     for (const r of remotes.values()) if (r.state.carrying) lootBag(r.bandit, camX, camY);
     ctx.restore();
     drawGetawayLabel(camX, camY);
-    drawNameTags(camX, camY);
+    if (settings.values.nameTags) drawNameTags(camX, camY);
   }
 
   /** Metal plates with hazard edges; dim while recharging, outlined for the Saboteur's cursor. */
@@ -704,10 +817,11 @@ async function boot() {
   function drawWardrobePrompt(camX: number, camY: number) {
     if (lobby.pickerOpen) return;
     const w = lobbyData.wardrobe;
+    const at = w.prompt ?? { x: w.x + w.w / 2, y: w.y - 1 };
     const near = nearWardrobe();
     const size = Math.round(9 * dpr);
-    const sx = ((w.x + w.w / 2) * ART_TILE - camX) * scale;
-    const sy = ((w.y - 4.2) * ART_TILE - camY) * scale + (near ? Math.sin(frame / 8) * 2 * dpr : 0);
+    const sx = (at.x * ART_TILE - camX) * scale;
+    const sy = (at.y * ART_TILE - camY) * scale + (near ? Math.sin(frame / 8) * 2 * dpr : 0);
     ctx.save();
     ctx.globalAlpha = near ? 1 : 0.75;
     keyTag('E', 'CUSTOMIZE', sx, sy, near ? '#ffc94a' : '#fff4e6', size);
@@ -716,12 +830,18 @@ async function boot() {
 
   /** The tinted pad under the players. */
   function drawPortalFloors(camX: number, camY: number) {
+    const mine = myPortal();
+    const flashing = performance.now() < flashUntil;
     for (const p of lobbyData.portals) {
       const state = portals.find((s) => s.size === p.size);
       const counting = state?.countdown != null;
       ctx.save();
       ctx.fillStyle = PORTAL_COLORS[p.size] ?? '#ffffff';
-      ctx.globalAlpha = counting ? 0.35 + 0.3 * Math.abs(Math.sin(frame / 6)) : 0.26;
+      let alpha = 0.26;
+      if (p.size === mine) alpha = 0.38 + 0.08 * Math.sin(frame / 10);
+      else if (p.size === hoverPortal) alpha = 0.34;
+      if (flashing) alpha = 0.3 + 0.3 * Math.abs(Math.sin(frame / 5));
+      ctx.globalAlpha = counting ? 0.35 + 0.3 * Math.abs(Math.sin(frame / 6)) : alpha;
       ctx.fillRect(p.x * ART_TILE - camX, p.y * ART_TILE - camY, p.w * ART_TILE, p.h * ART_TILE);
       ctx.restore();
     }
@@ -730,11 +850,14 @@ async function boot() {
   /** Neon frames, a crew icon per seat, and a sign plate; drawn over the lamplight so they glow. */
   function drawPortalFrames(camX: number, camY: number) {
     const pulse = 0.65 + 0.35 * Math.sin(frame / 15);
+    const mine = myPortal();
     for (const p of lobbyData.portals) {
       const state = portals.find((s) => s.size === p.size);
       const color = PORTAL_COLORS[p.size] ?? '#ffffff';
+      const selected = p.size === mine;
+      const hovered = p.size === hoverPortal;
       const x = Math.round(p.x * ART_TILE - camX);
-      const y = Math.round(p.y * ART_TILE - camY);
+      const y = Math.round(p.y * ART_TILE - camY) - (hovered && !selected ? 1 : 0);
       const w = p.w * ART_TILE;
       const h = p.h * ART_TILE;
       ctx.save();
@@ -743,10 +866,19 @@ async function boot() {
       ctx.lineWidth = 4;
       ctx.strokeRect(x, y, w, h);
       ctx.shadowColor = color;
-      ctx.shadowBlur = 10 * dpr * pulse;
+      ctx.shadowBlur = 10 * dpr * (selected || hovered ? 1.4 : pulse);
       ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = selected ? 3 : 2;
       ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
+      if (selected) {
+        // Marching dashes inside the frame: this is your party.
+        ctx.setLineDash([4, 4]);
+        ctx.lineDashOffset = -frame / 3;
+        ctx.globalAlpha = 0.9;
+        ctx.strokeRect(x + 9.5, y + 9.5, w - 19, h - 19);
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
       ctx.globalAlpha = 0.55;
       ctx.lineWidth = 1;
       ctx.strokeRect(x + 6.5, y + 6.5, w - 13, h - 13);
@@ -814,6 +946,16 @@ async function boot() {
         ctx.fillText(`${state?.count ?? 0}/${p.size}`, cx + 2 * dpr, countY + 2 * dpr);
         ctx.fillStyle = '#fff4e6';
         ctx.fillText(`${state?.count ?? 0}/${p.size}`, cx, countY);
+      }
+      // Under the count: your party, or what a click will do.
+      const mine = myPortal() === p.size;
+      const note = mine ? (hoverPortal === p.size ? 'CLICK TO LEAVE' : 'YOUR PARTY') : hoverPortal === p.size ? 'CLICK TO JOIN' : '';
+      if (note) {
+        ctx.font = `${Math.round(7 * dpr)}px "Press Start 2P"`;
+        ctx.fillStyle = '#0e0a1a';
+        ctx.fillText(note, cx + dpr, ((p.y + p.h - 0.4) * ART_TILE - camY) * scale + dpr);
+        ctx.fillStyle = mine ? color : '#fff4e6';
+        ctx.fillText(note, cx, ((p.y + p.h - 0.4) * ART_TILE - camY) * scale);
       }
     }
   }

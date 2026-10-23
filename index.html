@@ -40,26 +40,50 @@
       </div>
     </div>
     <div id="lobby" class="screen" hidden>
-      <div class="badge">
-        <span class="badge-logo">VAULT BREAKERS</span>
-        <span class="badge-sub">SAFEHOUSE LOBBY</span>
-        <span class="badge-tag">Gear up. Plan. Break in.</span>
-      </div>
-      <div class="panel portals-panel">
-        <div class="portals-head"><h2>Heist portals</h2><span class="online"><span class="dot"></span> <span id="online-count">0</span> online</span></div>
-        <div id="portal-list"></div>
-      </div>
-      <div class="lobby-bottom">
-        <div id="my-card" class="card"></div>
-        <div class="start-box">
-          <span class="lobby-hint">Walk into a portal with your crew · <kbd>E</kbd> at the wardrobe to customize</span>
-          <button id="start-btn" class="btn start">START HEIST <span class="arrow">&gt;</span></button>
+      <header class="brand px-panel">
+        <img class="mascot" src="/assets/ui/mascot.png" alt="" />
+        <div class="brand-text">
+          <h1 class="brand-title">BANDIT</h1>
+          <span class="brand-sub">THE HEIST GAME</span>
+          <span class="brand-tag">Plan Traps. Outsmart. Steal. Survive.</span>
         </div>
+      </header>
+      <nav id="lobby-nav" class="side-nav px-panel" aria-label="Lobby menu"></nav>
+      <section class="party-panel px-panel" aria-label="Heist lobby">
+        <div class="party-head"><h2>Heist Lobby</h2><span class="online"><span class="dot"></span> <span id="online-count">0</span> online</span></div>
+        <div id="portal-list"></div>
+        <p id="party-status" class="party-status"></p>
+      </section>
+      <div id="my-card" class="profile px-panel"></div>
+      <div class="start-box">
+        <p class="lobby-hint">Walk into a portal with your crew to start the heist.</p>
+        <button id="start-btn" class="start-btn blocked" type="button">START HEIST <span class="arrow">&gt;</span></button>
+        <p id="start-status" class="start-status"></p>
       </div>
       <div id="picker" class="modal picker" hidden>
-        <h2>Choose your crew member</h2>
+        <h2>Loadout: choose your crew member</h2>
         <div id="picker-cards"></div>
         <p class="hint dark"><kbd>A</kbd> <kbd>D</kbd> choose · <kbd>E</kbd> confirm · <kbd>Esc</kbd> cancel</p>
+        <button class="btn small" type="button" data-close>CLOSE</button>
+      </div>
+      <div id="map-panel" class="modal wide" hidden>
+        <h2>Map info</h2>
+        <div id="map-panel-body"></div>
+        <button class="btn small" type="button" data-close>CLOSE</button>
+      </div>
+      <div id="settings-panel" class="modal" hidden>
+        <h2>Settings</h2>
+        <div id="settings-panel-body" class="settings"></div>
+        <p class="hint dark">Saved in this browser.</p>
+        <button class="btn small" type="button" data-close>DONE</button>
+      </div>
+      <div id="exit-panel" class="modal" hidden>
+        <h2>Leave the safehouse?</h2>
+        <p>You'll disconnect and go back to the title screen. Your crew will see you leave.</p>
+        <div class="modal-actions">
+          <button class="btn small" type="button" data-close>STAY</button>
+          <button id="exit-confirm" class="btn small danger" type="button">EXIT</button>
+        </div>
       </div>
       <div id="disconnected" class="modal" hidden>
         <h2>Disconnected</h2>
