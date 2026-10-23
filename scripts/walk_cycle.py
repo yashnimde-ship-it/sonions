@@ -87,8 +87,11 @@ def narrow_stance(view):
     out = a.copy()
     out[hip:] = 0
     top_leg = hip - 1
+    # The legs angle in down to the ankle; the shoes move as solid pieces below it, so they
+    # keep their shape (toes still pointing outward) instead of being slanted inward.
+    ankle = bottom - max(4, round((bottom - top) * 0.13))
     for y in range(top_leg, bottom + 1):
-        t = (y - top_leg) / max(1, bottom - top_leg)
+        t = min(1.0, (y - top_leg) / max(1, ankle - top_leg))
         d = round(pull * t)
         for x in np.nonzero(opaque[y])[0]:
             nx = x + d if x < cx else x - d
