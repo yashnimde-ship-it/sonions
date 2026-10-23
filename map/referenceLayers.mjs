@@ -179,7 +179,7 @@ export function doorSprites(ref, floorLayer, slabs = M.DOOR_SLABS) {
         closed.set([ref.rgb[s], ref.rgb[s + 1], ref.rgb[s + 2], 255], (j * w + i) * 4);
       }
     // Side doors: the reference shows them open, so that's the open sprite.
-    if (d.side) return { id: d.id, name: d.name, box: d.box, x, y, w, h, closed: sideLeaf(w, h), open: closed };
+    if (d.side) return { id: d.id, name: d.name, box: d.box, x, y, w, h, closed: d.style === 'metal' ? metalDoor(w, h) : sideLeaf(w, h), open: closed };
     // The door's wood color: the median of the slab's middle.
     const wood = [];
     for (let j = Math.floor(h * 0.35); j < h * 0.75; j++)
@@ -244,6 +244,42 @@ function sideLeaf(w, h) {
       else if (b === 1) c = LIGHT;
       else if (a === Math.floor(len / 3) || a === Math.floor((2 * len) / 3)) c = DARK.map((v, k) => Math.round((v + WOOD[k]) / 2));
       if (b === thick - 2 && Math.abs(a - Math.floor(len / 2)) <= 1 && thick > 3) c = KNOB;
+      const [i, j] = vertical ? [b, a] : [a, b];
+      out.set([...c, 255], (j * w + i) * 4);
+    }
+  return out;
+}
+
+/**
+ * A ship's steel sliding door, seen from above: two grey plates meeting at a seam, a
+ * riveted frame, hazard stripes on the ends and a red "locked" lamp on the seam.
+ */
+function metalDoor(w, h) {
+  const DARK = [22, 24, 30];
+  const EDGE = [70, 76, 88];
+  const PLATE = [118, 126, 140];
+  const LIGHT = [168, 176, 190];
+  const RIVET = [200, 206, 216];
+  const Y = [232, 184, 40];
+  const K = [26, 22, 18];
+  const LAMP = [255, 60, 50];
+  const out = new Uint8Array(w * h * 4);
+  const vertical = h >= w;
+  const len = vertical ? h : w; // along the wall
+  const thick = vertical ? w : h; // across it
+  const seam = Math.floor(len / 2);
+  for (let a = 0; a < len; a++)
+    for (let b = 0; b < thick; b++) {
+      let c = PLATE;
+      const ends = a < 3 || a >= len - 3;
+      if (a === 0 || a === len - 1 || b === 0 || b === thick - 1) c = DARK;
+      else if (ends) c = ((a + b) >> 1) % 2 ? Y : K; // hazard stripes where the door meets the frame
+      else if (a === seam || a === seam - 1) c = DARK; // the seam between the two plates
+      else if (b === 1) c = LIGHT;
+      else if (b === thick - 2) c = EDGE;
+      else if ((a - 3) % 6 === 3 && (b === 2 || b === thick - 3)) c = RIVET;
+      else if (a % 6 === 0) c = EDGE; // panel lines
+      if (thick > 6 && Math.abs(a - seam + 0.5) <= 1 && Math.abs(b - (thick - 1) / 2) <= 1) c = LAMP;
       const [i, j] = vertical ? [b, a] : [a, b];
       out.set([...c, 255], (j * w + i) * 4);
     }

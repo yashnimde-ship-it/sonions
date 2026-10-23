@@ -61,6 +61,20 @@ export const OFF_LIMITS = ['Open Sea'];
 
 /** Interior walls (the hull is handled by inside()), with gaps for the doorways. */
 export const WALLS = [
+  // ---- Doorway gaps, sealed; each door opens exactly its drawn frame ----
+  [24.8, 25.8, 26.4, 28.4], // sealed: cargo hold door (re-opened at its drawn frame)
+  [25.2, 42.2, 26.4, 44.4], // sealed: engine room door (re-opened at its drawn frame)
+  [22.6, 47.2, 24.2, 48.2], // sealed: cargo store door (re-opened at its drawn frame)
+  [28.4, 23.2, 29.8, 24.2], // sealed: storage door (re-opened at its drawn frame)
+  [46.6, 23.2, 48.4, 24.2], // sealed: crew quarters door (re-opened at its drawn frame)
+  [65.6, 23.2, 67.6, 24.2], // sealed: locker room door (re-opened at its drawn frame)
+  [75.6, 23.4, 78.0, 24.4], // sealed: laundry door (re-opened at its drawn frame)
+  [30.6, 28.2, 32.6, 29.4], // sealed: engine room door (re-opened at its drawn frame)
+  [48.4, 28.2, 50.2, 29.4], // sealed: engine room door (re-opened at its drawn frame)
+  [62.6, 28.2, 64.6, 29.2], // sealed: maintenance door (re-opened at its drawn frame)
+  [73.6, 38.4, 74.4, 40.4], // sealed: maintenance door (re-opened at its drawn frame)
+  [58.6, 49.2, 59.4, 52.6], // sealed: generator room hatch (re-opened at its drawn frame)
+  [77.0, 35.4, 78.0, 37.8], // sealed: fuel storage door (re-opened at its drawn frame)
   // ---- Cargo hold ----
   [8, 17.6, 25.6, 18.4], // north
   [25.4, 12.4, 26.4, 18.4], // storage, west
@@ -217,22 +231,24 @@ export const SOLIDS = [
   [74.4, 53.2, 92.6, 55.6], // floor pipes
 ];
 
-/** Doors in the doorway gaps: steel leaves (drawn when shut) that start closed. */
-const door = (id, name, box) => ({ id, name, box, side: true });
+/** Steel sliding doors, fitted to the frames drawn in the art. They start closed. */
+// `box` is the frame as drawn (where the door sprite goes); `hit` is the doorway through the
+// whole wall (what it blocks when shut).
+const door = (id, name, box, hit) => ({ id, name, box, hit, side: true, style: 'metal' });
 export const DOORS = [
-  door('door-cargo', 'cargo hold door', [24.8, 25.8, 26.4, 28.4]),
-  door('door-cargo-engine', 'engine room door', [25.2, 42.2, 26.4, 44.4]),
-  door('door-cargo-store', 'cargo store door', [22.6, 47.2, 24.2, 48.2]),
-  door('door-storage', 'storage door', [28.4, 23.2, 29.8, 24.2]),
-  door('door-crew', 'crew quarters door', [46.6, 23.2, 48.4, 24.2]),
-  door('door-locker', 'locker room door', [65.6, 23.2, 67.6, 24.2]),
-  door('door-laundry', 'laundry door', [75.6, 23.4, 78.0, 24.4]),
-  door('door-engine-1', 'engine room door', [30.6, 28.2, 32.6, 29.4]),
-  door('door-engine-2', 'engine room door', [48.4, 28.2, 50.2, 29.4]),
-  door('door-maint-n', 'maintenance door', [62.6, 28.2, 64.6, 29.2]),
-  door('door-maint-e', 'maintenance door', [73.6, 38.4, 74.4, 40.4]),
-  door('door-generator', 'generator room hatch', [58.6, 49.2, 59.4, 52.6]),
-  door('door-fuel', 'fuel storage door', [77.0, 35.4, 78.0, 37.8]),
+  door('door-cargo', 'cargo hold door', [24.8125, 25.75, 26.4375, 27.875], [24.8, 25.812, 26.4, 27.875]),
+  door('door-cargo-engine', 'engine room door', [25.4375, 42.0, 26.75, 44.5], [25.2, 42.0, 26.75, 44.5]),
+  door('door-cargo-store', 'cargo store door', [22.6875, 47.25, 24.0625, 48.3125], [22.812, 47.2, 24.0, 48.25]),
+  door('door-storage', 'storage door', [29.25, 22.9375, 31.25, 24.1875], [29.25, 22.938, 31.25, 24.2]),
+  door('door-crew', 'crew quarters door', [47.75, 23.375, 49.875, 24.4375], [47.75, 23.2, 49.875, 24.438]),
+  door('door-locker', 'locker room door', [66.875, 23.375, 69.375, 24.4375], [66.875, 23.2, 69.375, 24.438]),
+  door('door-laundry', 'laundry door', [74.9375, 23.25, 77.5, 24.4375], [74.938, 23.25, 77.5, 24.438]),
+  door('door-engine-1', 'engine room door', [31.0, 28.25, 32.6875, 29.375], [31.0, 28.2, 32.688, 29.4]),
+  door('door-engine-2', 'engine room door', [48.5625, 28.25, 50.375, 29.375], [48.562, 28.2, 50.375, 29.4]),
+  door('door-maint-n', 'maintenance door', [61.25, 28.25, 64.375, 29.375], [61.25, 28.2, 64.375, 29.375]),
+  door('door-maint-e', 'maintenance door', [73.4375, 38.125, 74.375, 40.5], [73.562, 38.25, 74.438, 40.375]),
+  door('door-generator', 'generator room hatch', [58.6875, 49.0, 59.5625, 52.625], [58.6, 48.938, 59.562, 52.5]),
+  door('door-fuel', 'fuel storage door', [77.5625, 36.125, 78.6875, 38.5], [77.0, 36.062, 78.375, 38.375]),
 ];
 
 /**
