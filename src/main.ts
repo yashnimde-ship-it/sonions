@@ -81,9 +81,9 @@ interface Remote {
 // Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
 // that). Bank it by walking into the GETAWAY zone on the street, in tiles.
 const CARRY_SLOW = 0.35;
-// A Runner respawns at the map entrance after a short knockout.
-const KO_RESPAWN_MS = 1500;
-const KO_FRAMES = Math.ceil((KO_RESPAWN_MS / 1000) * 60);
+// A knocked-out Runner respawns at the map entrance. The wait grows with every knockout this
+// round and with the loot they're worth: the diamond in their hands, and each one they've banked.
+const KO_RESPAWN = { baseMs: 3000, perKnockoutMs: 2500, carryingMs: 4000, perBankedMs: 1000, maxMs: 20000 };
 const KO_HP = 50;
 const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#ff4fb0' };
 // ---------- This tab's player, across reloads and dropped connections ----------
@@ -335,6 +335,10 @@ async function boot() {
   let hp = MAX_HP;
   let knockedOut = false;
   let respawnAt = 0;
+  /** This round's knockouts so far, and why the current wait is as long as it is. */
+  let knockouts = 0;
+  let koStartedAt = 0;
+  let koReasons: string[] = [];
   const trapFiredAt = new Map<string, number>();
   const trapHits = new Set<string>();
   /**
@@ -561,6 +565,7 @@ async function boot() {
     hp = MAX_HP;
     knockedOut = false;
     respawnAt = 0;
+    knockouts = 0;
     me.stunFrames = 0;
     trapFiredAt.clear();
     trapHits.clear();
@@ -1089,7 +1094,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1215,9 +1220,19 @@ async function boot() {
   }
 
   function beginKnockout() {
+    // Read what I'm worth now, before the server takes the diamond out of my hands.
+    const carrying = !!myDiamond();
+    const banked = diamonds.filter((d) => d.place.at === 'banked' && d.place.by === myId).length;
+    const ms = Math.min(KO_RESPAWN.maxMs, KO_RESPAWN.baseMs + knockouts * KO_RESPAWN.perKnockoutMs + (carrying ? KO_RESPAWN.carryingMs : 0) + banked * KO_RESPAWN.perBankedMs);
+    koReasons = [];
+    if (knockouts) koReasons.push(`+${(knockouts * KO_RESPAWN.perKnockoutMs) / 1000}s knocked out ${knockouts} time${knockouts > 1 ? 's' : ''} before`);
+    if (carrying) koReasons.push(`+${KO_RESPAWN.carryingMs / 1000}s carrying a diamond`);
+    if (banked) koReasons.push(`+${(banked * KO_RESPAWN.perBankedMs) / 1000}s ${banked} diamond${banked > 1 ? 's' : ''} banked`);
+    knockouts++;
     knockedOut = true;
-    respawnAt = performance.now() + KO_RESPAWN_MS;
-    me.stun(KO_FRAMES);
+    koStartedAt = performance.now();
+    respawnAt = koStartedAt + ms;
+    me.stun(Math.ceil((ms / 1000) * 60));
   }
 
   function respawnRunner() {
@@ -1886,6 +1901,7 @@ async function boot() {
     if (hideSeek() && !result && !isGhost(myId)) drawDarkness(camX, camY);
     if (hideSeek() && !result) drawHideSeekMarks(camX, camY);
     if (settings.values.nameTags && !result) drawNameTags(camX, camY);
+    drawKnockout();
     drawTrapMinimap();
     if (phase === 'setup' && !match?.saboteur && !hideSeek()) drawBlueprint(camX, camY);
     if (match?.saboteur && !result) drawTrapMarkers(camX, camY);
@@ -2799,6 +2815,41 @@ async function boot() {
     ctx.fillRect(sx - w / 2, sy - size * 1.7, w, size * 1.7);
     ctx.fillStyle = color;
     ctx.fillText(text, sx, sy - size * 0.35);
+  }
+
+  /** While I'm knocked out: the countdown to respawning, and what made it that long. */
+  function drawKnockout() {
+    if (!knockedOut || scene !== 'match' || result) return;
+    const left = Math.max(0, respawnAt - performance.now());
+    const total = Math.max(1, respawnAt - koStartedAt);
+    const cx = canvas.width / 2;
+    const cy = canvas.height * 0.3; // above my head, below the round timer
+    const big = Math.round(14 * dpr);
+    const small = Math.round(7 * dpr);
+    const lines = koReasons.length ? koReasons : ['first knockout this round'];
+    const w = 300 * dpr;
+    const h = (54 + lines.length * 12) * dpr;
+    ctx.save();
+    ctx.fillStyle = 'rgba(8, 6, 16, 0.88)';
+    ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
+    ctx.strokeStyle = '#ff3b4a';
+    ctx.lineWidth = 2 * dpr;
+    ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.font = `${big}px "Press Start 2P"`;
+    ctx.fillStyle = '#ff8a8a';
+    ctx.fillText(`KNOCKED OUT · ${Math.ceil(left / 1000)}`, cx, cy - h / 2 + 10 * dpr);
+    // The bar drains to the respawn.
+    const bw = w - 32 * dpr;
+    ctx.fillStyle = '#2a2236';
+    ctx.fillRect(cx - bw / 2, cy - h / 2 + 32 * dpr, bw, 5 * dpr);
+    ctx.fillStyle = '#ff3b4a';
+    ctx.fillRect(cx - bw / 2, cy - h / 2 + 32 * dpr, bw * (left / total), 5 * dpr);
+    ctx.font = `${small}px "Press Start 2P"`;
+    ctx.fillStyle = '#c9c2d8';
+    lines.forEach((l, i) => ctx.fillText(l.toUpperCase(), cx, cy - h / 2 + (46 + i * 12) * dpr));
+    ctx.restore();
   }
 
   /** The round minimap at the top left, centred on the trap that just caught someone. */
