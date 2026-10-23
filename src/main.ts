@@ -1,12 +1,13 @@
 import '@fontsource/press-start-2p';
 import { ART_TILE, CHAR_GLOW, CHARACTERS, type CharacterId, characterSheet, HITBOX, ZOOM } from './config';
 import { CHARACTER_INFO } from './data/characters';
+import { JAM_REACH, MAX_HP, TRAP_ACTIVE_MS, TRAP_ARM_MS, TRAP_COOLDOWN_MS, TRAP_DAMAGE, TRAP_RADIUS, TRAP_STUN_MS, TRAPS } from './data/traps';
 import { Bandit, DRAW_H } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
 import { type EstateJson, type Interactable, TileMap } from './map/TileMap';
 import { NetClient } from './net/NetClient';
-import { NET_HZ, type PlayerState, type PortalState, type ServerMsg } from './net/protocol';
+import { type ClientMsg, NET_HZ, type PlayerState, type PortalState, type ServerMsg } from './net/protocol';
 import { CameraSystem } from './systems/CameraSystem';
 import { InteractionSystem } from './systems/InteractionSystem';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
@@ -40,6 +41,9 @@ interface Remote {
 // Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
 // that). Bank it by walking into the GETAWAY zone on the street, in tiles.
 const CARRY_SLOW = 0.35;
+// Knocked out at 0 HP: down for 4 s, then back up with half health.
+const KO_FRAMES = 240;
+const KO_HP = 50;
 const GETAWAY = { x: 39.5, y: 55.6, w: 12, h: 3.8 };
 const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#ff4fb0' };
 const BANNER_MS = 4000;
@@ -71,6 +75,15 @@ async function boot() {
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   const ctx = canvas.getContext('2d')!;
   const hudEl = document.getElementById('hud')!;
+  // The Saboteur fires a trap plate by clicking it.
+  const toWorld = (e: PointerEvent): [number, number] => [(e.clientX * dpr) / scale + camera.x, (e.clientY * dpr) / scale + camera.y];
+  canvas.addEventListener('pointermove', (e) => ([mouseX, mouseY] = toWorld(e)));
+  canvas.addEventListener('pointerdown', (e) => {
+    if (scene !== 'match' || match?.saboteur !== myId) return;
+    const [x, y] = toWorld(e);
+    const trap = trapUnder(x, y);
+    if (trap && trapReady(trap.id)) net.send({ t: 'trap', id: trap.id });
+  });
   const banner = document.getElementById('match-banner')!;
   let dpr = 1;
   let scale = ZOOM;
@@ -89,6 +102,18 @@ async function boot() {
   let carrying: Interactable | null = null;
   let banked = 0;
   let bankedCount = 0;
+  /** My health (Runners only), and when each trap plate last fired (performance.now ms). */
+  let hp = MAX_HP;
+  let knockedOut = false;
+  const trapFiredAt = new Map<string, number>();
+  const trapHits = new Set<string>();
+  /** Plates jammed by Trap Jam, until when (performance.now ms). */
+  const trapJammedUntil = new Map<string, number>();
+  /** When traps were last checked, so a slow frame can't skip over a plate's live window. */
+  let lastTrapCheck = 0;
+  /** The mouse in world (art) pixels, for the Saboteur picking traps. */
+  let mouseX = -1;
+  let mouseY = -1;
   let sendTimer = 0;
   let lastSprint = false;
 
@@ -163,6 +188,14 @@ async function boot() {
     carrying = null;
     banked = 0;
     bankedCount = 0;
+    hp = MAX_HP;
+    knockedOut = false;
+    me.stunFrames = 0;
+    trapFiredAt.clear();
+    trapHits.clear();
+    trapJammedUntil.clear();
+    lastTrapCheck = 0;
+    hud.setHealth(msg.saboteur === myId ? null : hp);
     hud.setLoot(0, 0, interactions.lootables.length);
     hud.setCarrying(null);
     hud.hideMessage();
@@ -245,6 +278,20 @@ async function boot() {
         if (r && msg.ability === 'quickstep') r.bandit.showTrail(QUICKSTEP_FRAMES + 8);
         break;
       }
+      case 'trap':
+        trapFiredAt.set(msg.id, performance.now());
+        break;
+      case 'healed':
+        if (match && match.saboteur !== myId) healMe();
+        break;
+      case 'jam': {
+        const now = performance.now();
+        trapJammedUntil.set(msg.id, now + msg.ms);
+        // A plate that was still flashing or live is defused: its shock never lands.
+        const firedAt = trapFiredAt.get(msg.id);
+        if (firedAt !== undefined && now < firedAt + TRAP_ARM_MS + TRAP_ACTIVE_MS) trapHits.add(`${msg.id}@${firedAt}`);
+        break;
+      }
       case 'left':
         remotes.delete(msg.id);
         break;
@@ -287,7 +334,61 @@ async function boot() {
   function sendPosition() {
     if (++sendTimer < 60 / NET_HZ) return;
     sendTimer = 0;
-    net.send({ t: 'move', room: scene === 'match' ? 'match' : 'lobby', x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, facing: me.facing, moving: me.moving, sprint: lastSprint, carrying: !!carrying });
+    net.send({ t: 'move', room: scene === 'match' ? 'match' : 'lobby', x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, facing: me.facing, moving: me.moving, sprint: lastSprint, carrying: !!carrying, hp, stunned: me.stunned });
+  }
+
+  /** Everything an ability may need, gathered fresh when Q is pressed. */
+  function abilityContext() {
+    const crew = [...remotes.entries()]
+      .filter(([id]) => id !== match?.saboteur)
+      .map(([id, r]) => ({ id, x: r.bandit.x, y: r.bandit.y, hp: r.state.hp }));
+    return { me, send: (m: ClientMsg) => net.send(m), hp, setHp: healMe, crew };
+  }
+
+  /** Back to full health (First Aid); also gets a knocked-out Runner straight back up. */
+  function healMe(to = MAX_HP) {
+    hp = to;
+    if (knockedOut) {
+      knockedOut = false;
+      me.stunFrames = 0;
+    }
+    hud.setHealth(hp);
+  }
+
+  // ---------- Traps ----------
+
+  const trapUnder = (x: number, y: number) => TRAPS.find((t) => Math.hypot(t.x - x, t.y - y) <= TRAP_RADIUS + 4);
+  const trapJammed = (id: string) => performance.now() < (trapJammedUntil.get(id) ?? 0);
+  const trapReady = (id: string) => !trapJammed(id) && performance.now() >= (trapFiredAt.get(id) ?? -Infinity) + TRAP_ARM_MS + TRAP_COOLDOWN_MS;
+
+  /** A Runner standing on a plate while it's live gets shocked: damage and a stun. */
+  function checkTraps() {
+    if (!match || match.saboteur === myId) return;
+    const now = performance.now();
+    const since = lastTrapCheck || now;
+    lastTrapCheck = now;
+    if (knockedOut && !me.stunned) {
+      knockedOut = false;
+      hp = KO_HP;
+      hud.setHealth(hp);
+    }
+    for (const t of TRAPS) {
+      const firedAt = trapFiredAt.get(t.id);
+      if (firedAt === undefined) continue;
+      // Live if its window [arm end, arm end + active] overlaps the time since the last check.
+      const liveFrom = firedAt + TRAP_ARM_MS;
+      const live = liveFrom <= now && liveFrom + TRAP_ACTIVE_MS > since;
+      const key = `${t.id}@${firedAt}`;
+      if (!live || trapHits.has(key) || Math.hypot(me.x - t.x, me.y - t.y) > TRAP_RADIUS) continue;
+      trapHits.add(key);
+      hp = Math.max(0, hp - TRAP_DAMAGE);
+      me.stun(Math.round((TRAP_STUN_MS / 1000) * 60));
+      if (hp === 0) {
+        knockedOut = true;
+        me.stun(KO_FRAMES);
+      }
+      hud.setHealth(hp);
+    }
   }
 
   function update() {
@@ -300,7 +401,7 @@ async function boot() {
       return;
     }
 
-    for (const r of remotes.values()) r.bandit.follow(r.state.x, r.state.y, r.state.facing, r.state.moving, r.state.sprint);
+    for (const r of remotes.values()) r.bandit.follow(r.state.x, r.state.y, r.state.facing, r.state.moving, r.state.sprint, r.state.stunned);
 
     if (scene === 'lobby') {
       if (lobby.pickerOpen) {
@@ -324,7 +425,7 @@ async function boot() {
       return;
     }
     if (performance.now() > bannerUntil) banner.hidden = true;
-    if (input.ability && !hud.messageOpen) abilities.use({ me, send: (m) => net.send(m) });
+    if (input.ability && !hud.messageOpen) abilities.use(abilityContext());
     abilities.render();
     if (hud.messageOpen) {
       if (input.action) hud.hideMessage();
@@ -332,6 +433,7 @@ async function boot() {
     } else {
       me.carryMult = carrying ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1;
       me.update(input, estate);
+      checkTraps();
       if (carrying && LobbyMap.inside(GETAWAY, me.x, me.y)) {
         banked += carrying.loot ?? 0;
         bankedCount++;
@@ -432,6 +534,7 @@ async function boot() {
     ctx.scale(scale, scale);
     drawTwinkles(camX, camY);
     drawGetaway(camX, camY);
+    drawTrapPlates(camX, camY);
     actors.forEach((b) => b.draw(ctx, camX, camY));
     ctx.restore();
     blit(estate.above, estate.widthPx, estate.heightPx);
@@ -442,11 +545,98 @@ async function boot() {
     ctx.globalAlpha = CHAR_GLOW;
     actors.forEach((b) => b.draw(ctx, camX, camY, false));
     ctx.globalAlpha = 1;
+    drawTrapEffects(camX, camY);
     if (carrying) lootBag(me, camX, camY);
     for (const r of remotes.values()) if (r.state.carrying) lootBag(r.bandit, camX, camY);
     ctx.restore();
     drawGetawayLabel(camX, camY);
     drawNameTags(camX, camY);
+  }
+
+  /** Metal plates with hazard edges; dim while recharging, outlined for the Saboteur's cursor. */
+  function drawTrapPlates(camX: number, camY: number) {
+    const sab = match?.saboteur === myId;
+    const hover = sab ? trapUnder(mouseX, mouseY) : undefined;
+    for (const t of TRAPS) {
+      const x = Math.round(t.x - TRAP_RADIUS - camX);
+      const y = Math.round(t.y - TRAP_RADIUS - camY);
+      const s = TRAP_RADIUS * 2;
+      ctx.save();
+      ctx.globalAlpha = trapReady(t.id) ? 1 : 0.5;
+      ctx.fillStyle = '#16121c';
+      ctx.fillRect(x, y, s, s);
+      // Hazard stripes around the edge, a grille in the middle.
+      for (let i = 0; i < s; i += 4) {
+        ctx.fillStyle = (i / 4) % 2 ? '#16121c' : '#e8b440';
+        ctx.fillRect(x + i, y, 4, 2);
+        ctx.fillRect(x + i, y + s - 2, 4, 2);
+        ctx.fillRect(x, y + i, 2, 4);
+        ctx.fillRect(x + s - 2, y + i, 2, 4);
+      }
+      ctx.fillStyle = '#5e6068';
+      ctx.fillRect(x + 4, y + 4, s - 8, s - 8);
+      ctx.fillStyle = '#33353d';
+      for (let i = 6; i < s - 6; i += 3) ctx.fillRect(x + 6, y + i, s - 12, 1);
+      if (abilities.has('trapJam') && Math.hypot(t.x - me.x, t.y - me.y) <= JAM_REACH && !trapJammed(t.id)) {
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#9fd0ff';
+        ctx.setLineDash([3, 2]);
+        ctx.strokeRect(x - 2.5, y - 2.5, s + 5, s + 5);
+        ctx.setLineDash([]);
+      }
+      if (hover === t) {
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = trapReady(t.id) ? '#ff4fb0' : '#6a6c78';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x - 2.5, y - 2.5, s + 5, s + 5);
+      }
+      ctx.restore();
+    }
+  }
+
+  /** Red warning flash while arming, then crackling sparks while live; drawn over the lighting. */
+  function drawTrapEffects(camX: number, camY: number) {
+    const now = performance.now();
+    for (const t of TRAPS) {
+      // Jammed: a blue lock-out with a wrench and the seconds left.
+      if (trapJammed(t.id)) {
+        const x = t.x - camX;
+        const y = t.y - camY;
+        ctx.fillStyle = 'rgba(80, 160, 255, 0.45)';
+        ctx.fillRect(x - TRAP_RADIUS, y - TRAP_RADIUS, TRAP_RADIUS * 2, TRAP_RADIUS * 2);
+        ctx.strokeStyle = '#9fd0ff';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x - TRAP_RADIUS + 0.5, y - TRAP_RADIUS + 0.5, TRAP_RADIUS * 2 - 1, TRAP_RADIUS * 2 - 1);
+        ctx.fillStyle = '#e6f8ff';
+        ctx.fillRect(x - 5, y - 1, 10, 2); // wrench handle
+        ctx.fillRect(x + 3, y - 3, 3, 6); // wrench head
+        ctx.fillRect(x - 6, y - 2, 2, 4);
+        continue;
+      }
+      const firedAt = trapFiredAt.get(t.id);
+      if (firedAt === undefined) continue;
+      const phase = now - firedAt;
+      const x = t.x - camX;
+      const y = t.y - camY;
+      if (trapHits.has(`${t.id}@${firedAt}`) && trapJammed(t.id)) continue; // defused mid-flash
+      if (phase < TRAP_ARM_MS) {
+        ctx.fillStyle = `rgba(255, 60, 60, ${Math.floor(phase / 100) % 2 ? 0.25 : 0.6})`;
+        ctx.fillRect(x - TRAP_RADIUS, y - TRAP_RADIUS, TRAP_RADIUS * 2, TRAP_RADIUS * 2);
+      } else if (phase < TRAP_ARM_MS + TRAP_ACTIVE_MS) {
+        ctx.fillStyle = 'rgba(140, 220, 255, 0.45)';
+        ctx.fillRect(x - TRAP_RADIUS, y - TRAP_RADIUS, TRAP_RADIUS * 2, TRAP_RADIUS * 2);
+        ctx.strokeStyle = '#e6f8ff';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 4; i++) {
+          const a = Math.random() * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + Math.cos(a) * 9 + (Math.random() - 0.5) * 6, y + Math.sin(a) * 9 - 6);
+          ctx.lineTo(x + Math.cos(a) * 16, y + Math.sin(a) * 16 - 10);
+          ctx.stroke();
+        }
+      }
+    }
   }
 
   /** The zone on the street where loot is banked. */
@@ -667,12 +857,21 @@ async function boot() {
 
   function drawNameTags(camX: number, camY: number) {
     const size = Math.round(8 * dpr);
-    const tag = (b: Bandit, id: string, name: string, character: CharacterId, bag = false) => {
+    const tag = (b: Bandit, id: string, name: string, character: CharacterId, bag = false, health = MAX_HP) => {
       const color = CHARACTER_INFO[character].color;
       const sx = (b.x - camX) * scale;
       const sy = (b.y - DRAW_H - (bag ? 15 : 3) - camY) * scale;
       const role = match?.saboteur === id ? ' [SAB]' : '';
       textTag(`${name}${role}`, sx, sy, id === myId ? '#ffe39a' : color, size);
+      // Hurt Runners show a small health bar over the name.
+      if (health < MAX_HP) {
+        const w = 40 * dpr;
+        const by = sy - size * 1.7 - 6 * dpr;
+        ctx.fillStyle = '#0e0a1a';
+        ctx.fillRect(sx - w / 2 - dpr, by - dpr, w + 2 * dpr, 5 * dpr);
+        ctx.fillStyle = health > 50 ? '#6fe07a' : health > 25 ? '#ffc94a' : '#ff5a5a';
+        ctx.fillRect(sx - w / 2, by, (w * health) / MAX_HP, 3 * dpr);
+      }
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.moveTo(sx - 4 * dpr, sy);
@@ -681,8 +880,8 @@ async function boot() {
       ctx.fill();
     };
     const inMatch = scene === 'match';
-    for (const [id, r] of remotes) tag(r.bandit, id, r.state.name, r.state.character, inMatch && r.state.carrying);
-    tag(me, myId, myName, myCharacter, inMatch && !!carrying);
+    for (const [id, r] of remotes) tag(r.bandit, id, r.state.name, r.state.character, inMatch && r.state.carrying, inMatch ? r.state.hp : MAX_HP);
+    tag(me, myId, myName, myCharacter, inMatch && !!carrying, inMatch ? hp : MAX_HP);
   }
 
   // Fixed 60 updates per second; draw once per animation frame.

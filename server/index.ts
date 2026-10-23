@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
+import { JAM_MS, MAX_HP, TRAP_ARM_MS, TRAP_COOLDOWN_MS, TRAPS } from '../src/data/traps.ts';
 import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Taken } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -34,6 +35,9 @@ interface Client {
 
 const clients = new Map<string, Client>();
 const matches = new Map<string, Set<string>>();
+/** Per match: who the Saboteur is, and each trap plate's state (ms timestamps). */
+const saboteurs = new Map<string, string>();
+const trapState = new Map<string, Map<string, { readyAt: number; jammedUntil: number }>>();
 const portalEnds = new Map<number, number>(); // portal size -> when its countdown ends (ms)
 let nextId = 1;
 let nextMatch = 1;
@@ -69,7 +73,13 @@ function leaveMatch(c: Client) {
     const other = clients.get(id);
     if (other) send(other, { t: 'left', id: c.state.id });
   }
-  if (!match.size) matches.delete(c.room);
+  if (!match.size) endMatch(c.room);
+}
+
+function endMatch(matchId: string) {
+  matches.delete(matchId);
+  saboteurs.delete(matchId);
+  trapState.delete(matchId);
 }
 
 function startMatch(size: number, crew: Client[]) {
@@ -83,9 +93,13 @@ function startMatch(size: number, crew: Client[]) {
     c.state.facing = 'up';
     c.state.moving = false;
     c.state.carrying = false;
+    c.state.hp = MAX_HP;
+    c.state.stunned = false;
   });
   // Round one's saboteur is picked at random; the round system rotates it from there.
   const saboteur = crew[Math.floor(Math.random() * crew.length)].state.id;
+  saboteurs.set(matchId, saboteur);
+  trapState.set(matchId, new Map(TRAPS.map((t) => [t.id, { readyAt: 0, jammedUntil: 0 }])));
   const players = crew.map((c) => ({ ...c.state }));
   for (const c of crew) send(c, { t: 'match', matchId, size, players, saboteur });
   console.log(`${matchId}: ${size}-player heist with ${players.map((p) => p.name).join(', ')}`);
@@ -131,7 +145,7 @@ function tick() {
       const c = clients.get(id);
       if (c) send(c, { t: 'snapshot', room: 'match', players, portals: [], online, taken: [] });
     }
-    if (!players.length) matches.delete(matchId);
+    if (!players.length) endMatch(matchId);
   }
 }
 setInterval(tick, 1000 / NET_HZ);
@@ -162,7 +176,42 @@ function handle(c: Client, msg: ClientMsg) {
       s.moving = msg.moving;
       s.sprint = msg.sprint;
       s.carrying = !!msg.carrying;
+      s.hp = Math.max(0, Math.min(MAX_HP, Number(msg.hp) || 0));
+      s.stunned = !!msg.stunned;
       break;
+    case 'trap': {
+      // Only this heist's Saboteur fires traps, and only plates that are ready and not jammed.
+      if (saboteurs.get(c.room) !== s.id) break;
+      const trap = trapState.get(c.room)?.get(msg.id);
+      const now = Date.now();
+      if (!trap || now < trap.readyAt || now < trap.jammedUntil) break;
+      trap.readyAt = now + TRAP_ARM_MS + TRAP_COOLDOWN_MS;
+      for (const id of matches.get(c.room) ?? []) {
+        const member = clients.get(id);
+        if (member) send(member, { t: 'trap', id: msg.id });
+      }
+      break;
+    }
+    case 'heal': {
+      // Runner to Runner, in the same heist; the healer's game checks reach and cooldown.
+      const sab = saboteurs.get(c.room);
+      const target = clients.get(msg.target);
+      if (!sab || sab === s.id || !target || target.room !== c.room || msg.target === sab) break;
+      send(target, { t: 'healed', by: s.id });
+      break;
+    }
+    case 'jam': {
+      // Runners only (not the Saboteur). The game checks reach and the ability's cooldown.
+      if (!saboteurs.has(c.room) || saboteurs.get(c.room) === s.id) break;
+      const trap = trapState.get(c.room)?.get(msg.id);
+      if (!trap) break;
+      trap.jammedUntil = Date.now() + JAM_MS;
+      for (const id of matches.get(c.room) ?? []) {
+        const member = clients.get(id);
+        if (member) send(member, { t: 'jam', id: msg.id, ms: JAM_MS });
+      }
+      break;
+    }
     case 'character':
       // Refused if someone else has it; either way the player hears what they ended up with.
       if (CHARACTERS.includes(msg.character) && !takenBy(msg.character, c)) s.character = msg.character;
@@ -214,7 +263,7 @@ wss.on('connection', (ws) => {
     ws,
     room: 'lobby',
     portalSince: new Map(),
-    state: { id, name: '', character: 'maya', x: LOBBY_SPAWN.x, y: LOBBY_SPAWN.y, facing: 'down', moving: false, sprint: false, carrying: false },
+    state: { id, name: '', character: 'maya', x: LOBBY_SPAWN.x, y: LOBBY_SPAWN.y, facing: 'down', moving: false, sprint: false, carrying: false, hp: MAX_HP, stunned: false },
   };
   clients.set(id, c);
   send(c, { t: 'welcome', id });

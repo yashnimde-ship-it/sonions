@@ -825,3 +825,50 @@ kbd {
   color: #ffe39a;
   animation: blink 1s steps(2) infinite;
 }
+
+.health {
+  position: absolute;
+  left: 16px;
+  bottom: 104px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: rgba(14, 10, 26, 0.88);
+  border: 3px solid #3e4664;
+  border-radius: 6px;
+  box-shadow: 0 0 0 2px var(--ink);
+  font-size: 10px;
+}
+
+.health[hidden] {
+  display: none;
+}
+
+.health .label {
+  color: #ff8080;
+}
+
+.health .bar {
+  width: 160px;
+  height: 12px;
+  background: #2a1a2a;
+  border: 2px solid var(--ink);
+}
+
+#health-fill {
+  height: 100%;
+  transition: width 0.25s;
+}
+
+#health-fill.ok {
+  background: #6fe07a;
+}
+
+#health-fill.low {
+  background: #ffc94a;
+}
+
+#health-fill.critical {
+  background: #ff5a5a;
+}

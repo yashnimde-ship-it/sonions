@@ -51,6 +51,8 @@ export class Bandit {
   bumped = false;
   /** Speed multiplier while carrying loot (1 when empty-handed). Dashes ignore it. */
   carryMult = 1;
+  /** Frames left stunned by a trap: no moving, no dashing. */
+  stunFrames = 0;
   private sprinting = false;
   private animTimer = 0;
   private step = 0;
@@ -73,6 +75,12 @@ export class Bandit {
   }
 
   update(input: MoveInput, map: Walkable) {
+    if (this.stunFrames > 0) {
+      // Stunned: controls do nothing; any dash in progress is cut short.
+      this.stunFrames--;
+      this.dashFrames = 0;
+      input = { dx: 0, dy: 0, sprint: false };
+    }
     const { dx, dy } = input;
     const pushing = dx !== 0 || dy !== 0;
     if (pushing) {
@@ -134,6 +142,15 @@ export class Bandit {
     this.showTrail(frames + 8);
   }
 
+  /** Knocked silly for `frames` frames. */
+  stun(frames: number) {
+    this.stunFrames = Math.max(this.stunFrames, frames);
+  }
+
+  get stunned() {
+    return this.stunFrames > 0;
+  }
+
   get dashing() {
     return this.dashFrames > 0;
   }
@@ -175,7 +192,8 @@ export class Bandit {
    * A bandit controlled by another player: glide toward where the server says he is,
    * and animate like he's walking.
    */
-  follow(x: number, y: number, facing: Facing, moving: boolean, sprint: boolean) {
+  follow(x: number, y: number, facing: Facing, moving: boolean, sprint: boolean, stunned = false) {
+    this.stunFrames = stunned ? 1 : 0;
     const far = Math.hypot(x - this.x, y - this.y) > 64;
     const nx = far ? x : this.x + (x - this.x) * 0.35;
     const ny = far ? y : this.y + (y - this.y) * 0.35;
@@ -283,6 +301,22 @@ export class Bandit {
         ctx.restore();
       });
     this.blit(ctx, this.frame, px, py);
+    if (shadow && this.stunned) this.drawStars(ctx, px + DRAW_W / 2, py + 2);
+  }
+
+  /** Stars circling a stunned bandit's head. */
+  private drawStars(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
+    const t = performance.now() / 180;
+    for (let i = 0; i < 3; i++) {
+      const a = t + (i * Math.PI * 2) / 3;
+      const x = Math.round(cx + Math.cos(a) * 9);
+      const y = Math.round(cy + Math.sin(a) * 3);
+      ctx.fillStyle = '#ffe39a';
+      ctx.fillRect(x - 1, y - 2, 2, 5);
+      ctx.fillRect(x - 2, y - 1, 5, 2);
+      ctx.fillStyle = '#fff6d0';
+      ctx.fillRect(x, y, 1, 1);
+    }
   }
 
   private blit(ctx: CanvasRenderingContext2D, frame: number, px: number, py: number) {

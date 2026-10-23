@@ -1,6 +1,7 @@
 import type { CharacterId } from '../config';
 import { type Ability, abilityFor, type Role } from '../data/characters';
 import type { Bandit } from '../entities/Bandit';
+import { HEAL_REACH, JAM_REACH, MAX_HP, TRAPS } from '../data/traps';
 import type { ClientMsg } from '../net/protocol';
 
 // Quickstep: a dash of 64 art px (4 tiles, about 3-4 steps) in 14 frames (under a quarter second).
@@ -12,6 +13,11 @@ const NEEDS_LABEL = { traps: 'traps', energy: 'energy', loot: 'loot carrying', s
 export interface AbilityContext {
   me: Bandit;
   send: (msg: ClientMsg) => void;
+  /** My health, and a way to set it (First Aid on myself). */
+  hp?: number;
+  setHp?: (hp: number) => void;
+  /** The other Runners in the heist (not the Saboteur). */
+  crew?: { id: string; x: number; y: number; hp: number }[];
 }
 
 /**
@@ -52,6 +58,8 @@ export class AbilitySystem {
     if (a.needs) return this.note(`Needs ${NEEDS_LABEL[a.needs]} (coming)`);
     if (a.passive) return this.note('Always on');
     if (now < this.readyAt || this.usesLeft <= 0) return;
+    // Stunned bandits can't use abilities, except the one that breaks the stun.
+    if (ctx.me.stunned && a.id !== 'shakeItOff') return this.note('Stunned!');
     const fail = this.apply(a, ctx);
     if (fail) return this.note(fail);
     this.readyAt = now + a.cooldown * 1000;
@@ -65,6 +73,37 @@ export class AbilitySystem {
       case 'quickstep':
         ctx.me.dash(QUICKSTEP_DISTANCE, QUICKSTEP_FRAMES);
         return null;
+      case 'firstAid': {
+        // Whoever needs it most: me, or a hurt Runner within reach.
+        const hurt = (ctx.crew ?? []).filter((r) => r.hp < MAX_HP && Math.hypot(r.x - ctx.me.x, r.y - ctx.me.y) <= HEAL_REACH);
+        const selfHp = ctx.hp ?? MAX_HP;
+        const worst = hurt.sort((a, b) => a.hp - b.hp)[0];
+        if (worst && worst.hp < selfHp) {
+          ctx.send({ t: 'heal', target: worst.id });
+          return null;
+        }
+        if (selfHp < MAX_HP) {
+          ctx.setHp?.(MAX_HP);
+          return null;
+        }
+        return 'Nobody hurt nearby';
+      }
+      case 'shakeItOff':
+        if (!ctx.me.stunned) return 'Not stunned';
+        ctx.me.stunFrames = 0;
+        return null;
+      case 'trapJam': {
+        // The nearest plate in reach; the server jams it for everyone.
+        let best: (typeof TRAPS)[number] | null = null;
+        let bestD = JAM_REACH;
+        for (const t of TRAPS) {
+          const d = Math.hypot(t.x - ctx.me.x, t.y - ctx.me.y);
+          if (d <= bestD) [best, bestD] = [t, d];
+        }
+        if (!best) return 'No trap in reach';
+        ctx.send({ t: 'jam', id: best.id });
+        return null;
+      }
       default:
         return 'Not ready yet';
     }

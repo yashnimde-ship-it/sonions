@@ -7,11 +7,23 @@ export class HUD {
   private message = document.getElementById('message')!;
   private messageText = document.getElementById('message-text')!;
   private carrying = document.getElementById('carrying')!;
+  private health = document.getElementById('health')!;
+  private healthFill = document.getElementById('health-fill')!;
+  private healthText = document.getElementById('health-text')!;
   private lastArea = '';
 
   setLoot(total: number, taken: number, available: number) {
     this.lootTotal.textContent = `$${total.toLocaleString()}`;
     this.lootCount.textContent = `${taken}/${available}`;
+  }
+
+  /** The Runner's health bar; null hides it (the Saboteur has none). */
+  setHealth(hp: number | null) {
+    this.health.hidden = hp === null;
+    if (hp === null) return;
+    this.healthFill.style.width = `${hp}%`;
+    this.healthFill.className = hp > 50 ? 'ok' : hp > 25 ? 'low' : 'critical';
+    this.healthText.textContent = hp === 0 ? 'KO' : String(hp);
   }
 
   /** What the player is holding, or null when empty-handed. */

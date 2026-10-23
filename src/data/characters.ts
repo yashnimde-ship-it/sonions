@@ -34,13 +34,13 @@ export interface Ability {
 export const ABILITIES: Record<AbilityId, Ability> = {
   quickstep: { id: 'quickstep', name: 'Quickstep', blurb: 'Dash 4 steps ahead, even from standing still.', cooldown: 10 },
   overclock: { id: 'overclock', name: 'Overclock', blurb: 'Trap cooldowns tick twice as fast for 5s.', cooldown: 20, needs: 'traps' },
-  trapJam: { id: 'trapJam', name: 'Trap Jam', blurb: 'Disables the nearest trap for 3s.', cooldown: 15, needs: 'traps' },
+  trapJam: { id: 'trapJam', name: 'Trap Jam', blurb: 'Jams the trap plate in reach for 3s, even mid-flash.', cooldown: 15 },
   tripwire: { id: 'tripwire', name: 'Tripwire', blurb: 'Rigs a trap to fire on the next Runner who steps on it.', cooldown: 20, needs: 'traps' },
   steadyCarry: { id: 'steadyCarry', name: 'Steady Carry', blurb: 'Loot slows her down half as much. Always on.', cooldown: 0, passive: true },
   deepPockets: { id: 'deepPockets', name: 'Deep Pockets', blurb: 'Starts every round with +30 max energy.', cooldown: 0, passive: true, needs: 'energy' },
-  shakeItOff: { id: 'shakeItOff', name: 'Shake It Off', blurb: 'Instantly recover from a trap stun.', cooldown: 0, perRound: 1, needs: 'stuns' },
+  shakeItOff: { id: 'shakeItOff', name: 'Shake It Off', blurb: 'Instantly break free of a trap stun or knockout.', cooldown: 35 },
   trapRefresh: { id: 'trapRefresh', name: 'Trap Refresh', blurb: "Resets one trap's cooldown.", cooldown: 0, perRound: 1, needs: 'traps' },
-  firstAid: { id: 'firstAid', name: 'First Aid', blurb: 'Heals herself or a nearby hurt Runner to full HP.', cooldown: 30, needs: 'health' },
+  firstAid: { id: 'firstAid', name: 'First Aid', blurb: 'Heals herself or the most hurt Runner nearby to full HP, even from a knockout.', cooldown: 30 },
   doorJam: { id: 'doorJam', name: 'Door Jam', blurb: 'Slams the door in reach shut and locks it for 8s.', cooldown: 15, needs: 'doors' },
 };
 

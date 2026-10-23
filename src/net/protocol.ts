@@ -17,6 +17,9 @@ export interface PlayerState {
   sprint: boolean;
   /** Holding loot (shows a bag over their head). */
   carrying: boolean;
+  /** Health, and whether a trap has them stunned (Runners only). */
+  hp: number;
+  stunned: boolean;
 }
 
 /** A character someone online is using, and who. */
@@ -37,11 +40,17 @@ export interface PortalState {
 export type ClientMsg =
   | { t: 'hello'; name: string; character: CharacterId }
   // `room` says where the sender was; a lobby move that arrives after a teleport is dropped.
-  | { t: 'move'; room: RoomKind; x: number; y: number; facing: Facing; moving: boolean; sprint: boolean; carrying: boolean }
+  | { t: 'move'; room: RoomKind; x: number; y: number; facing: Facing; moving: boolean; sprint: boolean; carrying: boolean; hp: number; stunned: boolean }
   | { t: 'character'; character: CharacterId }
   // In a match: shared world changes, relayed to everyone in it.
   | { t: 'door'; id: string; open: boolean }
   | { t: 'loot'; id: string }
+  /** The Saboteur fires a trap plate. */
+  | { t: 'trap'; id: string }
+  /** A Runner jams a trap plate (Trap Jam). */
+  | { t: 'jam'; id: string }
+  /** Latch heals another Runner (First Aid). */
+  | { t: 'heal'; target: string }
   /** An ability was used (for effects others should see). */
   | { t: 'ability'; ability: AbilityId }
   | { t: 'leave' };
@@ -61,6 +70,12 @@ export type ServerMsg =
   | { t: 'door'; id: string; open: boolean }
   | { t: 'loot'; id: string; by: string }
   | { t: 'ability'; ability: AbilityId; by: string }
+  /** A trap plate fired just now: it arms, then shocks whoever is standing on it. */
+  | { t: 'trap'; id: string }
+  /** A trap plate is jammed for `ms`: it can't fire, and a pending shock is cancelled. */
+  | { t: 'jam'; id: string; ms: number }
+  /** Another Runner healed you to full (First Aid). */
+  | { t: 'healed'; by: string }
   /** Someone in your match left. */
   | { t: 'left'; id: string };
 
