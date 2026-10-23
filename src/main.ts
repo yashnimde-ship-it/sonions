@@ -1,7 +1,7 @@
 import '@fontsource/press-start-2p';
 import { ART_TILE, CHAR_GLOW, CHARACTERS, type CharacterId, characterSheet, HITBOX, ZOOM } from './config';
 import { CHARACTER_INFO } from './data/characters';
-import { isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
+import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
 import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
@@ -12,7 +12,7 @@ import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/tra
 import { Bandit, DRAW_H } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
-import { type EstateJson, TileMap } from './map/TileMap';
+import { type EstateJson, TileMap, type Stairwell } from './map/TileMap';
 import { NetClient } from './net/NetClient';
 import { type ClientMsg, NET_HZ, type PlayerState, type PortalState, type ServerMsg } from './net/protocol';
 import { CameraSystem } from './systems/CameraSystem';
@@ -152,6 +152,19 @@ async function boot() {
   let estate = new TileMap(estateData, worlds.estate.tiles, worlds.estate.doors);
   let interactions = new InteractionSystem(createInteractables(), estateData.doors);
   let lighting = new LightingSystem(estate);
+  /**
+   * The cruise ship's decks are separate maps in one heist: the deck I'm on, each deck's map
+   * (so its doors keep their state while I'm elsewhere), and every hiding spot on the ship
+   * with the deck it's on. Other maps have a single deck, the map itself.
+   */
+  let deckId: MapId = 'estate';
+  let deckMaps = new Map<MapId, TileMap>();
+  let allSpots: HidingSpot[] = [];
+  const spotDecks = new Map<string, MapId>();
+  /** Is something on this deck (things without one are on the heist's map)? */
+  const here = (deck: string | undefined) => (deck ?? mapId) === deckId;
+  const multiDeck = () => decksOf(mapId).length > 1;
+  const deckShort = (id: MapId) => (id.startsWith('cruise-') ? id.slice(7).toUpperCase() : '');
 
   const camera = new CameraSystem(lobbyMap.widthPx, lobbyMap.heightPx);
   const hud = new HUD();
@@ -409,16 +422,47 @@ async function boot() {
     remotes.set(p.id, { state: p, bandit: new Bandit(sheets[p.character], p.x, p.y, p.facing) });
   }
 
+  /** Switches to a deck of the heist: its map, doors, traps, furniture and getaway. */
+  function useDeck(id: MapId) {
+    deckId = id;
+    estateData = worlds[id].data;
+    estate = deckMaps.get(id) ?? new TileMap(estateData, worlds[id].tiles, worlds[id].doors);
+    deckMaps.set(id, estate);
+    interactions = new InteractionSystem(createInteractables(), estateData.doors);
+    lighting = new LightingSystem(estate);
+    traps = MAPS[id].traps;
+    getaway = MAPS[id].getaway;
+    abilities.traps = traps;
+    spots = estateData.interactables.filter(isHidingSpot);
+    // Players on the other decks drop out of view until we meet again.
+    remotes.clear();
+  }
+
+  /** Takes a stairwell to another deck: I arrive at the stairs it leads to over there. */
+  function takeStairs(stair: Stairwell) {
+    const target = stair.to.deck as MapId;
+    const arrival = worlds[target].data.stairs?.find((st) => st.id === stair.to.arrive);
+    const [ax, ay] = arrival?.arrive ?? [worlds[target].data.spawn.x, worlds[target].data.spawn.y];
+    useDeck(target);
+    me.x = ax * ART_TILE;
+    me.y = ay * ART_TILE;
+    me.facing = 'down';
+    net.send({ t: 'deck', deck: target, x: me.x, y: me.y });
+    frameCamera(true);
+    toast(`${MAPS[target].name}`);
+  }
+
   function startMatch(msg: Extract<ServerMsg, { t: 'match' }>) {
     mapId = msg.map ?? 'estate';
-    const world = worlds[mapId];
-    estateData = world.data;
-    traps = MAPS[mapId].traps;
-    getaway = MAPS[mapId].getaway;
-    abilities.traps = traps;
-    estate = new TileMap(estateData, world.tiles, world.doors);
-    interactions = new InteractionSystem(createInteractables(), estateData.doors);
-    spots = estateData.interactables.filter(isHidingSpot);
+    deckMaps = new Map(decksOf(mapId).map((d) => [d, new TileMap(worlds[d].data, worlds[d].tiles, worlds[d].doors)]));
+    allSpots = [];
+    spotDecks.clear();
+    for (const d of decksOf(mapId))
+      for (const sp of worlds[d].data.interactables.filter(isHidingSpot)) {
+        allSpots.push(sp);
+        spotDecks.set(sp.id, d);
+      }
+    useDeck(msg.deck && decksOf(mapId).includes(msg.deck) ? msg.deck : mapId);
     diamonds = [];
     searched.clear();
     glints = new Set();
@@ -466,7 +510,7 @@ async function boot() {
     remotes.clear();
     for (const p of msg.players) {
       if (p.id !== myId) {
-        addRemote(p);
+        if (here(p.deck)) addRemote(p);
         continue;
       }
       me.x = p.x;
@@ -500,10 +544,11 @@ async function boot() {
         break;
       case 'resync':
         // What changed while we were away.
-        for (const d of msg.doors) {
-          const door = estate.data.doors.find((x) => x.id === d.id);
-          if (door) estate.setDoor(door, d.open);
-        }
+        for (const d of msg.doors)
+          for (const m of deckMaps.size ? deckMaps.values() : [estate]) {
+            const door = m.data.doors.find((x) => x.id === d.id);
+            if (door) m.setDoor(door, d.open);
+          }
         for (const t of msg.placed) {
           placed.set(t.id, t);
           // A Runner is only told about traps that have gone off (and Fake Loot).
@@ -561,7 +606,7 @@ async function boot() {
         if (msg.room === 'lobby') lobby.setTaken(msg.taken, myCharacter);
         const seen = new Set<string>();
         for (const p of msg.players) {
-          if (p.id === myId) continue;
+          if (p.id === myId || (msg.room === 'match' && !here(p.deck))) continue;
           seen.add(p.id);
           const r = remotes.get(p.id);
           if (!r) addRemote(p);
@@ -574,8 +619,10 @@ async function boot() {
         break;
       }
       case 'door': {
-        const door = estate.data.doors.find((d) => d.id === msg.id);
-        if (door) estate.setDoor(door, msg.open);
+        for (const m of deckMaps.size ? deckMaps.values() : [estate]) {
+          const door = m.data.doors.find((d) => d.id === msg.id);
+          if (door) m.setDoor(door, msg.open);
+        }
         break;
       }
       case 'doorLocked':
@@ -833,7 +880,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps } }); // for playtests
 
   // ---------- Update ----------
 
@@ -896,8 +943,18 @@ async function boot() {
     return spots.find((sp) => distToSpot(sp, x, y) <= 3);
   }
 
-  const roomOf = (sp: HidingSpot) => spotRoom(sp, estateData.areas, estateData.width);
-  const hiddenInRoom = (room: string) => diamonds.filter((d) => d.place.at === 'spot' && roomOf(spots.find((x) => x.id === (d.place as { spot: string }).spot)!) === room).length;
+  const roomOf = (sp: HidingSpot) => {
+    const data = worlds[spotDecks.get(sp.id) ?? deckId].data;
+    return spotRoom(sp, data.areas, data.width);
+  };
+  const roomKeyOf = (sp: HidingSpot) => `${spotDecks.get(sp.id) ?? deckId}:${roomOf(sp)}`;
+  /** Diamonds already hidden in the same room as this spot (on its deck). */
+  const hiddenInRoom = (spot: HidingSpot) =>
+    diamonds.filter((d) => {
+      if (d.place.at !== 'spot') return false;
+      const sp = allSpots.find((x) => x.id === (d.place as { spot: string }).spot);
+      return !!sp && roomKeyOf(sp) === roomKeyOf(spot);
+    }).length;
 
   /** Setup: click furniture to hide the next diamond in it. */
   function hideAt(x: number, y: number) {
@@ -906,18 +963,18 @@ async function boot() {
     if (diamondIn(spot.id)) return toast(`The ${spot.name} already holds a diamond. Right-click to take it out.`);
     const next = diamonds.find((d) => d.place.at === 'tray');
     if (!next) return toast('All diamonds are hidden. Right-click one to move it.');
-    if (hiddenInRoom(roomOf(spot)) >= 2) return toast(`${roomOf(spot)} already has 2 diamonds. Spread them out.`);
+    if (hiddenInRoom(spot) >= 2) return toast(`${roomOf(spot)} already has 2 diamonds. Spread them out.`);
     net.send({ t: 'hideDiamond', id: next.id, spot: spot.id });
   }
 
   /** Fake Loot chests, as Runners see them: one more thing to search. */
   const decoys = (): HidingSpot[] =>
     [...placed.values()]
-      .filter((t) => t.kind === 'fakeLoot')
+      .filter((t) => t.kind === 'fakeLoot' && here(t.deck))
       .map((t) => ({ id: t.id, name: 'treasure chest', rect: [Math.floor((t.x - 12) / ART_TILE), Math.floor((t.y - 10) / ART_TILE), Math.floor((t.x + 11) / ART_TILE), Math.floor((t.y + 9) / ART_TILE)] as [number, number, number, number] }));
 
   /** A trap close enough to a hidden diamond guards it. */
-  const guarded = (spot: HidingSpot) => [...placed.values()].some((t) => distToSpot(spot, t.x, t.y) <= 40);
+  const guarded = (spot: HidingSpot) => [...placed.values()].some((t) => (t.deck ?? mapId) === (spotDecks.get(spot.id) ?? mapId) && distToSpot(spot, t.x, t.y) <= 40);
 
   const placedKinds = () => [...placed.values()].map((t) => t.kind);
 
@@ -1043,7 +1100,7 @@ async function boot() {
     const y = snap(my);
     const refused = placementRefusal(placedKinds(), kind.id, match?.size ?? 2) ?? (canPlace(kind, x, y) ? null : 'It needs open floor');
     if (refused) return toast(refused);
-    const trap: PlacedTrap = { id: `${myId}-${++placedCount}`, kind: kind.id, x, y };
+    const trap: PlacedTrap = { id: `${myId}-${++placedCount}`, kind: kind.id, x, y, ...(multiDeck() ? { deck: deckId } : {}) };
     placed.set(trap.id, trap);
     trapEnergy -= kind.cost;
     net.send({ t: 'place', trap });
@@ -1053,6 +1110,7 @@ async function boot() {
   /** The placed trap under (x, y), topmost first. */
   function placedUnder(x: number, y: number) {
     return [...placed.values()]
+      .filter((t) => here(t.deck))
       .reverse()
       .find((t) => {
         const k = trapKind(t.kind)!;
@@ -1216,7 +1274,7 @@ async function boot() {
       checkSpotlights(performance.now());
       runnerDiamonds(input);
     }
-    hud.setArea(estate.areaAt(me.x, me.y - 4));
+    hud.setArea(areaName(me.x, me.y - 4));
     sendPosition();
     frameCamera(false);
   }
@@ -1256,7 +1314,7 @@ async function boot() {
       net.send({ t: 'door', id: door.id, open: true });
     }
     // A dropped diamond on the floor nearby: press E to grab it.
-    const dropped = holding ? undefined : diamonds.find((d) => d.place.at === 'floor' && Math.hypot(d.place.x - me.x, d.place.y - me.y) <= PICKUP_REACH);
+    const dropped = holding ? undefined : diamonds.find((d) => d.place.at === 'floor' && here(d.place.deck) && Math.hypot(d.place.x - me.x, d.place.y - me.y) <= PICKUP_REACH);
     // The nearest piece of furniture in reach (a Fake Loot chest looks just like one).
     let spot: HidingSpot | null = null;
     let best = SEARCH_REACH;
@@ -1277,8 +1335,12 @@ async function boot() {
       return me.x >= x0 - 6 && me.x <= x1 + 6 && me.y >= y0 - 6 && me.y <= y1 + 6;
     });
     if (stair) {
-      prompt = `E  Climb the ${stair.name}`;
-      if (input.action) hud.showMessage(stairMessage(stair.to.deck));
+      const connected = isMapId(stair.to.deck) && decksOf(mapId).includes(stair.to.deck);
+      prompt = connected ? `E  Take the ${stair.name}` : `E  Climb the ${stair.name}`;
+      if (input.action) {
+        if (connected) takeStairs(stair);
+        else hud.showMessage(stairMessage(stair.to.deck));
+      }
     } else if (door) {
       const lockLeft = Math.max(0, (doorJammedUntil.get(door.id) ?? 0) - now);
       prompt = lockLeft ? `LOCKED ${Math.ceil(lockLeft / 1000)}s` : interactions.promptFor(near!, estate);
@@ -1313,7 +1375,13 @@ async function boot() {
     hud.setPrompt(now < trapNoticeUntil ? trapNotice : now < toastUntil ? hud.promptText : prompt);
   }
 
-  /** What a stairwell says: decks that exist are separate maps (pick them in Map Info). */
+  /** The area under (x, y) for the HUD; on the ship, with the deck in front. */
+  function areaName(x: number, y: number) {
+    const area = estate.areaAt(x, y);
+    return multiDeck() ? `${deckShort(deckId)} \u00b7 ${area}` : area;
+  }
+
+  /** What a stairwell to a deck that isn't part of this heist says. */
   function stairMessage(deck: string) {
     if (deck === 'cruise-f2') return 'Top Deck (F2) is coming soon.';
     const def = isMapId(deck) ? MAPS[deck] : null;
@@ -1327,13 +1395,23 @@ async function boot() {
       lastIconPaint = performance.now();
       trapBar.paintIcons(lastIconPaint);
     }
+    if (multiDeck() && keyPressed('KeyF')) {
+      const decks = decksOf(mapId);
+      const next = decks[(decks.indexOf(deckId) + 1) % decks.length];
+      useDeck(next);
+      freeX = Math.min(freeX, estate.widthPx);
+      freeY = Math.min(freeY, estate.heightPx);
+      net.send({ t: 'deck', deck: next, x: freeX, y: freeY });
+      frameCamera(true);
+      toast(`Watching ${MAPS[next].name}  (F: other deck)`);
+    }
     const speed = ((input.sprint ? 12 : 6) * dpr) / scale;
     freeX = Math.min(estate.widthPx, Math.max(0, freeX + input.dx * speed * 2));
     freeY = Math.min(estate.heightPx, Math.max(0, freeY + input.dy * speed * 2));
-    hud.setArea(estate.areaAt(freeX, freeY));
+    hud.setArea(areaName(freeX, freeY));
     if (performance.now() > toastUntil) hud.setPrompt(null);
     if (phase === 'setup') {
-      const hiddenSpots = spots.filter((sp) => diamondIn(sp.id));
+      const hiddenSpots = allSpots.filter((sp) => diamondIn(sp.id));
       setupPanel.update({ hidden: hiddenSpots.length, total: totalN, traps: placed.size, slots: trapSlots(match?.size ?? 2), guarded: hiddenSpots.filter(guarded).length, selected: null });
     }
   }
@@ -1466,7 +1544,7 @@ async function boot() {
     ctx.lineWidth = 2 * dpr;
     for (const t of placed.values()) {
       const k = trapKind(t.kind);
-      if (!k) continue;
+      if (!k || !here(t.deck)) continue;
       ctx.strokeStyle = k.color;
       ctx.globalAlpha = 0.85;
       ctx.strokeRect(Math.round((t.x - k.w / 2 - camX) * scale), Math.round((t.y - k.h / 2 - camY) * scale), Math.round(k.w * scale), Math.round(k.h * scale));
@@ -1495,7 +1573,7 @@ async function boot() {
     const visible = (t: PlacedTrap) => sab || !!result || (phase !== 'setup' && (revealed.has(t.id) || t.kind === 'fakeLoot'));
     for (const t of [...placed.values()].sort((a, b) => a.y - b.y)) {
       const kind = trapKind(t.kind);
-      if (!kind || !visible(t)) continue;
+      if (!kind || !visible(t) || !here(t.deck)) continue;
       ctx.save();
       if (!sab && !result && t.kind !== 'fakeLoot') ctx.globalAlpha = 0.85;
       drawTrap(ctx, kind, sab || result ? 'saboteur' : 'runner', t.x - camX, t.y - camY, now);
@@ -1730,7 +1808,7 @@ async function boot() {
       ctx.save();
       if (sab) {
         if (phase === 'setup') {
-          const full = !d && hiddenInRoom(roomOf(sp)) >= 2;
+          const full = !d && hiddenInRoom(sp) >= 2;
           ctx.strokeStyle = d ? '#7ceaff' : full ? '#ff6a6a' : '#ffc94a';
           ctx.globalAlpha = sp === hover ? 1 : d ? 0.9 : full ? 0.4 : 0.65 + 0.25 * Math.sin(frame / 12);
           ctx.lineWidth = sp === hover ? 2.5 : 1.5;
@@ -1793,7 +1871,7 @@ async function boot() {
   /** Diamonds dropped on the floor: anyone can grab them. */
   function drawFloorDiamonds(camX: number, camY: number) {
     for (const d of diamonds) {
-      if (d.place.at !== 'floor') continue;
+      if (d.place.at !== 'floor' || !here(d.place.deck)) continue;
       const x = d.place.x - camX;
       const y = d.place.y - camY;
       ctx.save();
@@ -1877,7 +1955,7 @@ async function boot() {
     if (!sp) return;
     const b = spotBox(sp);
     const d = diamondIn(sp.id);
-    const full = !d && hiddenInRoom(roomOf(sp)) >= 2;
+    const full = !d && hiddenInRoom(sp) >= 2;
     const text = d ? `${sp.name.toUpperCase()} · HIDDEN (right-click to take out)` : full ? `${roomOf(sp).toUpperCase()} IS FULL (2 max)` : `HIDE IN ${sp.name.toUpperCase()}`;
     // Kept on screen even for furniture at the edge of the map.
     const size = Math.round(8 * dpr);
@@ -1900,7 +1978,7 @@ async function boot() {
         if (sp) pos = spotCenter(sp);
         color = '#ff8a94';
         label = 'NEVER FOUND';
-      } else if (d.place.at === 'floor') {
+      } else if (d.place.at === 'floor' && here(d.place.deck)) {
         pos = { x: d.place.x, y: d.place.y };
         color = '#ffb02e';
         label = 'DROPPED';

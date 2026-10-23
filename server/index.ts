@@ -15,7 +15,7 @@ import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondsToWin, distToSpo
 import { cleanName } from '../src/data/names.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
-import { isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
+import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
 import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Standing, type Taken } from '../src/net/protocol.ts';
 
@@ -68,7 +68,15 @@ const matchMaps = new Map<string, MapId>();
 /** Per match: the crew size it started with, and the shared world state a reconnecting player needs. */
 const matchSizes = new Map<string, number>();
 const doorStates = new Map<string, Map<string, boolean>>();
-const trapsOf = (matchId: string): TrapSpot[] => MAPS[matchMaps.get(matchId) ?? 'estate'].traps;
+/** The decks this heist spans (the ship's decks on a cruise; otherwise just its map). */
+const decksIn = (matchId: string): MapId[] => decksOf(matchMaps.get(matchId) ?? 'estate');
+/** The deck a player is on. */
+const deckOf = (c: Client): MapId => (c.state.deck && decksIn(c.room).includes(c.state.deck) ? c.state.deck : matchMaps.get(c.room) ?? 'estate');
+/** Which deck a placed trap or dropped diamond is on. */
+const onDeck = (matchId: string, deck: string | undefined): MapId => (deck && decksIn(matchId).includes(deck as MapId) ? (deck as MapId) : matchMaps.get(matchId) ?? 'estate');
+const trapsOf = (matchId: string): TrapSpot[] => decksIn(matchId).flatMap((d) => MAPS[d].traps);
+/** The map's fixed traps on one deck. */
+const trapsOn = (matchId: string, deck: MapId): TrapSpot[] => (decksIn(matchId).includes(deck) ? MAPS[deck].traps : []);
 const spotOf = (matchId: string, id: string) => trapsOf(matchId).find((t) => t.id === id);
 /** Match the client floor check: the full trap footprint must land inside open collision cells. */
 function openFloor(map: MapId, x: number, y: number, halfW = 10, halfH = 8) {
@@ -88,7 +96,7 @@ function openFloor(map: MapId, x: number, y: number, halfW = 10, halfH = 8) {
   }
   return true;
 }
-const doorsOf = (matchId: string) => mapData[matchMaps.get(matchId) ?? 'estate'].doors;
+const doorsOf = (matchId: string) => decksIn(matchId).flatMap((d) => mapData[d].doors);
 /** The crew's map: the most-picked one; a tie goes to whoever got there first (crew is in arrival order). */
 function crewMap(crew: Client[]): MapId {
   const votes = new Map<MapId, number>();
@@ -229,7 +237,7 @@ function firePlaced(matchId: string, trap: PlacedTrap, victim: Client, fromX: nu
     for (const id of matches.get(matchId) ?? []) {
       const c = clients.get(id);
       if (!c || id === saboteurs.get(matchId) || (c.state.character === 'zoya' && CHARACTER_INFO.zoya.runner === 'steadyCarry')) continue;
-      if (Math.hypot(c.state.x - trap.x, c.state.y - trap.y) <= MAGNET_REACH) dropDiamond(matchId, id, trap.x, trap.y + 10);
+      if (deckOf(c) === onDeck(matchId, trap.deck) && Math.hypot(c.state.x - trap.x, c.state.y - trap.y) <= MAGNET_REACH) dropDiamond(matchId, id, trap.x, trap.y + 10);
     }
   } else if (trap.kind === 'laser') {
     // Knocked back the way you came, so the diamond doesn't land in the beam.
@@ -345,6 +353,7 @@ function startRound(matchId: string) {
     const inRow = Math.min(5, crew.length - row * 5);
     c.state.x = spawn.x * TILE + ((i % 5) - (inRow - 1) / 2) * 36;
     c.state.y = spawn.y * TILE + row * 28;
+    c.state.deck = map;
     c.state.facing = 'up';
     c.state.moving = false;
     c.state.carrying = false;
@@ -421,6 +430,7 @@ function matchMsg(c: Client, matchId: string, resume = false): ServerMsg {
     matchId,
     size: matchSizes.get(matchId) ?? players.length,
     map: matchMaps.get(matchId) ?? 'estate',
+    deck: c.state.deck,
     players,
     role: isSaboteur ? 'saboteur' : 'runner',
     phase: round?.phase ?? 'setup',
@@ -571,8 +581,9 @@ function handle(c: Client, msg: ClientMsg) {
       if (c.room !== 'lobby') {
         const now = Date.now();
         const saboteurId = saboteurs.get(c.room);
+        const deck = deckOf(c);
         if (saboteurId !== s.id && phases.get(c.room)?.phase === 'live') {
-          for (const plate of trapsOf(c.room)) {
+          for (const plate of trapsOn(c.room, deck)) {
             if (plate.kind && plate.kind !== 'plate') continue;
             const state = trapState.get(c.room)?.get(plate.id);
             if (!state || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(plate))) continue;
@@ -586,7 +597,7 @@ function handle(c: Client, msg: ClientMsg) {
           }
           for (const trap of placedTraps.get(c.room)?.values() ?? []) {
             // Fake Loot isn't stepped on: it goes off when someone searches it.
-            if (trap.kind === 'fakeLoot') continue;
+            if (trap.kind === 'fakeLoot' || onDeck(c.room, trap.deck) !== deck) continue;
             const state = trapState.get(c.room)?.get(trap.id);
             const radius = Math.max(12, Math.min(trapKind(trap.kind)!.w, trapKind(trap.kind)!.h) / 2);
             if (!state || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null)) continue;
@@ -595,7 +606,7 @@ function handle(c: Client, msg: ClientMsg) {
             firePlaced(c.room, trap, c, fromX, fromY);
           }
         }
-        for (const plate of trapsOf(c.room)) {
+        for (const plate of trapsOn(c.room, deck)) {
           if (plate.kind && plate.kind !== 'plate') continue;
           const state = trapState.get(c.room)?.get(plate.id);
           if (!state?.tripwired || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(plate))) continue;
@@ -625,7 +636,7 @@ function handle(c: Client, msg: ClientMsg) {
       else {
         const spot = spotsOf(c.room).find((x) => x.id === msg.spot);
         if (!spot || vault.diamonds.some((x) => x !== d && x.place.at === 'spot' && x.place.spot === spot.id)) break;
-        if (roomCount(c.room, vault, spotRoomOf(c.room, spot), d) >= DIAMONDS_PER_ROOM) break;
+        if (roomCount(c.room, vault, roomKey(c.room, spot), d) >= DIAMONDS_PER_ROOM) break;
         d.place = { at: 'spot', spot: spot.id };
       }
       sendDiamonds(c.room);
@@ -635,7 +646,7 @@ function handle(c: Client, msg: ClientMsg) {
       // A Runner who held E next to a piece of furniture: is a diamond in there?
       const vault = vaults.get(c.room);
       if (!vault || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || carrierOf(vault, s.id)) break;
-      const spot = spotsOf(c.room).find((x) => x.id === msg.spot);
+      const spot = spotsOf(c.room).find((x) => x.id === msg.spot && spotDeck(c.room, x) === deckOf(c));
       const now = Date.now();
       // A Fake Loot chest looks like somewhere to search. It isn't.
       const decoy = placedTraps.get(c.room)?.get(msg.spot);
@@ -658,7 +669,7 @@ function handle(c: Client, msg: ClientMsg) {
       const vault = vaults.get(c.room);
       const d = vault?.diamonds.find((x) => x.id === msg.id);
       if (!vault || !d || d.place.at !== 'floor' || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || carrierOf(vault, s.id)) break;
-      if (Math.hypot(d.place.x - s.x, d.place.y - s.y) > PICKUP_REACH + 10) break;
+      if (onDeck(c.room, d.place.deck) !== deckOf(c) || Math.hypot(d.place.x - s.x, d.place.y - s.y) > PICKUP_REACH + 10) break;
       d.place = { at: 'carried', by: s.id };
       sendDiamonds(c.room);
       break;
@@ -667,7 +678,7 @@ function handle(c: Client, msg: ClientMsg) {
       // Carrying a diamond into the getaway banks it; enough banked wins the heist.
       const vault = vaults.get(c.room);
       const d = vault && carrierOf(vault, s.id);
-      const g = MAPS[matchMaps.get(c.room) ?? 'estate'].getaway;
+      const g = MAPS[deckOf(c)].getaway;
       if (!vault || !d || phases.get(c.room)?.phase !== 'live') break;
       if (s.x < g.x * TILE || s.x > (g.x + g.w) * TILE || s.y < g.y * TILE || s.y > (g.y + g.h) * TILE) break;
       d.place = { at: 'banked', by: s.id };
@@ -703,10 +714,10 @@ function handle(c: Client, msg: ClientMsg) {
       // Dev's Saboteur ability: a hidden trip line laid mid-heist, on top of the setup traps.
       if (saboteurs.get(c.room) !== s.id || CHARACTER_INFO[s.character].saboteur !== 'tripwire' || phases.get(c.room)?.phase !== 'live') break;
       const now = Date.now();
-      const map = matchMaps.get(c.room) ?? 'estate';
+      const map = deckOf(c);
       if (now < (tripwireReadyAt.get(c.room) ?? 0) || !Number.isFinite(msg.x) || !Number.isFinite(msg.y) || msg.x < 0 || msg.y < 0 || msg.x > mapData[map].width * TILE || msg.y > mapData[map].height * TILE || !openFloor(map, msg.x, msg.y)) break;
       if (!spendUse(c, 'tripwire')) break;
-      const trap: PlacedTrap = { id: `tw-${s.id}-${now}`, kind: 'snare', x: Math.round(msg.x), y: Math.round(msg.y) };
+      const trap: PlacedTrap = { id: `tw-${s.id}-${now}`, kind: 'snare', x: Math.round(msg.x), y: Math.round(msg.y), deck: map };
       placedTraps.get(c.room)?.set(trap.id, trap);
       trapState.get(c.room)?.set(trap.id, { firedAt: null, jammedUntil: 0, tripwired: false });
       tripwireReadyAt.set(c.room, now + TRIPWIRE_COOLDOWN_MS);
@@ -765,6 +776,7 @@ function handle(c: Client, msg: ClientMsg) {
           break;
         }
         energy.current -= trapKind(trap.kind)!.cost;
+        trap.deck = onDeck(c.room, trap.deck);
         placed.set(trap.id, trap);
         trapState.get(c.room)?.set(trap.id, { firedAt: null, jammedUntil: 0, tripwired: false });
       } else {
@@ -811,8 +823,9 @@ function handle(c: Client, msg: ClientMsg) {
       // Where the Runner pressed it (their last move may still be on its way), if that's close.
       const near = Number.isFinite(msg.x) && Number.isFinite(msg.y) && Math.hypot(msg.x - s.x, msg.y - s.y) <= 48;
       const [jx, jy] = near ? [msg.x, msg.y] : [s.x, s.y];
-      const placed = [...(placedTraps.get(c.room)?.values() ?? [])].filter((t) => Math.hypot(t.x - jx, t.y - jy) <= JAM_REACH);
-      const fixed = trapsOf(c.room).filter((t) => Math.hypot(t.x - jx, t.y - jy) <= JAM_REACH);
+      const deck = deckOf(c);
+      const placed = [...(placedTraps.get(c.room)?.values() ?? [])].filter((t) => onDeck(c.room, t.deck) === deck && Math.hypot(t.x - jx, t.y - jy) <= JAM_REACH);
+      const fixed = trapsOn(c.room, deck).filter((t) => Math.hypot(t.x - jx, t.y - jy) <= JAM_REACH);
       if (!states || (!placed.length && !fixed.length) || !spendUse(c, 'trapJam')) {
         send(c, { t: 'jam', id: '', ms: 0 });
         break;
@@ -834,6 +847,15 @@ function handle(c: Client, msg: ClientMsg) {
     case 'map':
       if (isMapId(msg.map)) c.mapPref = msg.map;
       break;
+    case 'deck': {
+      // Stairs to another deck of the ship: from now on the player is there, at (x, y).
+      if (!matches.has(c.room) || !isMapId(msg.deck) || !decksIn(c.room).includes(msg.deck)) break;
+      if (!Number.isFinite(msg.x) || !Number.isFinite(msg.y)) break;
+      s.deck = msg.deck;
+      s.x = Math.max(0, Math.min(mapData[msg.deck].width * TILE, msg.x));
+      s.y = Math.max(0, Math.min(mapData[msg.deck].height * TILE, msg.y));
+      break;
+    }
     case 'character':
       // Refused if someone else has it while a free one exists; either way the player hears
       // what they ended up with.
@@ -886,15 +908,19 @@ function handle(c: Client, msg: ClientMsg) {
 
 // ---------- Diamonds ----------
 
-const spotsOf = (matchId: string): HidingSpot[] => mapData[matchMaps.get(matchId) ?? 'estate'].interactables.filter(isHidingSpot);
+const spotsOf = (matchId: string): HidingSpot[] => decksIn(matchId).flatMap((d) => mapData[d].interactables.filter(isHidingSpot));
+/** The deck a piece of furniture is on (spot ids are unique across a ship's decks). */
+const spotDeck = (matchId: string, spot: HidingSpot): MapId => decksIn(matchId).find((d) => mapData[d].interactables.some((x) => x.id === spot.id)) ?? matchMaps.get(matchId) ?? 'estate';
 const spotRoomOf = (matchId: string, spot: HidingSpot) => {
-  const data = mapData[matchMaps.get(matchId) ?? 'estate'];
+  const data = mapData[spotDeck(matchId, spot)];
   return spotRoom(spot, data.areas, data.width);
 };
+/** A room's key for the two-per-room rule: on the ship, rooms on different decks are different. */
+const roomKey = (matchId: string, spot: HidingSpot) => `${spotDeck(matchId, spot)}:${spotRoomOf(matchId, spot)}`;
 const carrierOf = (vault: Vault | undefined, playerId: string) => vault?.diamonds.find((d) => d.place.at === 'carried' && d.place.by === playerId);
 /** Diamonds hidden in a room, not counting `except`. */
 function roomCount(matchId: string, vault: Vault, room: string, except?: Diamond) {
-  return vault.diamonds.filter((d) => d !== except && d.place.at === 'spot' && spotRoomOf(matchId, spotsOf(matchId).find((x) => x.id === (d.place as { spot: string }).spot)!) === room).length;
+  return vault.diamonds.filter((d) => d !== except && d.place.at === 'spot' && roomKey(matchId, spotsOf(matchId).find((x) => x.id === (d.place as { spot: string }).spot)!) === room).length;
 }
 
 /** The diamonds as this player may see them. */
@@ -924,11 +950,12 @@ function dropDiamond(matchId: string, playerId: string, x: number, y: number) {
   const vault = vaults.get(matchId);
   const d = carrierOf(vault, playerId);
   if (!vault || !d) return;
-  d.place = { at: 'floor', x, y };
   const c = clients.get(playerId);
+  const deck = c ? deckOf(c) : matchMaps.get(matchId) ?? 'estate';
+  d.place = { at: 'floor', x, y, deck };
   if (c) {
     c.state.carrying = false;
-    const data = mapData[matchMaps.get(matchId) ?? 'estate'];
+    const data = mapData[deck];
     const room = data.areas.names[data.areas.data[Math.floor(y / TILE) * data.width + Math.floor(x / TILE)]] ?? '';
     announce(matchId, 'dropped', c, room);
   }
@@ -943,7 +970,7 @@ function goLive(matchId: string) {
   const spots = [...spotsOf(matchId)].sort(() => Math.random() - 0.5);
   for (const d of vault.diamonds) {
     if (d.place.at !== 'tray') continue;
-    const free = spots.find((sp) => !vault.diamonds.some((x) => x.place.at === 'spot' && x.place.spot === sp.id) && roomCount(matchId, vault, spotRoomOf(matchId, sp)) < DIAMONDS_PER_ROOM)
+    const free = spots.find((sp) => !vault.diamonds.some((x) => x.place.at === 'spot' && x.place.spot === sp.id) && roomCount(matchId, vault, roomKey(matchId, sp)) < DIAMONDS_PER_ROOM)
       ?? spots.find((sp) => !vault.diamonds.some((x) => x.place.at === 'spot' && x.place.spot === sp.id));
     if (free) d.place = { at: 'spot', spot: free.id };
   }

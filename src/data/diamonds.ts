@@ -36,7 +36,7 @@ export type DiamondPlace =
   | { at: 'tray' } // setup: not hidden yet
   | { at: 'spot'; spot: string } // hidden in furniture
   | { at: 'carried'; by: string }
-  | { at: 'floor'; x: number; y: number } // dropped
+  | { at: 'floor'; x: number; y: number; deck?: string } // dropped (deck: on the ship, which deck)
   | { at: 'banked'; by: string };
 
 export interface Diamond {

@@ -252,12 +252,12 @@ export const DOORS = [
 ];
 
 /**
- * Stairwells up to F1. `zone` is where E works; `to` names the destination deck and its
- * arrival point. F1 isn't built yet, so the game says so instead of moving anyone.
+ * Stairwells up to F1. `zone` is where E works, `arrive` where you appear when you come down
+ * these stairs (tiles), and `to` the deck and stairwell they lead to.
  */
 export const STAIRS = [
-  { id: 'stairs-main', name: 'main stairwell', zone: [52.0, 24.6, 57.4, 33.6], to: { deck: 'cruise-f1', arrive: 'stairs-main' } },
-  { id: 'stairs-aft', name: 'aft stairwell', zone: [63.8, 45.6, 68.4, 55.6], to: { deck: 'cruise-f1', arrive: 'stairs-aft' } },
+  { id: 'stairs-main', name: 'main stairwell', zone: [52.0, 24.6, 57.4, 33.6], arrive: [54.7, 27.2], to: { deck: 'cruise-f1', arrive: 'stairs-b1' } },
+  { id: 'stairs-aft', name: 'aft stairwell', zone: [63.8, 45.6, 68.4, 55.6], arrive: [66.1, 47.4], to: { deck: 'cruise-f1', arrive: 'stairs-b1' } },
 ];
 
 /** Hiding spots (metadata for a hide mechanic; the game doesn't have one yet). */

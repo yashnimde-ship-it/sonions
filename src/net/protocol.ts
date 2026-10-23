@@ -21,6 +21,8 @@ export interface PlayerState {
   sprint: boolean;
   /** Holding loot (shows a bag over their head). */
   carrying: boolean;
+  /** On the cruise ship: the deck they're on (maps with one floor leave it unset). */
+  deck?: MapId;
   /** Health, and whether a trap has them stunned (Runners only). */
   hp: number;
   stunned: boolean;
@@ -65,6 +67,8 @@ export type ClientMsg =
   | { t: 'character'; character: CharacterId }
   /** The map this player wants to play next (the crew's majority decides). */
   | { t: 'map'; map: MapId }
+  /** Took the stairs to another deck of the ship, arriving at (x, y) there. */
+  | { t: 'deck'; deck: MapId; x: number; y: number }
   // In a match: shared world changes, relayed to everyone in it.
   | { t: 'door'; id: string; open: boolean }
   /** The Saboteur fires a trap plate. */
@@ -106,7 +110,7 @@ export type ServerMsg =
    * A portal filled up: you are in a new match with these players. `role` is only your own:
    * nobody is told who the Saboteur is (except the Saboteur).
    */
-  | { t: 'match'; matchId: string; size: number; map: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean; round: number; rounds: number }
+  | { t: 'match'; matchId: string; size: number; map: MapId; deck?: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean; round: number; rounds: number }
   /** The server rejected an optimistic trap placement. */
   | { t: 'placementRejected'; id: string; reason: string }
   /** Current Saboteur trap energy after a placement or pickup. */

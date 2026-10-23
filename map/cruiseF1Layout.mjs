@@ -172,15 +172,19 @@ export const DOORS = [
   door('door-men', "men's restroom door", [82.6, 40.5, 85.9, 41.5]),
   door('door-women', "women's restroom door", [89.6, 40.5, 92.9, 41.5]),
   door('door-staff', 'staff room door', [95.1, 40.5, 97.9, 41.5]),
-  door('door-crew', 'crew mess door', [28.0, 40.6, 29.8, 41.4]),
+  door('door-crew-mess', 'crew mess door', [28.0, 40.6, 29.8, 41.4]),
   ...CABINS.map((c, i) => door(`door-cabin-${c.id}`, `cabin ${c.id} door`, [c.cx - 0.8, 37.9, c.cx + 0.8, 38.7])),
 ];
 
-/** Stairwells: the central one goes down to B1, the two by the ballroom up to F2. */
+/**
+ * Stairwells: the central one goes down to B1, the two by the ballroom up to F2. `zone` is
+ * where E works, `arrive` where you appear when you come up these stairs (tiles), and `to`
+ * the deck and stairwell they lead to.
+ */
 export const STAIRS = [
-  { id: 'stairs-b1', name: 'stairs to B1', zone: [56.6, 33.4, 61.4, 41.6], to: { deck: 'cruise-b1', arrive: 'stairs-main' } },
-  { id: 'stairs-f2-left', name: 'stairs to F2', zone: [39.8, 14.4, 44.0, 16.8], to: { deck: 'cruise-f2', arrive: 'stairs-left' } },
-  { id: 'stairs-f2-right', name: 'stairs to F2', zone: [74.2, 14.4, 78.2, 16.8], to: { deck: 'cruise-f2', arrive: 'stairs-right' } },
+  { id: 'stairs-b1', name: 'stairs to B1', zone: [56.6, 33.4, 61.4, 41.6], arrive: [59, 36.4], to: { deck: 'cruise-b1', arrive: 'stairs-main' } },
+  { id: 'stairs-f2-left', name: 'stairs to F2', zone: [39.8, 14.4, 44.0, 16.8], arrive: [41.9, 15.8], to: { deck: 'cruise-f2', arrive: 'stairs-left' } },
+  { id: 'stairs-f2-right', name: 'stairs to F2', zone: [74.2, 14.4, 78.2, 16.8], arrive: [76.2, 15.8], to: { deck: 'cruise-f2', arrive: 'stairs-right' } },
 ];
 
 export const HIDING_SPOTS = [
@@ -203,7 +207,7 @@ export const INTERACTABLES = [
   { id: 'cashbox', rect: [74, 42, 74, 42], name: 'reception cash box', loot: 380, text: 'The reception cash box. Heavy.' },
   { id: 'masterkey', rect: [96, 43, 96, 43], name: 'master key ring', loot: 150, text: 'The master key ring from the staff room.' },
   { id: 'binoculars', rect: [104, 20, 104, 20], name: "captain's binoculars", loot: 180, text: "The captain's brass binoculars." },
-  { id: 'pearls', rect: [9, 25, 9, 25], name: 'pearl necklace', loot: 600, text: 'A pearl necklace dropped by a deck chair.' },
+  { id: 'pearl-necklace', rect: [9, 25, 9, 25], name: 'pearl necklace', loot: 600, text: 'A pearl necklace dropped by a deck chair.' },
   // Stairwells (they lead to other decks)
   { id: 'stairs-b1', rect: [57, 33, 60, 33], name: 'stairs to B1', text: "These stairs aren't connected yet. Pick LUXURY CRUISE — B1 in Map Info to play the Base Floor." },
   { id: 'stairs-f2-left', rect: [40, 14, 43, 14], name: 'stairs to F2', text: 'Top Deck (F2) is coming soon.' },

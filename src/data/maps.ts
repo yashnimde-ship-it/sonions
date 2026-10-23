@@ -77,4 +77,12 @@ export const MAPS: Record<MapId, MapDef> = {
   },
 };
 
+/**
+ * The cruise ship's decks. A heist on any of them takes place on the whole ship: players
+ * move between decks by the stairwells, and each player is on one deck at a time.
+ */
+export const SHIP_DECKS: MapId[] = ['cruise-b1', 'cruise-f1'];
+/** The decks a heist on this map spans (just the map itself, except on the ship). */
+export const decksOf = (map: MapId): MapId[] => (SHIP_DECKS.includes(map) ? SHIP_DECKS : [map]);
+
 export const isMapId = (id: unknown): id is MapId => typeof id === 'string' && (MAP_IDS as readonly string[]).includes(id);

@@ -47,4 +47,6 @@ export interface PlacedTrap {
   /** Centre of its footprint, art px. */
   x: number;
   y: number;
+  /** On the cruise ship: which deck it's on (other maps have one). */
+  deck?: string;
 }

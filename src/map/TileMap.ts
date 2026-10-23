@@ -31,7 +31,9 @@ export interface Stairwell {
   name: string;
   /** Tiles [x0, y0, x1, y1]. */
   zone: [number, number, number, number];
-  /** The deck it leads to and the arrival point there (for deck travel). */
+  /** Where you appear when you arrive by these stairs (tiles). */
+  arrive?: [number, number];
+  /** The deck it leads to and the stairwell you arrive at there. */
   to: { deck: string; arrive: string };
 }
 

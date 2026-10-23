@@ -24,7 +24,7 @@ const SPRINT = new Set(['ShiftLeft', 'ShiftRight']);
 const ACTION = new Set(['KeyE', 'Enter', 'Space']);
 const ABILITY = 'KeyQ';
 // Digits, - and = pick the Saboteur's trap.
-const OTHER = new Set(['Escape', ABILITY, 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0', 'Minus', 'Equal']);
+const OTHER = new Set(['Escape', ABILITY, 'KeyF', 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0', 'Minus', 'Equal']);
 
 const held = new Set<string>();
 let pressed = new Set<string>();
