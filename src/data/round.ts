@@ -9,6 +9,18 @@ export type Phase = 'setup' | 'live' | 'over';
 export const SETUP_MS = 120_000;
 export const LIVE_MS = 180_000;
 
+// A match is a few rounds, a different Saboteur each round (everyone gets a turn in crews of
+// up to MAX_ROUNDS), the map rotating so the crew sees every arena. Highest total score wins.
+export const MAX_ROUNDS = 4;
+export const roundsFor = (crew: number) => Math.min(crew, MAX_ROUNDS);
+/** The break between rounds (the result card and scoreboard), then the next round starts. */
+export const INTERMISSION_MS = 10_000;
+/** After the last round's card, how long until the final results screen. */
+export const FINAL_DELAY_MS = 6_000;
+/** Points. Runners: per diamond you bank yourself, and each if the Runners win the round.
+ *  Saboteur: per trap hit, per diamond still not banked at the end, and for winning. */
+export const SCORE = { bank: 100, runnersWin: 50, trapHit: 20, unbanked: 50, saboteurWin: 150 };
+
 /** Up to this many players in one heist (one Saboteur, the rest Runners). */
 export const MIN_CREW = 2;
 export const MAX_CREW = 9;

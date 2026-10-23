@@ -12,14 +12,17 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondsToWin, distToSpot, type HidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom } from '../src/data/diamonds.ts';
-import { CUSTOM_MIN, CUSTOM_PAD, LIVE_MS, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
+import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
 import { JAM_MS, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
-import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Taken } from '../src/net/protocol.ts';
+import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Standing, type Taken } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.PORT ?? 3001);
+// For playtests: SETUP_SECONDS=10 HEIST_SECONDS=30 npm run server makes rounds quick.
+const SETUP_TIME = Number(process.env.SETUP_SECONDS ?? 0) * 1000 || SETUP_MS;
+const LIVE_TIME = Number(process.env.HEIST_SECONDS ?? 0) * 1000 || LIVE_MS;
 const TILE = 16;
 
 const readJson = (rel: string) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
@@ -93,12 +96,29 @@ interface Vault {
   searched: Set<string>;
   banked: number;
   need: number;
-  winner: 'runners' | 'saboteur' | null;
+  winner: 'runners' | 'saboteur' | 'none' | null;
+  /** Trap hits this round (the Saboteur scores for each). */
+  hits: number;
   /** Hiding spots near each Runner last time we told them (to send glints only on change). */
   glints: Map<string, string>;
   lastSearch: Map<string, number>;
 }
 const vaults = new Map<string, Vault>();
+
+/** Per match: the rounds. Each round has its own Saboteur (in `order`) and map (in `maps`). */
+interface Series {
+  order: string[];
+  maps: MapId[];
+  round: number;
+  rounds: number;
+  /** Everyone who started the match, with their points per round (kept if they leave). */
+  players: Map<string, { name: string; character: CharacterId; perRound: number[] }>;
+  history: { map: MapId; saboteur: string; winner: 'runners' | 'saboteur' | 'none' }[];
+  /** When the break after a round ends (next round, or the final results). */
+  nextAt: number | null;
+  done: boolean;
+}
+const series = new Map<string, Series>();
 const phases = new Map<string, { phase: Phase; endsAt: number }>();
 /** When each player last reported a trap hit (ms), so a flood of reports can't spam the crew. */
 const lastTrapHit = new Map<string, number>();
@@ -218,13 +238,22 @@ function toLobby(c: Client) {
 function leaveMatch(c: Client) {
   const match = matches.get(c.room);
   if (!match) return;
-  dropDiamond(c.room, c.state.id, c.state.x, c.state.y);
+  const matchId = c.room;
+  dropDiamond(matchId, c.state.id, c.state.x, c.state.y);
   match.delete(c.state.id);
   for (const id of match) {
     const other = clients.get(id);
     if (other) send(other, { t: 'left', id: c.state.id });
   }
-  if (!match.size) endMatch(c.room);
+  if (!match.size) return endMatch(matchId);
+  const sr = series.get(matchId);
+  if (!sr || sr.done) return;
+  // Too few left to play on: straight to the results. The Saboteur gone: this round is off.
+  if (match.size < 2) {
+    if (phases.get(matchId)?.phase !== 'over') finish(matchId, 'none');
+    return finishSeries(matchId);
+  }
+  if (saboteurs.get(matchId) === c.state.id && phases.get(matchId)?.phase !== 'over') finish(matchId, 'none');
 }
 
 function endMatch(matchId: string) {
@@ -245,20 +274,52 @@ function endMatch(matchId: string) {
   vaults.delete(matchId);
   phases.delete(matchId);
   abilityUses.delete(matchId);
+  series.delete(matchId);
 }
 
 function startMatch(size: number, crew: Client[]) {
   const matchId = `heist-${nextMatch++}`;
-  const map = crewMap(crew);
-  const spawn = mapData[map].spawn;
+  const first = crewMap(crew);
+  // Saboteur turns in a random order; the map starts with the crew's pick and then rotates.
+  const order = crew.map((c) => c.state.id).sort(() => Math.random() - 0.5);
+  const rounds = roundsFor(crew.length);
+  const maps = Array.from({ length: rounds }, (_, i) => MAP_IDS[(MAP_IDS.indexOf(first) + i) % MAP_IDS.length]);
   matches.set(matchId, new Set(crew.map((c) => c.state.id)));
-  matchMaps.set(matchId, map);
   matchSizes.set(matchId, size);
-  doorStates.set(matchId, new Map());
-  crew.forEach((c, i) => {
+  series.set(matchId, {
+    order,
+    maps,
+    round: 0,
+    rounds,
+    players: new Map(crew.map((c) => [c.state.id, { name: c.state.name, character: c.state.character, perRound: [] }])),
+    history: [],
+    nextAt: null,
+    done: false,
+  });
+  for (const c of crew) {
     c.room = matchId;
     c.portalSince.clear();
     c.portalChoice = null;
+  }
+  console.log(`${matchId}: ${size}-player match, ${rounds} rounds, with ${crew.map((c) => c.state.name).join(', ')}`);
+  startRound(matchId);
+}
+
+/** A round: everyone back at the spawn, a fresh house, the next Saboteur in the order. */
+function startRound(matchId: string) {
+  const sr = series.get(matchId);
+  const ids = [...(matches.get(matchId) ?? [])];
+  if (!sr || !ids.length) return;
+  // The next Saboteur still in the match (anyone who left loses their turn).
+  while (sr.round < sr.rounds && !ids.includes(sr.order[sr.round])) sr.round++;
+  if (sr.round >= sr.rounds || ids.length < 2) return finishSeries(matchId);
+  const map = sr.maps[sr.round];
+  const saboteur = sr.order[sr.round];
+  const crew = ids.map((id) => clients.get(id)).filter((c): c is Client => !!c);
+  const spawn = mapData[map].spawn;
+  matchMaps.set(matchId, map);
+  doorStates.set(matchId, new Map());
+  crew.forEach((c, i) => {
     // Rows of five, so a big crew doesn't spawn inside the walls.
     const row = Math.floor(i / 5);
     const inRow = Math.min(5, crew.length - row * 5);
@@ -270,17 +331,16 @@ function startMatch(size: number, crew: Client[]) {
     c.state.hp = MAX_HP;
     c.state.stunned = false;
   });
-  // Round one's saboteur is picked at random; the round system rotates it from there.
-  const saboteur = crew[Math.floor(Math.random() * crew.length)].state.id;
   saboteurs.set(matchId, saboteur);
-  const sabCharacter = crew.find((c) => c.state.id === saboteur)!.state.character;
-  const maxEnergy = saboteurMaxEnergy(sabCharacter, crew.length);
+  const sabCharacter = clients.get(saboteur)!.state.character;
+  const size = matchSizes.get(matchId) ?? crew.length;
+  const maxEnergy = saboteurMaxEnergy(sabCharacter, size);
   saboteurEnergy.set(matchId, { current: maxEnergy, max: maxEnergy });
   placedTraps.set(matchId, new Map());
   // The diamonds start in the Saboteur's hands; they hide them during setup.
   const total = diamondCount(size);
-  vaults.set(matchId, { diamonds: Array.from({ length: total }, (_, i) => ({ id: `d${i + 1}`, place: { at: 'tray' } })), searched: new Set(), banked: 0, need: diamondsToWin(total), winner: null, glints: new Map(), lastSearch: new Map() });
-  phases.set(matchId, { phase: 'setup', endsAt: Date.now() + SETUP_MS });
+  vaults.set(matchId, { diamonds: Array.from({ length: total }, (_, i) => ({ id: `d${i + 1}`, place: { at: 'tray' } })), searched: new Set(), banked: 0, need: diamondsToWin(total), winner: null, hits: 0, glints: new Map(), lastSearch: new Map() });
+  phases.set(matchId, { phase: 'setup', endsAt: Date.now() + SETUP_TIME });
   trapState.set(matchId, new Map(MAPS[map].traps.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
   overclockReadyAt.set(matchId, 0);
@@ -289,11 +349,38 @@ function startMatch(size: number, crew: Client[]) {
   doorJamReadyAt.set(matchId, 0);
   doorLocks.set(matchId, new Map());
   abilityUses.set(matchId, new Map());
+  sr.nextAt = null;
   for (const c of crew) {
     send(c, matchMsg(c, matchId));
     send(c, diamondsMsg(c, matchId));
   }
-  console.log(`${matchId}: ${size}-player heist on ${MAPS[map].name} with ${crew.map((c) => c.state.name).join(', ')}`);
+  console.log(`${matchId}: round ${sr.round + 1}/${sr.rounds} on ${MAPS[map].name}, Saboteur ${clients.get(saboteur)?.state.name}`);
+}
+
+/** Everyone's totals, best first. */
+function standings(matchId: string): Standing[] {
+  const sr = series.get(matchId);
+  if (!sr) return [];
+  const here = matches.get(matchId) ?? new Set();
+  return [...sr.players]
+    .map(([id, p]) => ({ id, name: p.name, character: p.character, total: p.perRound.reduce((a, b) => a + b, 0), perRound: p.perRound, here: here.has(id) }))
+    .sort((a, b) => b.total - a.total);
+}
+
+/** The match is over: the final results, then everyone heads back to the safehouse themselves. */
+function finishSeries(matchId: string) {
+  const sr = series.get(matchId);
+  if (!sr || sr.done) return;
+  sr.done = true;
+  sr.nextAt = null;
+  const round = phases.get(matchId);
+  if (round) round.phase = 'over';
+  const msg: ServerMsg = { t: 'final', standings: standings(matchId), rounds: sr.history };
+  for (const id of matches.get(matchId) ?? []) {
+    const c = clients.get(id);
+    if (c) send(c, msg);
+  }
+  console.log(`${matchId}: match over, ${msg.standings[0]?.name ?? 'nobody'} wins`);
 }
 
 /**
@@ -320,6 +407,8 @@ function matchMsg(c: Client, matchId: string, resume = false): ServerMsg {
     ms: Math.max(0, (round?.endsAt ?? Date.now()) - Date.now()),
     ...(isSaboteur && energy ? { energy: energy.current, maxEnergy: energy.max } : {}),
     ...(resume ? { resume: true } : {}),
+    round: (series.get(matchId)?.round ?? 0) + 1,
+    rounds: series.get(matchId)?.rounds ?? 1,
   };
 }
 
@@ -408,6 +497,16 @@ function tick() {
       else finish(matchId, 'saboteur');
     }
     if (p?.phase === 'live') sendGlints(matchId);
+    // The break after a round: then the next round, or after the last one the final results.
+    const sr = series.get(matchId);
+    if (sr && !sr.done && sr.nextAt !== null && Date.now() >= sr.nextAt) {
+      sr.nextAt = null;
+      if (sr.round + 1 >= sr.rounds) finishSeries(matchId);
+      else {
+        sr.round++;
+        startRound(matchId);
+      }
+    }
   }
 }
 setInterval(tick, 1000 / NET_HZ);
@@ -661,6 +760,8 @@ function handle(c: Client, msg: ClientMsg) {
       if (!saboteurs.has(c.room) || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live') break;
       if (now - (lastTrapHit.get(s.id) ?? 0) < 400) break;
       lastTrapHit.set(s.id, now);
+      const vault = vaults.get(c.room);
+      if (vault) vault.hits++;
       const alert: ServerMsg = { t: 'trapAlert', id: s.id, name: s.name, trap: String(msg.trap).slice(0, 24), area: String(msg.area).slice(0, 32) };
       for (const id of matches.get(c.room) ?? []) {
         const member = clients.get(id);
@@ -806,38 +907,71 @@ function goLive(matchId: string) {
     if (free) d.place = { at: 'spot', spot: free.id };
   }
   round.phase = 'live';
-  round.endsAt = Date.now() + LIVE_MS;
+  round.endsAt = Date.now() + LIVE_TIME;
   // Placed traps stay secret from the Runners, except Fake Loot chests, which are meant to be seen.
   const decoys = [...(placedTraps.get(matchId)?.values() ?? [])].filter((t) => t.kind === 'fakeLoot');
   for (const id of matches.get(matchId) ?? []) {
     const member = clients.get(id);
     if (!member) continue;
-    send(member, { t: 'phase', phase: 'live', ms: LIVE_MS });
+    send(member, { t: 'phase', phase: 'live', ms: LIVE_TIME });
     if (id !== saboteurs.get(matchId)) for (const trap of decoys) send(member, { t: 'place', trap });
   }
   sendDiamonds(matchId);
 }
 
-/** The heist is over: tell everyone who won and where everything was. */
-function finish(matchId: string, winner: 'runners' | 'saboteur') {
+/** The heist is over: score it, tell everyone who won and where everything was, start the break. */
+function finish(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
   const vault = vaults.get(matchId);
   const round = phases.get(matchId);
+  const sr = series.get(matchId);
   if (!vault || !round || round.phase === 'over') return;
   vault.winner = winner;
   round.phase = 'over';
   round.endsAt = Date.now();
+  if (sr) {
+    const sab = saboteurs.get(matchId);
+    for (const [id, p] of sr.players) {
+      let pts = 0;
+      if (id === sab) {
+        pts = vault.hits * SCORE.trapHit + (vault.diamonds.length - vault.banked) * SCORE.unbanked + (winner === 'saboteur' ? SCORE.saboteurWin : 0);
+      } else if (matches.get(matchId)?.has(id)) {
+        pts = vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).length * SCORE.bank + (winner === 'runners' ? SCORE.runnersWin : 0);
+      }
+      p.perRound[sr.round] = pts;
+    }
+    sr.history[sr.round] = { map: matchMaps.get(matchId) ?? 'estate', saboteur: sr.players.get(sab ?? '')?.name ?? '?', winner };
+    const last = sr.round + 1 >= sr.rounds;
+    sr.nextAt = Date.now() + (last ? FINAL_DELAY_MS : INTERMISSION_MS);
+  }
   for (const id of matches.get(matchId) ?? []) {
     const member = clients.get(id);
     if (!member) continue;
     send(member, { t: 'phase', phase: 'over', ms: 0 });
     send(member, resultMsg(matchId));
   }
-  console.log(`${matchId}: ${winner === 'runners' ? 'Runners' : 'Saboteur'} win (${vault.banked}/${vault.need} banked)`);
+  console.log(`${matchId}: round ${(sr?.round ?? 0) + 1} ${winner === 'none' ? 'called off' : `${winner} win`} (${vault.banked}/${vault.need} banked)`);
 }
 
 function resultMsg(matchId: string): ServerMsg {
   const vault = vaults.get(matchId)!;
-  return { t: 'result', winner: vault.winner ?? 'saboteur', banked: vault.banked, need: vault.need, total: vault.diamonds.length, diamonds: vault.diamonds, placed: [...(placedTraps.get(matchId)?.values() ?? [])] };
+  const sr = series.get(matchId);
+  const sab = saboteurs.get(matchId);
+  const r = sr?.round ?? 0;
+  return {
+    t: 'result',
+    winner: vault.winner ?? 'saboteur',
+    banked: vault.banked,
+    need: vault.need,
+    total: vault.diamonds.length,
+    diamonds: vault.diamonds,
+    placed: [...(placedTraps.get(matchId)?.values() ?? [])],
+    round: r + 1,
+    rounds: sr?.rounds ?? 1,
+    points: [...(sr?.players ?? [])].map(([id, p]) => ({ id, name: p.name, points: p.perRound[r] ?? 0, saboteur: id === sab })).sort((a, b) => b.points - a.points),
+    standings: standings(matchId),
+    nextMs: Math.max(0, (sr?.nextAt ?? Date.now()) - Date.now()),
+    last: !sr || r + 1 >= sr.rounds,
+  };
 }
 
 /** Each Runner hears which hiding spots near them hold a diamond (so only those can glint). */
@@ -890,6 +1024,8 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
     send(known, resyncMsg(known.room, known));
     send(known, diamondsMsg(known, known.room));
     if (phases.get(known.room)?.phase === 'over') send(known, resultMsg(known.room));
+    const sr = series.get(known.room);
+    if (sr?.done) send(known, { t: 'final', standings: standings(known.room), rounds: sr.history });
     vaults.get(known.room)?.glints.delete(known.state.id);
   }
   console.log(`${known.state.name} reconnected (${known.room})`);

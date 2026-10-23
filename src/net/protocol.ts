@@ -106,7 +106,7 @@ export type ServerMsg =
    * A portal filled up: you are in a new match with these players. `role` is only your own:
    * nobody is told who the Saboteur is (except the Saboteur).
    */
-  | { t: 'match'; matchId: string; size: number; map: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean }
+  | { t: 'match'; matchId: string; size: number; map: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean; round: number; rounds: number }
   /** The server rejected an optimistic trap placement. */
   | { t: 'placementRejected'; id: string; reason: string }
   /** Current Saboteur trap energy after a placement or pickup. */
@@ -123,7 +123,26 @@ export type ServerMsg =
   /** Someone found, banked or dropped a diamond: a pop-up for everyone. */
   | { t: 'diamondEvent'; kind: 'found' | 'banked' | 'dropped'; id: string; name: string; area: string }
   /** The heist is over: who won, and where every diamond and trap really was. */
-  | { t: 'result'; winner: 'runners' | 'saboteur'; banked: number; need: number; total: number; diamonds: Diamond[]; placed: PlacedTrap[] }
+  | {
+      t: 'result';
+      /** 'none': the Saboteur left, so the round was called off. */
+      winner: 'runners' | 'saboteur' | 'none';
+      banked: number;
+      need: number;
+      total: number;
+      diamonds: Diamond[];
+      placed: PlacedTrap[];
+      round: number;
+      rounds: number;
+      /** Points each player scored this round, and the running totals. */
+      points: { id: string; name: string; points: number; saboteur: boolean }[];
+      standings: Standing[];
+      /** Until the next round starts, or until the final results (last round). */
+      nextMs: number;
+      last: boolean;
+    }
+  /** The match is over: everyone's totals, and what happened each round. */
+  | { t: 'final'; standings: Standing[]; rounds: { map: MapId; saboteur: string; winner: 'runners' | 'saboteur' | 'none' }[] }
   /** The round moved on (setup -> live -> over); `ms` is how long this phase lasts. */
   | { t: 'phase'; phase: Phase; ms: number }
   | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
@@ -154,6 +173,18 @@ export type ServerMsg =
   | { t: 'healed'; by: string }
   /** Someone in your match left. */
   | { t: 'left'; id: string };
+
+/** A player's place in the match. */
+export interface Standing {
+  id: string;
+  name: string;
+  character: CharacterId;
+  total: number;
+  /** Points per round so far. */
+  perRound: number[];
+  /** Still in the match (not left). */
+  here: boolean;
+}
 
 /** Seconds a portal waits, once full, before the heist starts. */
 export const PORTAL_COUNTDOWN = 3;

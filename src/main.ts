@@ -256,6 +256,9 @@ async function boot() {
   let blackoutUntil = 0;
   /** A crusher I set off: if I'm still under it when it slams, it hurts. */
   const crushers: { x: number; y: number; at: number }[] = [];
+  /** Which round of the match this is. */
+  let roundNo = 1;
+  let roundsTotal = 1;
   /** The end of the heist, once the server says who won. */
   let result: Extract<ServerMsg, { t: 'result' }> | null = null;
   /** The diamond in my hands, if any. */
@@ -440,6 +443,8 @@ async function boot() {
     tripwireArmed.clear();
     doorJammedUntil.clear();
     match = { id: msg.matchId, size: msg.size, saboteur: msg.role === 'saboteur' };
+    roundNo = msg.round;
+    roundsTotal = msg.rounds;
     maxTrapEnergy = msg.maxEnergy ?? saboteurMaxEnergy(myCharacter, msg.size);
     trapEnergy = msg.energy ?? maxTrapEnergy;
     placed.clear();
@@ -477,7 +482,7 @@ async function boot() {
       msg.role === 'saboteur'
         ? `Hide the diamonds and place up to ${trapSlots(msg.size)} traps. Confirm when your setup is ready.`
         : 'The Saboteur is rigging the house. Get ready to go in.';
-    banner.innerHTML = `<span class="kicker">${msg.size}-PLAYER HEIST</span><span>You are ${role}</span><span class="crew-list">${job}</span>`;
+    banner.innerHTML = `<span class="kicker">ROUND ${msg.round} OF ${msg.rounds} · ${MAPS[mapId].name}</span><span>You are ${role}</span><span class="crew-list">${job}</span>`;
     banner.hidden = false;
     bannerUntil = performance.now() + BANNER_MS;
     setScene('match');
@@ -621,11 +626,13 @@ async function boot() {
         result = msg;
         diamonds = msg.diamonds;
         for (const t of msg.placed) placed.set(t.id, t);
-        const won = (msg.winner === 'saboteur') === !!match?.saboteur;
-        resultScreen.show({ won, saboteur: !!match?.saboteur, winner: msg.winner, banked: msg.banked, need: msg.need, total: msg.total });
+        resultScreen.show(msg, myId, !!match?.saboteur);
         frameCamera(true);
         break;
       }
+      case 'final':
+        resultScreen.showFinal(msg, myId);
+        break;
       case 'phase':
         phase = msg.phase;
         phaseEndsAt = performance.now() + msg.ms;
@@ -1148,7 +1155,8 @@ async function boot() {
     }
     if (performance.now() > bannerUntil) banner.hidden = true;
     const left = Math.max(0, phaseEndsAt - performance.now());
-    hud.setTimer(phase === 'over' ? null : phase === 'setup' ? 'SETUP' : 'HEIST', left);
+    hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${phase === 'setup' ? 'SETUP' : 'HEIST'}`, left);
+    resultScreen.tick();
     updateObjective();
     const sab = !!match?.saboteur;
     if (input.ability && !hud.messageOpen && phase === 'live') abilities.use(abilityContext());
@@ -2088,6 +2096,8 @@ async function boot() {
   let last = performance.now();
   let acc = 0;
   function tick(now: number) {
+    // Ask for the next frame first, so one bad frame can't stop the game for good.
+    requestAnimationFrame(tick);
     acc += Math.min(now - last, 250);
     last = now;
     while (acc >= 1000 / 60) {
@@ -2095,7 +2105,6 @@ async function boot() {
       acc -= 1000 / 60;
     }
     draw();
-    requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
 }

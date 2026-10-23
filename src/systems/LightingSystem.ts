@@ -31,6 +31,8 @@ export class LightingSystem {
   draw(ctx: CanvasRenderingContext2D, camX: number, camY: number, viewW: number, viewH: number, scale: number) {
     const w = Math.ceil(viewW);
     const h = Math.ceil(viewH);
+    // A window with no size (minimised, or a hidden tab): nothing to light.
+    if (w <= 0 || h <= 0) return;
     if (this.overlay.width !== w || this.overlay.height !== h) {
       this.overlay.width = w;
       this.overlay.height = h;
