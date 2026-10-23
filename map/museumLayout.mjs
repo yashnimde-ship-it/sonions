@@ -89,9 +89,7 @@ export const WALLS = [
   [3.0, 35.4, 12.2, 36.4], // dinosaur exhibit, south (gift shop door 12.2-14.6, cafeteria door 20.0-21.8)
   [14.6, 35.4, 20.0, 36.4],
   [21.8, 35.4, 34.2, 36.4],
-  [17.8, 36.4, 18.6, 39.0], // gift shop | cafeteria (two side doors, 39.0-41.7 and 43.5-46.2)
-  [17.8, 41.7, 18.6, 43.5],
-  [17.8, 46.2, 18.6, 50.4],
+  [17.8, 36.4, 18.6, 50.4], // gift shop | cafeteria (the pale strips are glass panels behind the shelves)
   [3.0, 46.6, 18.6, 50.2], // gift shop, south (and the facade below it)
   [18.0, 48.6, 34.2, 50.4], // cafeteria, south
   // ---- Centre ----
@@ -239,7 +237,7 @@ export const SOLIDS = [
   // Restricted vault
   [82.2, 27.8, 87.6, 33.4], // the vault door
   [77.4, 24.6, 94.4, 26.0], // shelving along the north wall
-  [78.0, 26.0, 80.4, 31.0], // warning lights on their banners
+  [78.4, 26.0, 80.4, 30.4], // warning lights on their banners (clear of the vault door)
   [91.0, 26.0, 93.6, 31.0],
   [89.4, 29.6, 90.8, 31.2], // keypad
   [91.6, 31.4, 94.4, 33.4], // treasure chest
@@ -293,8 +291,6 @@ export const DOORS = [
   // Doorways drawn open (the pale strips); closed, a wooden leaf fills the gap.
   { id: 'side-dino-1', name: 'exhibit door', box: [19.4, 18.9, 21.2, 19.8], side: true },
   { id: 'side-dino-2', name: 'exhibit door', box: [26.6, 18.9, 28.2, 19.8], side: true },
-  { id: 'side-shop-1', name: 'cafeteria door', box: [17.7, 39.0, 18.7, 41.7], side: true },
-  { id: 'side-shop-2', name: 'cafeteria door', box: [17.7, 43.5, 18.7, 46.2], side: true },
   { id: 'side-hall-1', name: 'gallery door', box: [32.9, 25.8, 34.2, 28.0], side: true },
   { id: 'side-hall-2', name: 'gallery door', box: [32.9, 30.0, 34.2, 33.8], side: true },
   { id: 'side-egypt', name: 'gallery door', box: [55.6, 15.8, 57.4, 18.8], side: true },

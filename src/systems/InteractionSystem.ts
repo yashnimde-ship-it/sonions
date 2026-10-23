@@ -36,7 +36,10 @@ export class InteractionSystem {
     ];
     for (const [px, py] of probes) {
       const p = DOOR_REACH;
-      const door = this.doors.find((d) => px >= d.x - p && px < d.x + d.w + p && py >= d.y - p && py < d.y + d.h + p);
+      const door = this.doors.find((d) => {
+        const [x0, y0, x1, y1] = d.reach ?? [d.x, d.y, d.x + d.w, d.y + d.h];
+        return px >= x0 - p && px < x1 + p && py >= y0 - p && py < y1 + p;
+      });
       if (door) return { kind: 'door', door };
       const diamond = this.items.find((i) => i.loot && !this.looted.has(i.id) && i.lootPos && Math.hypot(px - i.lootPos.x, py - i.lootPos.y) <= 18);
       if (diamond) return { kind: 'item', item: diamond };

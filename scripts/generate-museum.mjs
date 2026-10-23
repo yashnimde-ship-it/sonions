@@ -186,7 +186,13 @@ const map = {
   indoor,
   lights: L.LIGHTS,
   interactables: L.INTERACTABLES,
-  doors: doors.map((d, i) => ({ id: d.id, name: d.name, x: d.x, y: d.y, w: d.w, h: d.h, atlas: d.atlas, cells: doorCells(L.DOORS[i].hit ?? d.box), ...(L.DOORS[i].keypad ? { keypad: true } : {}) })),
+  doors: doors.map((d, i) => {
+    // Where E works: the drawn door and its whole doorway (thick walls make the doorway
+    // deeper than the art), so it can be reached from either side.
+    const hit = (L.DOORS[i].hit ?? L.DOORS[i].box).map((v) => v * TILE);
+    const reach = [Math.min(d.x, hit[0]), Math.min(d.y, hit[1]), Math.max(d.x + d.w, hit[2]), Math.max(d.y + d.h, hit[3])].map(Math.round);
+    return { id: d.id, name: d.name, x: d.x, y: d.y, w: d.w, h: d.h, atlas: d.atlas, cells: doorCells(L.DOORS[i].hit ?? d.box), reach, ...(L.DOORS[i].keypad ? { keypad: true } : {}) };
+  }),
   spawn: L.SPAWN,
 };
 fs.mkdirSync(OUT, { recursive: true });
