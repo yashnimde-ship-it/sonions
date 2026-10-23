@@ -91,7 +91,11 @@ export const WALLS = [
   [53.0, 20.2, 67.6, 24.2], // between garage and wardrobe room, and its wall face
   [67.6, 21.9, 70, 40], // east of the wardrobe room
   [49.5, 31.7, 70, 40], // under the Start panel
-  [20.2, 39.0, 49.5, 40], // the street edge below the porch
+  // Below the porch is the street: nobody goes down there. Only the steps between the pillars
+  // stay open (they're walkable down to the pillars' feet), so no one can get stuck in a pocket.
+  [20.2, 35.5, 31.0, 40],
+  [39.0, 35.5, 49.5, 40],
+  [31.0, 37.4, 39.0, 40],
 ];
 
 /** The real estate map, printed on the planning table (the inner, grassy part of the board). */
