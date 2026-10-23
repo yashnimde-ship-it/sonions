@@ -1922,9 +1922,9 @@ async function boot() {
     const left = blackoutUntil - performance.now();
     const sx = (me.x - camX) * scale;
     const sy = (me.y - 18 - camY) * scale;
-    const r = 34 * scale;
+    const r = 84 * scale; // about 5 tiles: dark enough to hurt, wide enough to find the door
     ctx.save();
-    const grad = ctx.createRadialGradient(sx, sy, r * 0.4, sx, sy, r);
+    const grad = ctx.createRadialGradient(sx, sy, r * 0.55, sx, sy, r);
     grad.addColorStop(0, 'rgba(0,0,0,0)');
     grad.addColorStop(1, `rgba(4,2,10,${Math.min(0.96, left / 400)})`);
     ctx.fillStyle = grad;
