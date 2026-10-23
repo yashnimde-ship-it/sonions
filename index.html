@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bandit</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="hud">
+      <div class="panel loot"><span class="label">LOOT</span> <span id="loot-total">$0</span> <span id="loot-count" class="muted">0/0</span></div>
+      <div class="panel area" id="area">The Estate</div>
+      <div class="prompt" id="prompt" hidden></div>
+      <div class="message" id="message" hidden><p id="message-text"></p><span class="more">E</span></div>
+      <div class="help">WASD / Arrows move · Shift sprint · E interact</div>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

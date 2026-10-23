@@ -1,0 +1,1002 @@
+[
+ {
+  "id": "garage-car-1",
+  "type": "car",
+  "room": "garage",
+  "x": 192,
+  "y": 144,
+  "w": 87,
+  "h": 160,
+  "file": "garage-car-1.png"
+ },
+ {
+  "id": "garage-workbench-1",
+  "type": "workbench",
+  "room": "garage",
+  "x": 142,
+  "y": 108,
+  "w": 58,
+  "h": 43,
+  "file": "garage-workbench-1.png"
+ },
+ {
+  "id": "garage-shelf-1",
+  "type": "shelf",
+  "room": "garage",
+  "x": 137,
+  "y": 160,
+  "w": 33,
+  "h": 128,
+  "file": "garage-shelf-1.png"
+ },
+ {
+  "id": "garage-shelf-2",
+  "type": "shelf",
+  "room": "garage",
+  "x": 291,
+  "y": 160,
+  "w": 33,
+  "h": 128,
+  "file": "garage-shelf-2.png"
+ },
+ {
+  "id": "garage-crate-1",
+  "type": "crate",
+  "room": "garage",
+  "x": 284,
+  "y": 110,
+  "w": 33,
+  "h": 33,
+  "file": "garage-crate-1.png"
+ },
+ {
+  "id": "storage-dresser-1",
+  "type": "dresser",
+  "room": "storage",
+  "x": 331,
+  "y": 107,
+  "w": 65,
+  "h": 52,
+  "file": "storage-dresser-1.png"
+ },
+ {
+  "id": "storage-shelf-1",
+  "type": "shelf",
+  "room": "storage",
+  "x": 331,
+  "y": 267,
+  "w": 65,
+  "h": 36,
+  "file": "storage-shelf-1.png"
+ },
+ {
+  "id": "storage-plant-1",
+  "type": "plant",
+  "room": "storage",
+  "x": 366,
+  "y": 232,
+  "w": 33,
+  "h": 32,
+  "file": "storage-plant-1.png"
+ },
+ {
+  "id": "kitchen-fridge-1",
+  "type": "fridge",
+  "room": "kitchen",
+  "x": 409,
+  "y": 105,
+  "w": 52,
+  "h": 87,
+  "file": "kitchen-fridge-1.png"
+ },
+ {
+  "id": "kitchen-counter-1",
+  "type": "counter",
+  "room": "kitchen",
+  "x": 449,
+  "y": 105,
+  "w": 219,
+  "h": 44,
+  "file": "kitchen-counter-1.png"
+ },
+ {
+  "id": "kitchen-table-1",
+  "type": "table",
+  "room": "kitchen",
+  "x": 460,
+  "y": 148,
+  "w": 52,
+  "h": 43,
+  "file": "kitchen-table-1.png"
+ },
+ {
+  "id": "kitchen-rug-1",
+  "type": "rug",
+  "room": "kitchen",
+  "x": 433,
+  "y": 216,
+  "w": 59,
+  "h": 74,
+  "file": "kitchen-rug-1.png"
+ },
+ {
+  "id": "kitchen-dining-1",
+  "type": "dining",
+  "room": "kitchen",
+  "x": 539,
+  "y": 190,
+  "w": 93,
+  "h": 71,
+  "file": "kitchen-dining-1.png"
+ },
+ {
+  "id": "kitchen-plant-1",
+  "type": "plant",
+  "room": "kitchen",
+  "x": 632,
+  "y": 129,
+  "w": 32,
+  "h": 33,
+  "file": "kitchen-plant-1.png"
+ },
+ {
+  "id": "kitchen-plant-2",
+  "type": "plant",
+  "room": "kitchen",
+  "x": 632,
+  "y": 225,
+  "w": 32,
+  "h": 33,
+  "file": "kitchen-plant-2.png"
+ },
+ {
+  "id": "kitchen-plant-3",
+  "type": "plant",
+  "room": "kitchen",
+  "x": 412,
+  "y": 257,
+  "w": 33,
+  "h": 33,
+  "file": "kitchen-plant-3.png"
+ },
+ {
+  "id": "bath1-bathtub-1",
+  "type": "bathtub",
+  "room": "bath1",
+  "x": 737,
+  "y": 110,
+  "w": 52,
+  "h": 78,
+  "file": "bath1-bathtub-1.png"
+ },
+ {
+  "id": "bath1-toilet-1",
+  "type": "toilet",
+  "room": "bath1",
+  "x": 683,
+  "y": 196,
+  "w": 33,
+  "h": 33,
+  "file": "bath1-toilet-1.png"
+ },
+ {
+  "id": "bath1-sink-1",
+  "type": "sink",
+  "room": "bath1",
+  "x": 744,
+  "y": 203,
+  "w": 32,
+  "h": 33,
+  "file": "bath1-sink-1.png"
+ },
+ {
+  "id": "bath1-bathmat-1",
+  "type": "bathmat",
+  "room": "bath1",
+  "x": 705,
+  "y": 136,
+  "w": 39,
+  "h": 32,
+  "file": "bath1-bathmat-1.png"
+ },
+ {
+  "id": "master-rug-1",
+  "type": "rug",
+  "room": "master",
+  "x": 865,
+  "y": 184,
+  "w": 180,
+  "h": 112,
+  "file": "master-rug-1.png"
+ },
+ {
+  "id": "master-bed-1",
+  "type": "bed",
+  "room": "master",
+  "x": 897,
+  "y": 108,
+  "w": 113,
+  "h": 161,
+  "file": "master-bed-1.png"
+ },
+ {
+  "id": "master-nightstand-1",
+  "type": "nightstand",
+  "room": "master",
+  "x": 865,
+  "y": 113,
+  "w": 33,
+  "h": 33,
+  "file": "master-nightstand-1.png"
+ },
+ {
+  "id": "master-nightstand-2",
+  "type": "nightstand",
+  "room": "master",
+  "x": 1003,
+  "y": 113,
+  "w": 33,
+  "h": 33,
+  "file": "master-nightstand-2.png"
+ },
+ {
+  "id": "master-wardrobe-1",
+  "type": "wardrobe",
+  "room": "master",
+  "x": 795,
+  "y": 108,
+  "w": 49,
+  "h": 116,
+  "file": "master-wardrobe-1.png"
+ },
+ {
+  "id": "master-dresser-1",
+  "type": "dresser",
+  "room": "master",
+  "x": 795,
+  "y": 225,
+  "w": 49,
+  "h": 68,
+  "file": "master-dresser-1.png"
+ },
+ {
+  "id": "master-dresser-2",
+  "type": "dresser",
+  "room": "master",
+  "x": 1048,
+  "y": 110,
+  "w": 44,
+  "h": 55,
+  "file": "master-dresser-2.png"
+ },
+ {
+  "id": "master-bookshelf-1",
+  "type": "bookshelf",
+  "room": "master",
+  "x": 1048,
+  "y": 184,
+  "w": 44,
+  "h": 103,
+  "file": "master-bookshelf-1.png"
+ },
+ {
+  "id": "master-plant-1",
+  "type": "plant",
+  "room": "master",
+  "x": 1048,
+  "y": 152,
+  "w": 32,
+  "h": 32,
+  "file": "master-plant-1.png"
+ },
+ {
+  "id": "living-bookshelf-1",
+  "type": "bookshelf",
+  "room": "living",
+  "x": 366,
+  "y": 313,
+  "w": 97,
+  "h": 59,
+  "file": "living-bookshelf-1.png"
+ },
+ {
+  "id": "living-dresser-1",
+  "type": "dresser",
+  "room": "living",
+  "x": 456,
+  "y": 318,
+  "w": 48,
+  "h": 52,
+  "file": "living-dresser-1.png"
+ },
+ {
+  "id": "living-picture-1",
+  "type": "picture",
+  "room": "living",
+  "x": 494,
+  "y": 310,
+  "w": 33,
+  "h": 33,
+  "file": "living-picture-1.png"
+ },
+ {
+  "id": "living-floorLamp-1",
+  "type": "floorLamp",
+  "room": "living",
+  "x": 331,
+  "y": 334,
+  "w": 33,
+  "h": 33,
+  "file": "living-floorLamp-1.png"
+ },
+ {
+  "id": "living-tv-1",
+  "type": "tv",
+  "room": "living",
+  "x": 315,
+  "y": 401,
+  "w": 45,
+  "h": 100,
+  "file": "living-tv-1.png"
+ },
+ {
+  "id": "living-rug-1",
+  "type": "rug",
+  "room": "living",
+  "x": 385,
+  "y": 446,
+  "w": 158,
+  "h": 106,
+  "file": "living-rug-1.png"
+ },
+ {
+  "id": "living-sofa-1",
+  "type": "sofa",
+  "room": "living",
+  "x": 398,
+  "y": 385,
+  "w": 138,
+  "h": 62,
+  "file": "living-sofa-1.png"
+ },
+ {
+  "id": "living-sofa-2",
+  "type": "sofa",
+  "room": "living",
+  "x": 372,
+  "y": 452,
+  "w": 62,
+  "h": 97,
+  "file": "living-sofa-2.png"
+ },
+ {
+  "id": "living-coffeeTable-1",
+  "type": "coffeeTable",
+  "room": "living",
+  "x": 433,
+  "y": 454,
+  "w": 91,
+  "h": 74,
+  "file": "living-coffeeTable-1.png"
+ },
+ {
+  "id": "living-plant-1",
+  "type": "plant",
+  "room": "living",
+  "x": 318,
+  "y": 497,
+  "w": 33,
+  "h": 33,
+  "file": "living-plant-1.png"
+ },
+ {
+  "id": "hall-rug-1",
+  "type": "rug",
+  "room": "hall",
+  "x": 670,
+  "y": 337,
+  "w": 177,
+  "h": 52,
+  "file": "hall-rug-1.png"
+ },
+ {
+  "id": "hall-rug-2",
+  "type": "rug",
+  "room": "hall",
+  "x": 702,
+  "y": 491,
+  "w": 58,
+  "h": 116,
+  "file": "hall-rug-2.png"
+ },
+ {
+  "id": "hall-table-1",
+  "type": "table",
+  "room": "hall",
+  "x": 702,
+  "y": 414,
+  "w": 58,
+  "h": 84,
+  "file": "hall-table-1.png"
+ },
+ {
+  "id": "hall-plant-1",
+  "type": "plant",
+  "room": "hall",
+  "x": 625,
+  "y": 315,
+  "w": 33,
+  "h": 33,
+  "file": "hall-plant-1.png"
+ },
+ {
+  "id": "hall-dresser-1",
+  "type": "dresser",
+  "room": "hall",
+  "x": 619,
+  "y": 408,
+  "w": 42,
+  "h": 96,
+  "file": "hall-dresser-1.png"
+ },
+ {
+  "id": "hall-plant-2",
+  "type": "plant",
+  "room": "hall",
+  "x": 632,
+  "y": 600,
+  "w": 32,
+  "h": 32,
+  "file": "hall-plant-2.png"
+ },
+ {
+  "id": "corridor-dresser-1",
+  "type": "dresser",
+  "room": "corridor",
+  "x": 888,
+  "y": 315,
+  "w": 103,
+  "h": 49,
+  "file": "corridor-dresser-1.png"
+ },
+ {
+  "id": "dining-rug-1",
+  "type": "rug",
+  "room": "dining",
+  "x": 843,
+  "y": 456,
+  "w": 125,
+  "h": 164,
+  "file": "dining-rug-1.png"
+ },
+ {
+  "id": "dining-dining-1",
+  "type": "dining",
+  "room": "dining",
+  "x": 872,
+  "y": 481,
+  "w": 71,
+  "h": 107,
+  "file": "dining-dining-1.png"
+ },
+ {
+  "id": "dining-dresser-1",
+  "type": "dresser",
+  "room": "dining",
+  "x": 809,
+  "y": 443,
+  "w": 39,
+  "h": 113,
+  "file": "dining-dresser-1.png"
+ },
+ {
+  "id": "dining-plant-1",
+  "type": "plant",
+  "room": "dining",
+  "x": 952,
+  "y": 414,
+  "w": 32,
+  "h": 33,
+  "file": "dining-plant-1.png"
+ },
+ {
+  "id": "dining-plant-2",
+  "type": "plant",
+  "room": "dining",
+  "x": 952,
+  "y": 606,
+  "w": 32,
+  "h": 33,
+  "file": "dining-plant-2.png"
+ },
+ {
+  "id": "dining-plant-3",
+  "type": "plant",
+  "room": "dining",
+  "x": 811,
+  "y": 606,
+  "w": 33,
+  "h": 33,
+  "file": "dining-plant-3.png"
+ },
+ {
+  "id": "bed2-bed-1",
+  "type": "bed",
+  "room": "bed2",
+  "x": 1009,
+  "y": 331,
+  "w": 71,
+  "h": 122,
+  "file": "bed2-bed-1.png"
+ },
+ {
+  "id": "bed2-bookshelf-1",
+  "type": "bookshelf",
+  "room": "bed2",
+  "x": 1070,
+  "y": 315,
+  "w": 58,
+  "h": 61,
+  "file": "bed2-bookshelf-1.png"
+ },
+ {
+  "id": "bed2-roundRug-1",
+  "type": "roundRug",
+  "room": "bed2",
+  "x": 1115,
+  "y": 424,
+  "w": 33,
+  "h": 32,
+  "file": "bed2-roundRug-1.png"
+ },
+ {
+  "id": "bed2-desk-1",
+  "type": "desk",
+  "room": "bed2",
+  "x": 1163,
+  "y": 366,
+  "w": 52,
+  "h": 94,
+  "file": "bed2-desk-1.png"
+ },
+ {
+  "id": "bed2-plant-1",
+  "type": "plant",
+  "room": "bed2",
+  "x": 1003,
+  "y": 446,
+  "w": 33,
+  "h": 33,
+  "file": "bed2-plant-1.png"
+ },
+ {
+  "id": "bath2-bathtub-1",
+  "type": "bathtub",
+  "room": "bath2",
+  "x": 1169,
+  "y": 497,
+  "w": 52,
+  "h": 87,
+  "file": "bath2-bathtub-1.png"
+ },
+ {
+  "id": "bath2-sink-1",
+  "type": "sink",
+  "room": "bath2",
+  "x": 1118,
+  "y": 552,
+  "w": 33,
+  "h": 32,
+  "file": "bath2-sink-1.png"
+ },
+ {
+  "id": "bed3-roundRug-1",
+  "type": "roundRug",
+  "room": "bed3",
+  "x": 1060,
+  "y": 664,
+  "w": 33,
+  "h": 32,
+  "file": "bed3-roundRug-1.png"
+ },
+ {
+  "id": "bed3-bed-1",
+  "type": "bed",
+  "room": "bed3",
+  "x": 1092,
+  "y": 593,
+  "w": 107,
+  "h": 145,
+  "file": "bed3-bed-1.png"
+ },
+ {
+  "id": "bed3-nightstand-1",
+  "type": "nightstand",
+  "room": "bed3",
+  "x": 1185,
+  "y": 603,
+  "w": 33,
+  "h": 33,
+  "file": "bed3-nightstand-1.png"
+ },
+ {
+  "id": "bed3-dresser-1",
+  "type": "dresser",
+  "room": "bed3",
+  "x": 1001,
+  "y": 616,
+  "w": 43,
+  "h": 106,
+  "file": "bed3-dresser-1.png"
+ },
+ {
+  "id": "bed3-chair-1",
+  "type": "chair",
+  "room": "bed3",
+  "x": 1028,
+  "y": 689,
+  "w": 33,
+  "h": 33,
+  "file": "bed3-chair-1.png"
+ },
+ {
+  "id": "yard-plant-1",
+  "type": "plant",
+  "room": null,
+  "x": 1003,
+  "y": 590,
+  "w": 33,
+  "h": 33,
+  "file": "yard-plant-1.png"
+ },
+ {
+  "id": "bed3-bookshelf-1",
+  "type": "bookshelf",
+  "room": "bed3",
+  "x": 1188,
+  "y": 648,
+  "w": 40,
+  "h": 87,
+  "file": "bed3-bookshelf-1.png"
+ },
+ {
+  "id": "study-bookshelf-1",
+  "type": "bookshelf",
+  "room": "study",
+  "x": 369,
+  "y": 569,
+  "w": 97,
+  "h": 55,
+  "file": "study-bookshelf-1.png"
+ },
+ {
+  "id": "study-bookshelf-2",
+  "type": "bookshelf",
+  "room": "study",
+  "x": 316,
+  "y": 574,
+  "w": 56,
+  "h": 46,
+  "file": "study-bookshelf-2.png"
+ },
+ {
+  "id": "study-rug-1",
+  "type": "rug",
+  "room": "study",
+  "x": 369,
+  "y": 622,
+  "w": 155,
+  "h": 110,
+  "file": "study-rug-1.png"
+ },
+ {
+  "id": "study-desk-1",
+  "type": "desk",
+  "room": "study",
+  "x": 411,
+  "y": 644,
+  "w": 93,
+  "h": 75,
+  "file": "study-desk-1.png"
+ },
+ {
+  "id": "study-chair-1",
+  "type": "chair",
+  "room": "study",
+  "x": 440,
+  "y": 625,
+  "w": 32,
+  "h": 33,
+  "file": "study-chair-1.png"
+ },
+ {
+  "id": "study-dresser-1",
+  "type": "dresser",
+  "room": "study",
+  "x": 316,
+  "y": 638,
+  "w": 46,
+  "h": 90,
+  "file": "study-dresser-1.png"
+ },
+ {
+  "id": "study-plant-1",
+  "type": "plant",
+  "room": "study",
+  "x": 504,
+  "y": 574,
+  "w": 32,
+  "h": 33,
+  "file": "study-plant-1.png"
+ },
+ {
+  "id": "bath3-sink-1",
+  "type": "sink",
+  "room": "bath3",
+  "x": 587,
+  "y": 571,
+  "w": 33,
+  "h": 33,
+  "file": "bath3-sink-1.png"
+ },
+ {
+  "id": "bath3-toilet-1",
+  "type": "toilet",
+  "room": "bath3",
+  "x": 555,
+  "y": 628,
+  "w": 33,
+  "h": 33,
+  "file": "bath3-toilet-1.png"
+ },
+ {
+  "id": "yard-pool-1",
+  "type": "pool",
+  "room": null,
+  "x": 1259,
+  "y": 216,
+  "w": 154,
+  "h": 141,
+  "file": "yard-pool-1.png"
+ },
+ {
+  "id": "yard-flamingo-1",
+  "type": "flamingo",
+  "room": null,
+  "x": 1281,
+  "y": 235,
+  "w": 33,
+  "h": 33,
+  "file": "yard-flamingo-1.png"
+ },
+ {
+  "id": "yard-ring-1",
+  "type": "ring",
+  "room": null,
+  "x": 1342,
+  "y": 292,
+  "w": 33,
+  "h": 33,
+  "file": "yard-ring-1.png"
+ },
+ {
+  "id": "yard-umbrella-1",
+  "type": "umbrella",
+  "room": null,
+  "x": 1425,
+  "y": 270,
+  "w": 33,
+  "h": 33,
+  "file": "yard-umbrella-1.png"
+ },
+ {
+  "id": "yard-cafe-1",
+  "type": "cafe",
+  "room": null,
+  "x": 1406,
+  "y": 337,
+  "w": 49,
+  "h": 33,
+  "file": "yard-cafe-1.png"
+ },
+ {
+  "id": "yard-lounger-1",
+  "type": "lounger",
+  "room": null,
+  "x": 1304,
+  "y": 360,
+  "w": 32,
+  "h": 48,
+  "file": "yard-lounger-1.png"
+ },
+ {
+  "id": "yard-lounger-2",
+  "type": "lounger",
+  "room": null,
+  "x": 1336,
+  "y": 360,
+  "w": 32,
+  "h": 48,
+  "file": "yard-lounger-2.png"
+ },
+ {
+  "id": "yard-plant-2",
+  "type": "plant",
+  "room": null,
+  "x": 1240,
+  "y": 366,
+  "w": 32,
+  "h": 33,
+  "file": "yard-plant-2.png"
+ },
+ {
+  "id": "yard-plant-3",
+  "type": "plant",
+  "room": null,
+  "x": 1179,
+  "y": 225,
+  "w": 33,
+  "h": 33,
+  "file": "yard-plant-3.png"
+ },
+ {
+  "id": "yard-planter-1",
+  "type": "planter",
+  "room": null,
+  "x": 1240,
+  "y": 72,
+  "w": 112,
+  "h": 32,
+  "file": "yard-planter-1.png"
+ },
+ {
+  "id": "yard-pergola-1",
+  "type": "pergola",
+  "room": null,
+  "x": 1345,
+  "y": 75,
+  "w": 139,
+  "h": 100,
+  "file": "yard-pergola-1.png"
+ },
+ {
+  "id": "yard-swing-1",
+  "type": "swing",
+  "room": null,
+  "x": 1384,
+  "y": 88,
+  "w": 64,
+  "h": 32,
+  "file": "yard-swing-1.png"
+ },
+ {
+  "id": "yard-vegBed-1",
+  "type": "vegBed",
+  "room": null,
+  "x": 1371,
+  "y": 520,
+  "w": 113,
+  "h": 151,
+  "file": "yard-vegBed-1.png"
+ },
+ {
+  "id": "yard-crate-1",
+  "type": "crate",
+  "room": null,
+  "x": 1409,
+  "y": 670,
+  "w": 33,
+  "h": 33,
+  "file": "yard-crate-1.png"
+ },
+ {
+  "id": "yard-doghouse-1",
+  "type": "doghouse",
+  "room": null,
+  "x": 1419,
+  "y": 715,
+  "w": 49,
+  "h": 49,
+  "file": "yard-doghouse-1.png"
+ },
+ {
+  "id": "yard-swingFrame-1",
+  "type": "swingFrame",
+  "room": null,
+  "x": 1262,
+  "y": 702,
+  "w": 81,
+  "h": 33,
+  "file": "yard-swingFrame-1.png"
+ },
+ {
+  "id": "yard-shed-1",
+  "type": "shed",
+  "room": null,
+  "x": 88,
+  "y": 584,
+  "w": 138,
+  "h": 138,
+  "file": "yard-shed-1.png"
+ },
+ {
+  "id": "yard-firewood-1",
+  "type": "firewood",
+  "room": null,
+  "x": 216,
+  "y": 670,
+  "w": 32,
+  "h": 33,
+  "file": "yard-firewood-1.png"
+ },
+ {
+  "id": "yard-crate-2",
+  "type": "crate",
+  "room": null,
+  "x": 222,
+  "y": 696,
+  "w": 33,
+  "h": 32,
+  "file": "yard-crate-2.png"
+ },
+ {
+  "id": "yard-bench-1",
+  "type": "bench",
+  "room": null,
+  "x": 408,
+  "y": 788,
+  "w": 48,
+  "h": 33,
+  "file": "yard-bench-1.png"
+ },
+ {
+  "id": "yard-mailbox-1",
+  "type": "mailbox",
+  "room": null,
+  "x": 641,
+  "y": 827,
+  "w": 27,
+  "h": 33,
+  "file": "yard-mailbox-1.png"
+ },
+ {
+  "id": "yard-mailbox-2",
+  "type": "mailbox",
+  "room": null,
+  "x": 798,
+  "y": 827,
+  "w": 26,
+  "h": 33,
+  "file": "yard-mailbox-2.png"
+ },
+ {
+  "id": "yard-plant-4",
+  "type": "plant",
+  "room": null,
+  "x": 657,
+  "y": 705,
+  "w": 33,
+  "h": 33,
+  "file": "yard-plant-4.png"
+ },
+ {
+  "id": "yard-plant-5",
+  "type": "plant",
+  "room": null,
+  "x": 753,
+  "y": 705,
+  "w": 33,
+  "h": 33,
+  "file": "yard-plant-5.png"
+ },
+ {
+  "id": "yard-doormat-1",
+  "type": "doormat",
+  "room": null,
+  "x": 705,
+  "y": 667,
+  "w": 62,
+  "h": 39,
+  "file": "yard-doormat-1.png"
+ }
+]
