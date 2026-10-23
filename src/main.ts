@@ -502,11 +502,13 @@ async function boot() {
       me.x = (p.x + p.w / 2) * ART_TILE;
       me.y = (p.y - 0.9) * ART_TILE;
       me.facing = 'up';
+      net.send({ t: 'portal', size: null });
     } else {
       const seat = Math.min(portals.find((s) => s.size === size)?.count ?? 0, size - 1);
       me.x = (p.x + 1.2 + (seat % 3) * ((p.w - 2.4) / 2)) * ART_TILE;
       me.y = (p.y + 2.4 + Math.floor(seat / 3) * 1.3) * ART_TILE;
       me.facing = 'down';
+      net.send({ t: 'portal', size });
     }
     frameCamera(true);
   }

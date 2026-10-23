@@ -34,6 +34,8 @@ interface Client {
   room: string;
   /** When the player stepped into the portal they are standing in (ms), keyed by portal size. */
   portalSince: Map<number, number>;
+  /** Portal chosen from the lobby UI; positional walk-in detection remains supported. */
+  portalChoice: number | null;
 }
 
 const clients = new Map<string, Client>();
@@ -70,6 +72,10 @@ function portalAt(s: PlayerState) {
   return PORTALS.find((p) => s.x >= p.x * TILE && s.x < (p.x + p.w) * TILE && s.y >= p.y * TILE && s.y < (p.y + p.h) * TILE);
 }
 
+function chosenPortal(c: Client) {
+  return PORTALS.find((p) => p.size === c.portalChoice) ?? portalAt(c.state);
+}
+
 function distanceToSegment(x: number, y: number, ax: number, ay: number, bx: number, by: number) {
   const dx = bx - ax;
   const dy = by - ay;
@@ -81,6 +87,7 @@ function distanceToSegment(x: number, y: number, ax: number, ay: number, bx: num
 function toLobby(c: Client) {
   c.room = 'lobby';
   c.portalSince.clear();
+  c.portalChoice = null;
   c.state.x = LOBBY_SPAWN.x + (Math.random() - 0.5) * 64;
   c.state.y = LOBBY_SPAWN.y;
   c.state.facing = 'down';
@@ -119,6 +126,7 @@ function startMatch(size: number, crew: Client[]) {
   crew.forEach((c, i) => {
     c.room = matchId;
     c.portalSince.clear();
+    c.portalChoice = null;
     c.state.x = MATCH_SPAWN.x + (i - (crew.length - 1) / 2) * 36;
     c.state.y = MATCH_SPAWN.y;
     c.state.facing = 'up';
@@ -158,7 +166,7 @@ function updatePortals(now: number): PortalState[] {
   return PORTALS.map((portal) => {
     const inside: Client[] = [];
     for (const c of lobby) {
-      if (portalAt(c.state) === portal) {
+      if (chosenPortal(c) === portal) {
         if (!c.portalSince.has(portal.size)) c.portalSince.set(portal.size, now);
         inside.push(c);
       } else c.portalSince.delete(portal.size);
@@ -239,6 +247,8 @@ function handle(c: Client, msg: ClientMsg) {
       }
       s.x = msg.x;
       s.y = msg.y;
+      // Once a selected-party player walks off the chosen pad, leave that party.
+      if (c.room === 'lobby' && c.portalChoice !== null && portalAt(s)?.size !== c.portalChoice) c.portalChoice = null;
       s.facing = msg.facing;
       s.moving = msg.moving;
       s.sprint = msg.sprint;
@@ -261,6 +271,12 @@ function handle(c: Client, msg: ClientMsg) {
         }
       }
       break;
+    case 'portal': {
+      if (c.room !== 'lobby') break;
+      c.portalChoice = msg.size !== null && PORTALS.some((portal) => portal.size === msg.size) ? msg.size : null;
+      c.portalSince.clear();
+      break;
+    }
     case 'trap': {
       // Only this heist's Saboteur fires traps, and only plates that are ready and not jammed.
       if (saboteurs.get(c.room) !== s.id || phases.get(c.room)?.phase !== 'live') break;
@@ -453,6 +469,7 @@ wss.on('connection', (ws) => {
     ws,
     room: 'lobby',
     portalSince: new Map(),
+    portalChoice: null,
     state: { id, name: '', character: 'maya', x: LOBBY_SPAWN.x, y: LOBBY_SPAWN.y, facing: 'down', moving: false, sprint: false, carrying: false, hp: MAX_HP, stunned: false },
   };
   clients.set(id, c);

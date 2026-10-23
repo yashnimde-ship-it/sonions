@@ -43,6 +43,8 @@ export type ClientMsg =
   | { t: 'hello'; name: string; character: CharacterId }
   // `room` says where the sender was; a lobby move that arrives after a teleport is dropped.
   | { t: 'move'; room: RoomKind; x: number; y: number; facing: Facing; moving: boolean; sprint: boolean; carrying: boolean; hp: number; stunned: boolean }
+  /** Explicit lobby portal selection (also used when the player clicks a portal pad). */
+  | { t: 'portal'; size: number | null }
   | { t: 'character'; character: CharacterId }
   // In a match: shared world changes, relayed to everyone in it.
   | { t: 'door'; id: string; open: boolean }
