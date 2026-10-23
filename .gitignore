@@ -5,3 +5,6 @@ __pycache__/
 
 # Local playtest proxy (points the dev server at a test game server)
 .vite.test.config.ts
+
+# Local-only media (licensed music etc.): never committed
+public/local-assets/

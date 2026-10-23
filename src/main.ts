@@ -21,6 +21,7 @@ import { InteractionSystem } from './systems/InteractionSystem';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { drawTrap } from './systems/TrapArt';
+import { setLobbyMusic, setMusicEnabled } from './systems/Music';
 import { play as sfx, setSoundEnabled, unlockSound } from './systems/Sound';
 import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
 import { HUD } from './ui/HUD';
@@ -425,6 +426,7 @@ async function boot() {
     scene = next;
     title.show(scene === 'title');
     lobby.show(scene === 'lobby');
+    setLobbyMusic(scene === 'lobby');
     hudEl.hidden = scene !== 'match';
     if (scene !== 'match') banner.hidden = true;
     frameCamera(true);
@@ -1007,12 +1009,14 @@ async function boot() {
     title.setBusy(false);
   };
   setSoundEnabled(settings.values.sound);
+  setMusicEnabled(settings.values.music);
   // Web Audio must be started during a real user gesture; most game sounds arrive later via WS.
   window.addEventListener('pointerdown', unlockSound, { once: true });
   window.addEventListener('keydown', unlockSound, { once: true });
   settings.onChange(() => {
     setSoundEnabled(settings.values.sound);
     if (settings.values.sound) unlockSound();
+    setMusicEnabled(settings.values.music);
     frameCamera(true);
   });
 
