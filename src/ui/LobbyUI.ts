@@ -1,6 +1,11 @@
 import { CHARACTERS, type CharacterId } from '../config';
-import { CHARACTER_INFO } from '../data/characters';
-import type { PortalState } from '../net/protocol';
+import { abilityFor, CHARACTER_INFO } from '../data/characters';
+import type { PortalState, Taken } from '../net/protocol';
+
+const abilityLine = (id: CharacterId, role: 'runner' | 'saboteur') => {
+  const a = abilityFor(id, role);
+  return `<span class="ability"><span class="role ${role}">${role === 'runner' ? 'RUN' : 'SAB'}</span> ${a.name} <span class="blurb">${a.blurb}</span></span>`;
+};
 
 const cardHtml = (id: CharacterId, title: string) => {
   const info = CHARACTER_INFO[id];
@@ -9,8 +14,8 @@ const cardHtml = (id: CharacterId, title: string) => {
     <div class="info">
       <span class="slot">${title}</span>
       <span class="nick">${info.nick} <span class="muted">${info.name}</span></span>
-      <span class="ability">${info.ability} <span class="role ${info.role.toLowerCase()}">${info.role}</span></span>
-      <span class="blurb">${info.blurb}</span>
+      ${abilityLine(id, 'runner')}
+      ${abilityLine(id, 'saboteur')}
     </div>`;
 };
 
@@ -27,6 +32,8 @@ export class LobbyUI {
   private lastPortals = '';
   private lastCard = '';
   private choice = 0;
+  /** Characters other players have, and who has them. */
+  private taken = new Map<CharacterId, string>();
   /** Called with the chosen character when the picker is confirmed. */
   onPick: (id: CharacterId) => void = () => {};
   /** START HEIST: jump into the portal closest to filling up. */
@@ -41,12 +48,15 @@ export class LobbyUI {
       const el = document.createElement('button');
       el.className = 'pick';
       el.style.setProperty('--accent', CHARACTER_INFO[id].color);
-      el.innerHTML = `<img src="/assets/characters/${id}-portrait.png" alt=""><span>${CHARACTER_INFO[id].nick}</span><small>${CHARACTER_INFO[id].ability}</small>`;
+      el.innerHTML = `<img src="/assets/characters/${id}-portrait.png" alt=""><span>${CHARACTER_INFO[id].nick}</span><small><b class="runner">RUN</b> ${abilityFor(id, 'runner').name}</small><small><b class="saboteur">SAB</b> ${abilityFor(id, 'saboteur').name}</small><em class="owner"></em>`;
       el.addEventListener('click', () => {
+        if (this.taken.has(id)) return;
         this.choice = i;
         this.confirmPick();
       });
-      el.addEventListener('mouseenter', () => this.movePick(i - this.choice));
+      el.addEventListener('mouseenter', () => {
+        if (!this.taken.has(id)) this.select(i);
+      });
       this.pickerCards.append(el);
     });
   }
@@ -75,6 +85,20 @@ export class LobbyUI {
       .join('');
   }
 
+  /** Who has which character (from the server); `mine` is never shown as taken. */
+  setTaken(list: Taken[], mine: CharacterId) {
+    this.taken = new Map(list.filter((t) => t.character !== mine).map((t) => [t.character, t.name]));
+    CHARACTERS.forEach((id, i) => {
+      const el = this.pickerCards.children[i] as HTMLButtonElement;
+      const owner = this.taken.get(id);
+      el.classList.toggle('taken', !!owner);
+      el.disabled = !!owner;
+      el.querySelector('.owner')!.textContent = owner ? `TAKEN: ${owner}` : '';
+    });
+    // Never leave the cursor on someone else's character.
+    if (this.pickerOpen && this.taken.has(CHARACTERS[this.choice])) this.select(CHARACTERS.indexOf(mine));
+  }
+
   setMe(name: string, id: CharacterId) {
     const key = name + id;
     if (key === this.lastCard) return;
@@ -99,13 +123,26 @@ export class LobbyUI {
     this.picker.hidden = true;
   }
 
+  /** Moves the cursor left or right, skipping characters other players have. */
   movePick(delta: number) {
-    this.choice = (this.choice + delta + CHARACTERS.length) % CHARACTERS.length;
-    [...this.pickerCards.children].forEach((el, i) => el.classList.toggle('selected', i === this.choice));
+    let next = this.choice;
+    for (let i = 0; i < CHARACTERS.length; i++) {
+      next = (next + Math.sign(delta || 1) + CHARACTERS.length) % CHARACTERS.length;
+      if (!this.taken.has(CHARACTERS[next])) break;
+    }
+    if (delta) this.select(next);
+    else this.select(this.choice);
+  }
+
+  private select(i: number) {
+    this.choice = i;
+    [...this.pickerCards.children].forEach((el, j) => el.classList.toggle('selected', j === i));
   }
 
   confirmPick() {
-    this.onPick(CHARACTERS[this.choice]);
+    const id = CHARACTERS[this.choice];
+    if (this.taken.has(id)) return;
+    this.onPick(id);
     this.closePicker();
   }
 }

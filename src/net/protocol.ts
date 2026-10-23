@@ -1,6 +1,7 @@
 // Messages between the game and the server (server/index.ts), sent as JSON over one WebSocket.
 
 import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node server
+import type { AbilityId } from '../data/characters.ts';
 
 export type Facing = 'up' | 'down' | 'left' | 'right';
 export type RoomKind = 'lobby' | 'match';
@@ -14,6 +15,14 @@ export interface PlayerState {
   facing: Facing;
   moving: boolean;
   sprint: boolean;
+  /** Holding loot (shows a bag over their head). */
+  carrying: boolean;
+}
+
+/** A character someone online is using, and who. */
+export interface Taken {
+  character: CharacterId;
+  name: string;
 }
 
 export interface PortalState {
@@ -28,23 +37,30 @@ export interface PortalState {
 export type ClientMsg =
   | { t: 'hello'; name: string; character: CharacterId }
   // `room` says where the sender was; a lobby move that arrives after a teleport is dropped.
-  | { t: 'move'; room: RoomKind; x: number; y: number; facing: Facing; moving: boolean; sprint: boolean }
+  | { t: 'move'; room: RoomKind; x: number; y: number; facing: Facing; moving: boolean; sprint: boolean; carrying: boolean }
   | { t: 'character'; character: CharacterId }
   // In a match: shared world changes, relayed to everyone in it.
   | { t: 'door'; id: string; open: boolean }
   | { t: 'loot'; id: string }
+  /** An ability was used (for effects others should see). */
+  | { t: 'ability'; ability: AbilityId }
   | { t: 'leave' };
 
 /** Server -> game */
 export type ServerMsg =
   | { t: 'welcome'; id: string }
   /** You are in the lobby now, standing at (x, y) in its art pixels. */
-  | { t: 'lobby'; x: number; y: number }
+  | { t: 'lobby'; x: number; y: number; character: CharacterId }
+  /** Your character, as the server decided it (picks can be refused: one of each per server). */
+  | { t: 'character'; character: CharacterId }
+  /** All five crew members are taken: the server can't fit another player right now. */
+  | { t: 'full' }
   /** A portal filled up: you are in a new match with these players. */
   | { t: 'match'; matchId: string; size: number; players: PlayerState[]; saboteur: string }
-  | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number }
+  | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
   | { t: 'door'; id: string; open: boolean }
   | { t: 'loot'; id: string; by: string }
+  | { t: 'ability'; ability: AbilityId; by: string }
   /** Someone in your match left. */
   | { t: 'left'; id: string };
 

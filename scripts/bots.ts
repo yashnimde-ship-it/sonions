@@ -22,6 +22,7 @@ for (let i = 0; i < count; i++) {
   let x = 0;
   let y = 0;
   let inMatch = false;
+  let lastCarriers = '';
   // Each bot heads to its own spot inside the portal.
   const tx = (portal.x + 1 + (i % 3) * 1.4) * TILE;
   const ty = (portal.y + 1.5 + Math.floor(i / 3) * 1.4) * TILE;
@@ -38,6 +39,12 @@ for (let i = 0; i < count; i++) {
       inMatch = true;
       console.log(`Bot ${i + 1} entered ${msg.matchId}`);
     }
+    if (msg.t === 'ability') console.log(`Bot ${i + 1} saw player ${msg.by} use ${msg.ability}`);
+    if (msg.t === 'snapshot' && msg.room === 'match') {
+      const carriers = msg.players.filter((p) => p.carrying).map((p) => p.name).join(', ');
+      if (carriers !== lastCarriers) console.log(`Bot ${i + 1} sees carrying loot: ${carriers || 'nobody'}`);
+      lastCarriers = carriers;
+    }
   };
   setTimeout(() => {
     setInterval(() => {
@@ -51,7 +58,7 @@ for (let i = 0; i < count; i++) {
         y += (dy / d) * Math.min(d, 4);
       }
       const facing = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : dy < 0 ? 'up' : 'down';
-      send({ t: 'move', room: 'lobby', x, y, facing, moving, sprint: false });
+      send({ t: 'move', room: 'lobby', x, y, facing, moving, sprint: false, carrying: false });
     }, 50);
   }, 1500 + i * 700);
 }

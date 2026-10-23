@@ -4,11 +4,12 @@ import { CHARACTER_INFO } from './data/characters';
 import { Bandit, DRAW_H } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
-import { type EstateJson, TileMap } from './map/TileMap';
+import { type EstateJson, type Interactable, TileMap } from './map/TileMap';
 import { NetClient } from './net/NetClient';
 import { NET_HZ, type PlayerState, type PortalState, type ServerMsg } from './net/protocol';
 import { CameraSystem } from './systems/CameraSystem';
 import { InteractionSystem } from './systems/InteractionSystem';
+import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { HUD } from './ui/HUD';
 import { LobbyUI } from './ui/LobbyUI';
@@ -36,6 +37,10 @@ interface Remote {
   bandit: Bandit;
 }
 
+// Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
+// that). Bank it by walking into the GETAWAY zone on the street, in tiles.
+const CARRY_SLOW = 0.35;
+const GETAWAY = { x: 39.5, y: 55.6, w: 12, h: 3.8 };
 const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#ff4fb0' };
 const BANNER_MS = 4000;
 
@@ -61,6 +66,7 @@ async function boot() {
   const title = new TitleUI();
   const lobby = new LobbyUI();
   const net = new NetClient();
+  const abilities = new AbilitySystem();
 
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   const ctx = canvas.getContext('2d')!;
@@ -78,6 +84,11 @@ async function boot() {
   let portals: PortalState[] = [];
   let match: { id: string; size: number; saboteur: string } | null = null;
   let bannerUntil = 0;
+  let serverFull = false;
+  /** Loot in my hands, and what I've banked this heist. */
+  let carrying: Interactable | null = null;
+  let banked = 0;
+  let bankedCount = 0;
   let sendTimer = 0;
   let lastSprint = false;
 
@@ -128,6 +139,7 @@ async function boot() {
 
   async function play() {
     if (net.connected) return;
+    serverFull = false;
     title.setBusy(true);
     try {
       await net.connect();
@@ -148,7 +160,11 @@ async function boot() {
     estate = new TileMap(estateData, tileset, doorAtlas);
     interactions = new InteractionSystem(estateData.interactables, estateData.doors);
     lighting = new LightingSystem(estate);
+    carrying = null;
+    banked = 0;
+    bankedCount = 0;
     hud.setLoot(0, 0, interactions.lootables.length);
+    hud.setCarrying(null);
     hud.hideMessage();
     match = { id: msg.matchId, size: msg.size, saboteur: msg.saboteur };
     remotes.clear();
@@ -161,6 +177,7 @@ async function boot() {
       me.y = p.y;
       me.facing = p.facing;
     }
+    abilities.setRound(myCharacter, msg.saboteur === myId ? 'saboteur' : 'runner');
     const role = msg.saboteur === myId ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
     const crew = msg.players.map((p) => p.name).join(' · ');
     banner.innerHTML = `<span class="kicker">${msg.size}-PLAYER HEIST</span><span>You are ${role}</span><span class="crew-list">${crew}</span>`;
@@ -177,6 +194,7 @@ async function boot() {
       case 'lobby':
         match = null;
         remotes.clear();
+        setCharacter(msg.character);
         me.x = msg.x;
         me.y = msg.y;
         me.facing = 'down';
@@ -186,10 +204,18 @@ async function boot() {
       case 'match':
         startMatch(msg);
         break;
+      case 'character':
+        setCharacter(msg.character);
+        break;
+      case 'full':
+        serverFull = true;
+        title.setBusy(false, 'All 5 crew members are taken. Try again when someone leaves.');
+        break;
       case 'snapshot': {
         if ((msg.room === 'match') !== (scene === 'match')) break;
         portals = msg.portals;
         lobby.setPortals(portals, msg.online);
+        if (msg.room === 'lobby') lobby.setTaken(msg.taken, myCharacter);
         const seen = new Set<string>();
         for (const p of msg.players) {
           if (p.id === myId) continue;
@@ -210,23 +236,27 @@ async function boot() {
         break;
       }
       case 'loot':
+        // Someone else picked it up: it's gone from the house for everyone.
         interactions.looted.add(msg.id);
-        hud.setLoot(interactions.totalLoot, interactions.looted.size, interactions.lootables.length);
         break;
+      case 'ability': {
+        // Show other players' abilities; the effect itself arrives through their positions.
+        const r = remotes.get(msg.by);
+        if (r && msg.ability === 'quickstep') r.bandit.showTrail(QUICKSTEP_FRAMES + 8);
+        break;
+      }
       case 'left':
         remotes.delete(msg.id);
         break;
     }
   };
   net.onClose = () => {
-    if (scene !== 'title') lobby.showDisconnected();
+    if (scene !== 'title' && !serverFull) lobby.showDisconnected();
   };
 
   title.onPlay = play;
-  lobby.onPick = (id) => {
-    setCharacter(id);
-    net.send({ t: 'character', character: id });
-  };
+  // The server confirms (or refuses) the pick with a 'character' message.
+  lobby.onPick = (id) => net.send({ t: 'character', character: id });
   // START HEIST: step into the portal closest to filling up (most players still needed least).
   lobby.onQuickJoin = () => {
     if (scene !== 'lobby' || lobby.pickerOpen) return;
@@ -247,7 +277,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -257,7 +287,7 @@ async function boot() {
   function sendPosition() {
     if (++sendTimer < 60 / NET_HZ) return;
     sendTimer = 0;
-    net.send({ t: 'move', room: scene === 'match' ? 'match' : 'lobby', x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, facing: me.facing, moving: me.moving, sprint: lastSprint });
+    net.send({ t: 'move', room: scene === 'match' ? 'match' : 'lobby', x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, facing: me.facing, moving: me.moving, sprint: lastSprint, carrying: !!carrying });
   }
 
   function update() {
@@ -294,14 +324,32 @@ async function boot() {
       return;
     }
     if (performance.now() > bannerUntil) banner.hidden = true;
+    if (input.ability && !hud.messageOpen) abilities.use({ me, send: (m) => net.send(m) });
+    abilities.render();
     if (hud.messageOpen) {
       if (input.action) hud.hideMessage();
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
+      me.carryMult = carrying ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1;
       me.update(input, estate);
+      if (carrying && LobbyMap.inside(GETAWAY, me.x, me.y)) {
+        banked += carrying.loot ?? 0;
+        bankedCount++;
+        hud.showMessage(`Banked the ${carrying.name}: +$${carrying.loot}. Total $${banked.toLocaleString()}.`);
+        carrying = null;
+        me.carryMult = 1;
+        hud.setCarrying(null);
+        hud.setLoot(banked, bankedCount, interactions.lootables.length);
+      }
       const near = interactions.nearby(me);
-      hud.setPrompt(near ? interactions.promptFor(near, estate) : null);
-      if (near && input.action) {
+      // Walking into a closed door pushes it open, so nobody stops dead in a doorway.
+      if (me.bumped && near?.kind === 'door' && !estate.isOpen(near.door)) {
+        estate.setDoor(near.door, true);
+        net.send({ t: 'door', id: near.door.id, open: true });
+      }
+      const handsFull = !!carrying && near?.kind === 'item' && !!near.item.loot && !interactions.looted.has(near.item.id);
+      hud.setPrompt(near ? (handsFull ? 'Hands full: bank your loot at the GETAWAY first' : interactions.promptFor(near, estate)) : null);
+      if (near && input.action && !handsFull) {
         if (near.kind === 'door') {
           const refused = interactions.toggleDoor(near.door, estate, me, HITBOX);
           if (refused) hud.showMessage(refused);
@@ -310,8 +358,12 @@ async function boot() {
           const fresh = !!near.item.loot && !interactions.looted.has(near.item.id);
           hud.showMessage(interactions.interact(near.item));
           hud.setPrompt(null);
-          if (fresh) net.send({ t: 'loot', id: near.item.id });
-          hud.setLoot(interactions.totalLoot, interactions.looted.size, interactions.lootables.length);
+          if (fresh) {
+            // It's in your hands now; it only counts once it reaches the GETAWAY.
+            carrying = near.item;
+            hud.setCarrying(`CARRYING ${near.item.name.toUpperCase()} $${near.item.loot}`);
+            net.send({ t: 'loot', id: near.item.id });
+          }
         }
       }
     }
@@ -379,6 +431,7 @@ async function boot() {
     ctx.save();
     ctx.scale(scale, scale);
     drawTwinkles(camX, camY);
+    drawGetaway(camX, camY);
     actors.forEach((b) => b.draw(ctx, camX, camY));
     ctx.restore();
     blit(estate.above, estate.widthPx, estate.heightPx);
@@ -388,8 +441,59 @@ async function boot() {
     ctx.scale(scale, scale);
     ctx.globalAlpha = CHAR_GLOW;
     actors.forEach((b) => b.draw(ctx, camX, camY, false));
+    ctx.globalAlpha = 1;
+    if (carrying) lootBag(me, camX, camY);
+    for (const r of remotes.values()) if (r.state.carrying) lootBag(r.bandit, camX, camY);
     ctx.restore();
+    drawGetawayLabel(camX, camY);
     drawNameTags(camX, camY);
+  }
+
+  /** The zone on the street where loot is banked. */
+  function drawGetaway(camX: number, camY: number) {
+    const x = GETAWAY.x * ART_TILE - camX;
+    const y = GETAWAY.y * ART_TILE - camY;
+    const w = GETAWAY.w * ART_TILE;
+    const h = GETAWAY.h * ART_TILE;
+    ctx.save();
+    ctx.fillStyle = '#6fe07a';
+    ctx.globalAlpha = carrying ? 0.22 + 0.15 * Math.sin(frame / 8) : 0.12;
+    ctx.fillRect(x, y, w, h);
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = '#6fe07a';
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    ctx.restore();
+  }
+
+  function drawGetawayLabel(camX: number, camY: number) {
+    const sx = ((GETAWAY.x + GETAWAY.w / 2) * ART_TILE - camX) * scale;
+    const sy = ((GETAWAY.y + GETAWAY.h / 2) * ART_TILE - camY) * scale;
+    ctx.font = `${Math.round(10 * dpr)}px "Press Start 2P"`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#0e0a1a';
+    ctx.fillText('GETAWAY', sx + 2 * dpr, sy + 2 * dpr);
+    ctx.fillStyle = '#6fe07a';
+    ctx.fillText('GETAWAY', sx, sy);
+  }
+
+  /** A sack of loot held over a bandit's head, in art pixels. */
+  function lootBag(b: Bandit, camX: number, camY: number) {
+    const x = Math.round(b.x - camX);
+    const y = Math.round(b.y - DRAW_H - 4 - camY + Math.sin(frame / 10));
+    ctx.fillStyle = '#16121c';
+    ctx.fillRect(x - 6, y - 7, 12, 10);
+    ctx.fillStyle = '#9a6236';
+    ctx.fillRect(x - 5, y - 6, 10, 8);
+    ctx.fillStyle = '#b97c46';
+    ctx.fillRect(x - 4, y - 6, 4, 3);
+    ctx.fillStyle = '#5a3420';
+    ctx.fillRect(x - 2, y - 9, 4, 3);
+    ctx.fillStyle = '#ffe39a';
+    ctx.fillRect(x - 1, y - 4, 2, 5);
+    ctx.fillRect(x - 2, y - 3, 4, 1);
+    ctx.fillRect(x - 2, y - 1, 4, 1);
   }
 
   function drawTwinkles(camX: number, camY: number) {
@@ -563,10 +667,10 @@ async function boot() {
 
   function drawNameTags(camX: number, camY: number) {
     const size = Math.round(8 * dpr);
-    const tag = (b: Bandit, id: string, name: string, character: CharacterId) => {
+    const tag = (b: Bandit, id: string, name: string, character: CharacterId, bag = false) => {
       const color = CHARACTER_INFO[character].color;
       const sx = (b.x - camX) * scale;
-      const sy = (b.y - DRAW_H - 3 - camY) * scale;
+      const sy = (b.y - DRAW_H - (bag ? 15 : 3) - camY) * scale;
       const role = match?.saboteur === id ? ' [SAB]' : '';
       textTag(`${name}${role}`, sx, sy, id === myId ? '#ffe39a' : color, size);
       ctx.fillStyle = color;
@@ -576,8 +680,9 @@ async function boot() {
       ctx.lineTo(sx, sy + 4 * dpr);
       ctx.fill();
     };
-    for (const [id, r] of remotes) tag(r.bandit, id, r.state.name, r.state.character);
-    tag(me, myId, myName, myCharacter);
+    const inMatch = scene === 'match';
+    for (const [id, r] of remotes) tag(r.bandit, id, r.state.name, r.state.character, inMatch && r.state.carrying);
+    tag(me, myId, myName, myCharacter, inMatch && !!carrying);
   }
 
   // Fixed 60 updates per second; draw once per animation frame.

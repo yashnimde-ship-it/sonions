@@ -23,7 +23,7 @@
       </div>
       <div id="howto" class="modal" hidden>
         <h2>How to play</h2>
-        <p><b class="runner">Runners</b> sneak into the mansion, grab loot and carry it to the getaway van. Loot slows you down, and getting hit makes you drop it.</p>
+        <p><b class="runner">Runners</b> sneak into the mansion, grab loot and carry it out to the GETAWAY zone on the street. You carry one item at a time, and it slows you down.</p>
         <p><b class="saboteur">The Saboteur</b> sees the whole house and fires traps to stop them. Traps cost energy and need time to recharge.</p>
         <p>After every round a new player becomes the Saboteur. Most points after the last round wins.</p>
         <h3>The safehouse</h3>
@@ -32,6 +32,7 @@
         <ul>
           <li><kbd>WASD</kbd> or <kbd>Arrows</kbd> move, <kbd>Shift</kbd> sprint</li>
           <li><kbd>E</kbd> action: customize, open doors, steal</li>
+          <li><kbd>Q</kbd> your character's ability for this round's role</li>
           <li><kbd>Esc</kbd> back to the safehouse</li>
           <li>Gamepad: stick move, <kbd>RT</kbd> sprint, <kbd>A</kbd> action</li>
         </ul>
@@ -68,11 +69,19 @@
     </div>
     <div id="match-banner" class="match-banner" hidden></div>
     <div id="hud" hidden>
-      <div class="panel loot"><span class="label">LOOT</span> <span id="loot-total">$0</span> <span id="loot-count" class="muted">0/0</span></div>
+      <div id="ability" class="ability-slot">
+        <div class="ability-icon"><span class="ability-key">Q</span><div id="ability-cd" class="ability-cd"></div></div>
+        <div class="ability-body">
+          <span id="ability-role" class="ability-role"></span>
+          <span id="ability-name" class="ability-name"></span>
+          <span id="ability-state" class="ability-state"></span>
+        </div>
+      </div>
+      <div class="panel loot"><span class="label">BANKED</span> <span id="loot-total">$0</span> <span id="loot-count" class="muted">0/0</span><div id="carrying" class="carrying" hidden></div></div>
       <div class="panel area" id="area">The Estate</div>
       <div class="prompt" id="prompt" hidden></div>
       <div class="message" id="message" hidden><p id="message-text"></p><span class="more">E</span></div>
-      <div class="help">WASD move · Shift sprint · E action · Esc safehouse</div>
+      <div class="help">WASD move · Shift sprint · E action · Q ability · Esc safehouse</div>
     </div>
     <script type="module" src="./src/main.ts"></script>
   </body>

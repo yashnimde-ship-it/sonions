@@ -543,7 +543,12 @@ kbd {
 }
 
 #my-card {
-  width: 360px;
+  width: 430px;
+}
+
+.card .ability .blurb {
+  display: block;
+  margin-left: 32px;
 }
 
 
@@ -644,11 +649,39 @@ kbd {
   color: #6a5a8a;
 }
 
+.pick small b {
+  font-weight: normal;
+  padding: 0 3px;
+  border-radius: 2px;
+  color: var(--ink);
+}
+
+.pick small b.runner {
+  background: var(--teal);
+}
+
+.pick small b.saboteur {
+  background: var(--magenta);
+}
+
 .pick.selected {
   border-color: var(--accent);
   background: var(--paper);
   transform: translateY(-4px);
   box-shadow: 0 6px 0 var(--accent);
+}
+
+.pick.taken {
+  cursor: not-allowed;
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+.pick .owner {
+  min-height: 9px;
+  font-style: normal;
+  font-size: 7px;
+  color: #c03a32;
 }
 
 .hint.dark {
@@ -699,4 +732,96 @@ kbd {
   .lobby-hint {
     display: none;
   }
+}
+
+/* Ability slot (in a heist) */
+
+.ability-slot {
+  --c: var(--teal);
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px 10px 10px;
+  background: rgba(14, 10, 26, 0.88);
+  border: 3px solid var(--c);
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px var(--ink);
+}
+
+.ability-slot[data-role='saboteur'] {
+  --c: var(--magenta);
+}
+
+.ability-icon {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 6px;
+  background: var(--c);
+  overflow: hidden;
+}
+
+.ability-key {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+  font-size: 20px;
+  color: var(--ink);
+}
+
+.ability-cd {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 100%;
+  background: rgba(14, 10, 26, 0.72);
+}
+
+.ability-slot.ready .ability-icon {
+  box-shadow: 0 0 12px var(--c);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+.ability-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ability-role {
+  font-size: 7px;
+  color: var(--c);
+}
+
+.ability-name {
+  font-size: 13px;
+  color: var(--paper);
+}
+
+.ability-state {
+  font-size: 8px;
+  color: #c9c2d6;
+}
+
+.ability-slot.ready .ability-state {
+  color: #6fe07a;
+}
+
+.carrying {
+  margin-top: 6px;
+  font-size: 9px;
+  color: #ffe39a;
+  animation: blink 1s steps(2) infinite;
 }

@@ -8,6 +8,8 @@ export interface ControlState {
   sprint: boolean;
   /** Action was pressed this frame (customize, steal, open doors). */
   action: boolean;
+  /** Ability was pressed this frame (Q, or X on a gamepad). */
+  ability: boolean;
 }
 
 const MOVE: Record<string, [number, number]> = {
@@ -18,13 +20,16 @@ const MOVE: Record<string, [number, number]> = {
 };
 const SPRINT = new Set(['ShiftLeft', 'ShiftRight']);
 const ACTION = new Set(['KeyE', 'Enter', 'Space']);
-const OTHER = new Set(['Escape']);
+const ABILITY = 'KeyQ';
+const OTHER = new Set(['Escape', ABILITY]);
 
 const held = new Set<string>();
 let pressed = new Set<string>();
 let pressedNext = new Set<string>();
 let padActionWasDown = false;
 let padAction = false;
+let padAbilityWasDown = false;
+let padAbility = false;
 
 /** Typing in a text field (the name box) must not move the bandit. */
 const typing = () => document.activeElement instanceof HTMLInputElement;
@@ -48,6 +53,9 @@ export function pollInput() {
   const down = !!pad()?.buttons[0]?.pressed;
   padAction = down && !padActionWasDown;
   padActionWasDown = down;
+  const abilityDown = !!pad()?.buttons[2]?.pressed;
+  padAbility = abilityDown && !padAbilityWasDown;
+  padAbilityWasDown = abilityDown;
 }
 
 /** Was this key pressed this frame? */
@@ -75,5 +83,5 @@ export function readControls(): ControlState {
     dy = (gp.buttons[13]?.pressed ? 1 : 0) - (gp.buttons[12]?.pressed ? 1 : 0) || dead(gp.axes[1] ?? 0);
     sprint ||= !!(gp.buttons[7]?.pressed || gp.buttons[5]?.pressed);
   }
-  return { dx, dy, sprint, action: [...pressed].some((c) => ACTION.has(c)) || padAction };
+  return { dx, dy, sprint, action: [...pressed].some((c) => ACTION.has(c)) || padAction, ability: pressed.has(ABILITY) || padAbility };
 }

@@ -19,8 +19,8 @@ export const CHAR_DRAW_SCALE = 0.6;
 export const CHAR_GLOW = 0.75;
 
 // Movement in art pixels per frame (60 frames per second).
-export const WALK_SPEED = 1.25;
-export const SPRINT_SPEED = 2.25;
+export const WALK_SPEED = 1.6;
+export const SPRINT_SPEED = 2.6;
 
 // The bandit's feet hitbox, relative to the point between his feet (art pixels).
 export const HITBOX = { left: -5, right: 5, top: -5, bottom: 0 };

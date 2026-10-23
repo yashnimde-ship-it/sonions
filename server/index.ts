@@ -9,7 +9,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
-import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg } from '../src/net/protocol.ts';
+import { CHARACTERS, type CharacterId } from '../src/config.ts';
+import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Taken } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.PORT ?? 3001);
@@ -37,6 +38,11 @@ const portalEnds = new Map<number, number>(); // portal size -> when its countdo
 let nextId = 1;
 let nextMatch = 1;
 
+/** Players who have joined (said hello), wherever they are: lobby or a heist. */
+const joined = () => [...clients.values()].filter((c) => c.state.name);
+/** One of each character per server, like colours in an Among Us lobby. */
+const takenBy = (character: CharacterId, except?: Client) => joined().find((c) => c !== except && c.state.character === character);
+
 const send = (c: Client, msg: ServerMsg) => {
   if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg));
 };
@@ -52,7 +58,7 @@ function toLobby(c: Client) {
   c.state.x = LOBBY_SPAWN.x + (Math.random() - 0.5) * 64;
   c.state.y = LOBBY_SPAWN.y;
   c.state.facing = 'down';
-  send(c, { t: 'lobby', x: c.state.x, y: c.state.y });
+  send(c, { t: 'lobby', x: c.state.x, y: c.state.y, character: c.state.character });
 }
 
 function leaveMatch(c: Client) {
@@ -76,6 +82,7 @@ function startMatch(size: number, crew: Client[]) {
     c.state.y = MATCH_SPAWN.y;
     c.state.facing = 'up';
     c.state.moving = false;
+    c.state.carrying = false;
   });
   // Round one's saboteur is picked at random; the round system rotates it from there.
   const saboteur = crew[Math.floor(Math.random() * crew.length)].state.id;
@@ -114,14 +121,15 @@ function updatePortals(now: number): PortalState[] {
 
 function tick() {
   const portals = updatePortals(Date.now());
-  const online = [...clients.values()].filter((c) => c.state.name).length;
+  const online = joined().length;
+  const taken: Taken[] = joined().map((c) => ({ character: c.state.character, name: c.state.name }));
   const lobbyPlayers = inRoom('lobby').map((c) => c.state);
-  for (const c of inRoom('lobby')) send(c, { t: 'snapshot', room: 'lobby', players: lobbyPlayers, portals, online });
+  for (const c of inRoom('lobby')) send(c, { t: 'snapshot', room: 'lobby', players: lobbyPlayers, portals, online, taken });
   for (const [matchId, ids] of matches) {
     const players = [...ids].map((id) => clients.get(id)?.state).filter((s): s is PlayerState => !!s);
     for (const id of ids) {
       const c = clients.get(id);
-      if (c) send(c, { t: 'snapshot', room: 'match', players, portals: [], online });
+      if (c) send(c, { t: 'snapshot', room: 'match', players, portals: [], online, taken: [] });
     }
     if (!players.length) matches.delete(matchId);
   }
@@ -131,12 +139,21 @@ setInterval(tick, 1000 / NET_HZ);
 function handle(c: Client, msg: ClientMsg) {
   const s = c.state;
   switch (msg.t) {
-    case 'hello':
+    case 'hello': {
+      if (s.name) break;
+      // Your last character if it's free, otherwise the first free one; nobody gets a duplicate.
+      const free = [msg.character, ...CHARACTERS].find((id) => CHARACTERS.includes(id) && !takenBy(id));
+      if (!free) {
+        send(c, { t: 'full' });
+        c.ws.close();
+        break;
+      }
       s.name = String(msg.name).slice(0, 14) || `Bandit ${s.id}`;
-      s.character = msg.character;
+      s.character = free;
       toLobby(c);
-      console.log(`${s.name} joined (${clients.size} connected)`);
+      console.log(`${s.name} joined as ${s.character} (${clients.size} connected)`);
       break;
+    }
     case 'move':
       if ((msg.room === 'lobby') !== (c.room === 'lobby')) break;
       s.x = msg.x;
@@ -144,18 +161,23 @@ function handle(c: Client, msg: ClientMsg) {
       s.facing = msg.facing;
       s.moving = msg.moving;
       s.sprint = msg.sprint;
+      s.carrying = !!msg.carrying;
       break;
     case 'character':
-      s.character = msg.character;
+      // Refused if someone else has it; either way the player hears what they ended up with.
+      if (CHARACTERS.includes(msg.character) && !takenBy(msg.character, c)) s.character = msg.character;
+      send(c, { t: 'character', character: s.character });
       break;
     case 'door':
-    case 'loot': {
+    case 'loot':
+    case 'ability': {
       const match = matches.get(c.room);
       if (!match) break;
+      const out: ServerMsg =
+        msg.t === 'loot' ? { t: 'loot', id: msg.id, by: s.id } : msg.t === 'ability' ? { t: 'ability', ability: msg.ability, by: s.id } : msg;
       for (const id of match) {
         const other = clients.get(id);
-        if (!other || other === c) continue;
-        send(other, msg.t === 'door' ? msg : { t: 'loot', id: msg.id, by: s.id });
+        if (other && other !== c) send(other, out);
       }
       break;
     }
@@ -192,7 +214,7 @@ wss.on('connection', (ws) => {
     ws,
     room: 'lobby',
     portalSince: new Map(),
-    state: { id, name: '', character: 'maya', x: LOBBY_SPAWN.x, y: LOBBY_SPAWN.y, facing: 'down', moving: false, sprint: false },
+    state: { id, name: '', character: 'maya', x: LOBBY_SPAWN.x, y: LOBBY_SPAWN.y, facing: 'down', moving: false, sprint: false, carrying: false },
   };
   clients.set(id, c);
   send(c, { t: 'welcome', id });
