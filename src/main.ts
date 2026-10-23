@@ -2313,10 +2313,11 @@ async function boot() {
     if (!map) return;
     // Under the objective panel, on the left.
     const panel = document.querySelector('.objective')?.getBoundingClientRect();
-    const R = 74 * dpr; // radius, screen px
-    const cx = (16 + 74 + 4) * dpr;
-    const cy = ((panel && panel.height ? panel.bottom : 16) + 18 + 74) * dpr;
-    const SPAN = 20 * ART_TILE; // world px from the centre to the rim
+    const MINI_R = 110; // radius, CSS px
+    const R = MINI_R * dpr;
+    const cx = (16 + MINI_R + 4) * dpr;
+    const cy = ((panel && panel.height ? panel.bottom : 16) + 18 + MINI_R) * dpr;
+    const SPAN = 14 * ART_TILE; // world px from the centre to the rim (zoomed in so the room reads)
     const k = R / SPAN;
     // Fade in and out at the ends.
     const alpha = Math.min(1, t / 180, (MINIMAP_MS - t) / 350);
@@ -2375,19 +2376,19 @@ async function boot() {
     ctx.strokeStyle = `rgba(255, 70, 70, ${1 - p})`;
     ctx.lineWidth = 2 * dpr;
     ctx.beginPath();
-    ctx.arc(cx, cy, (6 + p * 22) * dpr, 0, Math.PI * 2);
+    ctx.arc(cx, cy, (9 + p * 30) * dpr, 0, Math.PI * 2);
     ctx.stroke();
     ctx.fillStyle = '#ff3b4a';
     ctx.beginPath();
-    ctx.arc(cx, cy, 6 * dpr, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 9 * dpr, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#fff4e6';
     ctx.lineWidth = 1.5 * dpr;
     ctx.beginPath();
-    ctx.moveTo(cx - 3 * dpr, cy - 3 * dpr);
-    ctx.lineTo(cx + 3 * dpr, cy + 3 * dpr);
-    ctx.moveTo(cx + 3 * dpr, cy - 3 * dpr);
-    ctx.lineTo(cx - 3 * dpr, cy + 3 * dpr);
+    ctx.moveTo(cx - 4.5 * dpr, cy - 4.5 * dpr);
+    ctx.lineTo(cx + 4.5 * dpr, cy + 4.5 * dpr);
+    ctx.moveTo(cx + 4.5 * dpr, cy - 4.5 * dpr);
+    ctx.lineTo(cx - 4.5 * dpr, cy + 4.5 * dpr);
     ctx.stroke();
     ctx.restore();
     // The rim, and the time left draining round it.
@@ -2403,7 +2404,7 @@ async function boot() {
     ctx.stroke();
     // What and where, under the circle.
     const label = `${trapFlash.trap.toUpperCase()} \u00b7 ${trapFlash.area.toUpperCase()}${multiDeck() ? ` \u00b7 ${deckShort(trapFlash.deck)}` : ''}`;
-    const size = Math.round(7 * dpr);
+    const size = Math.round(9 * dpr);
     ctx.font = `${size}px "Press Start 2P"`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
