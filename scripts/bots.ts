@@ -60,6 +60,9 @@ for (let i = 0; i < count; i++) {
       console.log(`Bot ${i + 1} was healed to full by player ${msg.by}`);
     }
     if (msg.t === 'trap') console.log(`Bot ${i + 1} saw trap ${msg.id} fire`);
+    if (msg.t === 'place') console.log(`Bot ${i + 1} saw a ${msg.trap.kind} placed at ${msg.trap.x},${msg.trap.y}`);
+    if (msg.t === 'unplace') console.log(`Bot ${i + 1} saw trap ${msg.id} picked up`);
+    if (msg.t === 'phase') console.log(`Bot ${i + 1}: round is now ${msg.phase}`);
     if (msg.t === 'jam') console.log(`Bot ${i + 1} saw trap ${msg.id} jammed for ${msg.ms}ms`);
     if (msg.t === 'snapshot' && msg.room === 'match') {
       others = msg.players.filter((p) => p.id !== myId);

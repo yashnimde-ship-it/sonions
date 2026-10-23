@@ -2,6 +2,8 @@
 
 import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node server
 import type { AbilityId } from '../data/characters.ts';
+import type { Phase } from '../data/round.ts';
+import type { PlacedTrap } from '../data/trapKinds.ts';
 
 export type Facing = 'up' | 'down' | 'left' | 'right';
 export type RoomKind = 'lobby' | 'match';
@@ -47,6 +49,15 @@ export type ClientMsg =
   | { t: 'loot'; id: string }
   /** The Saboteur fires a trap plate. */
   | { t: 'trap'; id: string }
+  /** Dev's Tripwire: rig a Shock Plate to fire when a Runner steps on it. */
+  | { t: 'tripwire'; id: string }
+  /** Rex's once-per-round Trap Refresh, aimed at a cooling Shock Plate. */
+  | { t: 'trapRefresh'; id: string }
+  /** Iris's Saboteur ability: slam a targeted door shut and lock it briefly. */
+  | { t: 'doorJam'; id: string }
+  /** The Saboteur puts a trap down, or picks one up. */
+  | { t: 'place'; trap: PlacedTrap }
+  | { t: 'unplace'; id: string }
   /** A Runner jams a trap plate (Trap Jam). */
   | { t: 'jam'; id: string }
   /** Latch heals another Runner (First Aid). */
@@ -68,13 +79,30 @@ export type ServerMsg =
    * A portal filled up: you are in a new match with these players. `role` is only your own:
    * nobody is told who the Saboteur is (except the Saboteur).
    */
-  | { t: 'match'; matchId: string; size: number; players: PlayerState[]; role: 'runner' | 'saboteur' }
+  | { t: 'match'; matchId: string; size: number; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number }
+  /** The server rejected an optimistic trap placement. */
+  | { t: 'placementRejected'; id: string; reason: string }
+  /** Current Saboteur trap energy after a placement or pickup. */
+  | { t: 'energy'; current: number; max: number }
+  /** The round moved on (setup -> live -> over); `ms` is how long this phase lasts. */
+  | { t: 'phase'; phase: Phase; ms: number }
   | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
   | { t: 'door'; id: string; open: boolean }
   | { t: 'loot'; id: string; by: string }
   | { t: 'ability'; ability: AbilityId; by: string }
   /** A trap plate fired just now: it arms, then shocks whoever is standing on it. */
   | { t: 'trap'; id: string }
+  /** The Saboteur's Tripwire was accepted; private to that Saboteur. */
+  | { t: 'tripwireArmed'; id: string }
+  /** The Saboteur's Trap Refresh was accepted; private to that Saboteur. */
+  | { t: 'trapRefreshed'; id: string }
+  /** A door is locked against opening for `ms`. */
+  | { t: 'doorLocked'; id: string; ms: number }
+  /** Private acknowledgement to Iris that Door Jam was accepted. */
+  | { t: 'doorJammed' }
+  /** The Saboteur put a trap down, or picked one up. */
+  | { t: 'place'; trap: PlacedTrap }
+  | { t: 'unplace'; id: string }
   /** A trap plate is jammed for `ms`: it can't fire, and a pending shock is cancelled. */
   | { t: 'jam'; id: string; ms: number }
   /** Another Runner healed you to full (First Aid). */

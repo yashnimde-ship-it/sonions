@@ -26,6 +26,9 @@ export const TRAP_ARM_MS = 600;
 export const TRAP_ACTIVE_MS = 400;
 /** Time before the same plate can fire again. */
 export const TRAP_COOLDOWN_MS = 4000;
+export const OVERCLOCK_MS = 5000;
+export const OVERCLOCK_COOLDOWN_MS = 20_000;
+export const TRIPWIRE_COOLDOWN_MS = 20_000;
 /** What a shock does to a Runner. */
 export const TRAP_DAMAGE = 25;
 export const TRAP_STUN_MS = 2000;
@@ -36,3 +39,17 @@ export const JAM_REACH = 40;
 export const JAM_MS = 3000;
 /** Latch's First Aid: how close a hurt Runner must be to patch up. */
 export const HEAL_REACH = 48;
+
+/** Whether a fired trap's arm/cooldown cycle has elapsed, including doubled progress during Overclock. */
+export function trapIsReady(
+  firedAt: number | null | undefined,
+  now: number,
+  overclock: { startsAt: number; endsAt: number } | null = null,
+): boolean {
+  if (firedAt == null) return true;
+  const elapsed = Math.max(0, now - firedAt);
+  const boosted = overclock
+    ? Math.max(0, Math.min(now, overclock.endsAt) - Math.max(firedAt, overclock.startsAt))
+    : 0;
+  return elapsed + boosted >= TRAP_ARM_MS + TRAP_COOLDOWN_MS;
+}

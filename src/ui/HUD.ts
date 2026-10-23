@@ -10,7 +10,9 @@ export class HUD {
   private health = document.getElementById('health')!;
   private healthFill = document.getElementById('health-fill')!;
   private healthText = document.getElementById('health-text')!;
+  private timer = document.getElementById('timer')!;
   private lastArea = '';
+  private lastTimer = '';
 
   setLoot(total: number, taken: number, available: number) {
     this.lootTotal.textContent = `$${total.toLocaleString()}`;
@@ -30,6 +32,17 @@ export class HUD {
   setCarrying(text: string | null) {
     this.carrying.hidden = !text;
     if (text) this.carrying.textContent = text;
+  }
+
+  /** The round clock, e.g. SETUP 1:15; null hides it. */
+  setTimer(label: string | null, ms: number) {
+    const secs = Math.ceil(ms / 1000);
+    const text = label ? `${label} ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}` : '';
+    if (text === this.lastTimer) return;
+    this.lastTimer = text;
+    this.timer.hidden = !label;
+    this.timer.textContent = text;
+    this.timer.classList.toggle('urgent', !!label && secs <= 10);
   }
 
   setArea(name: string) {

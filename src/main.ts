@@ -1,8 +1,10 @@
 import '@fontsource/press-start-2p';
 import { ART_TILE, CHAR_GLOW, CHARACTERS, type CharacterId, characterSheet, HITBOX, ZOOM } from './config';
 import { CHARACTER_INFO } from './data/characters';
-import { JAM_REACH, MAX_HP, TRAP_ACTIVE_MS, TRAP_ARM_MS, TRAP_COOLDOWN_MS, TRAP_DAMAGE, TRAP_RADIUS, TRAP_STUN_MS, TRAPS } from './data/traps';
+import { JAM_REACH, MAX_HP, TRAP_ACTIVE_MS, TRAP_ARM_MS, TRAP_DAMAGE, TRAP_RADIUS, TRAP_STUN_MS, TRAPS, trapIsReady } from './data/traps';
 import { Profile } from './data/profile';
+import { type Phase, placementRefusal, SABOTEUR_BASE_ENERGY } from './data/round';
+import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
@@ -13,9 +15,11 @@ import { CameraSystem } from './systems/CameraSystem';
 import { InteractionSystem } from './systems/InteractionSystem';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
+import { drawTrap } from './systems/TrapArt';
 import { HUD } from './ui/HUD';
 import { LobbyUI, type MapInfo, type StartState } from './ui/LobbyUI';
 import { Settings } from './ui/Settings';
+import { TrapBar } from './ui/TrapBar';
 import { TitleUI } from './ui/TitleUI';
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -95,19 +99,44 @@ async function boot() {
   const lobby = new LobbyUI(mapInfo(estateData), settings);
   const net = new NetClient();
   const abilities = new AbilitySystem();
+  const trapBar = new TrapBar((kind) => selectTrap(selectedTrap?.id === kind.id ? null : kind));
 
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   const ctx = canvas.getContext('2d')!;
   const hudEl = document.getElementById('hud')!;
-  // The Saboteur fires a trap plate by clicking it.
-  const toWorld = (e: PointerEvent): [number, number] => [(e.clientX * dpr) / scale + camera.x, (e.clientY * dpr) / scale + camera.y];
+  // The Saboteur clicks to place the selected trap (right-click picks one up), or, with none
+  // selected, to fire a trap plate.
+  const toWorld = (e: PointerEvent | MouseEvent): [number, number] => [(e.clientX * dpr) / scale + camera.x, (e.clientY * dpr) / scale + camera.y];
   canvas.addEventListener('pointermove', (e) => ([mouseX, mouseY] = toWorld(e)));
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('pointerdown', (e) => {
     if (scene !== 'match' || !match?.saboteur) return;
     const [x, y] = toWorld(e);
+    if (phase === 'setup' && e.button === 2) {
+      if (selectedTrap) return selectTrap(null);
+      const hit = placedUnder(x, y);
+      if (hit) {
+        placed.delete(hit.id);
+        net.send({ t: 'unplace', id: hit.id });
+        updateTrapBar();
+      }
+      return;
+    }
+    if (phase === 'setup') return selectedTrap && placeTrap(selectedTrap, x, y);
+    if (phase !== 'live') return;
     const trap = trapUnder(x, y);
     if (trap && trapReady(trap.id)) net.send({ t: 'trap', id: trap.id });
   });
+  // The Saboteur's free camera zooms with the mouse wheel.
+  canvas.addEventListener(
+    'wheel',
+    (e) => {
+      if (scene !== 'match' || !match?.saboteur) return;
+      e.preventDefault();
+      sabScale = (sabScale || fitScale()) * (e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    },
+    { passive: false },
+  );
   const banner = document.getElementById('match-banner')!;
   let dpr = 1;
   let scale = ZOOM;
@@ -133,6 +162,8 @@ async function boot() {
   let carrying: Interactable | null = null;
   let banked = 0;
   let bankedCount = 0;
+  let trapEnergy = SABOTEUR_BASE_ENERGY;
+  let maxTrapEnergy = SABOTEUR_BASE_ENERGY;
   /** My health (Runners only), and when each trap plate last fired (performance.now ms). */
   let hp = MAX_HP;
   let knockedOut = false;
@@ -140,8 +171,23 @@ async function boot() {
   const trapHits = new Set<string>();
   /** Plates jammed by Trap Jam, until when (performance.now ms). */
   const trapJammedUntil = new Map<string, number>();
+  const tripwireArmed = new Set<string>();
+  const doorJammedUntil = new Map<string, number>();
   /** When traps were last checked, so a slow frame can't skip over a plate's live window. */
   let lastTrapCheck = 0;
+  let lastIconPaint = 0;
+  /** The traps the Saboteur has put down this heist, and the one they're about to place. */
+  const placed = new Map<string, PlacedTrap>();
+  let selectedTrap: TrapKind | null = null;
+  let placedCount = 0;
+  /** Where the round is (server's clock), and when this phase ends (performance.now ms). */
+  let phase: Phase = 'setup';
+  let phaseEndsAt = 0;
+  /** The Saboteur's free camera: where it looks (art px) and its zoom (0 = whole house). */
+  let freeX = 0;
+  let freeY = 0;
+  let sabScale = 0;
+  let toastUntil = 0;
   /** The mouse in world (art) pixels, for the Saboteur picking traps. */
   let mouseX = -1;
   let mouseY = -1;
@@ -157,21 +203,30 @@ async function boot() {
   function frameCamera(snap: boolean) {
     const { w, h } = world();
     camera.setWorld(w, h);
-    // The safehouse fills the window (UI panels sit over its edges); the estate is played up
-    // close. Sharp pixels rounds the lobby's scale up to a whole number.
-    if (scene === 'match') scale = ZOOM * dpr;
-    else {
-      scale = Math.max(canvas.width / w, canvas.height / h);
-      if (settings.values.pixelPerfect) scale = Math.max(1, Math.ceil(scale));
-    }
-    camera.resize(canvas.width / scale, canvas.height / scale);
+    // The safehouse fits the window when it can; the estate is played up close. The Saboteur
+    // looks round the whole house with a free camera; waiting Runners see all of it.
     let [tx, ty] = [me.x, me.y - DRAW_H / 2];
+    if (scene !== 'match') scale = Math.max(1.5 * dpr, Math.min(canvas.width / w, canvas.height / h));
+    else if (match?.saboteur) {
+      sabScale = sabScale && Math.min(ZOOM * dpr, Math.max(fitScale(), sabScale));
+      scale = sabScale || fitScale();
+      [tx, ty] = [freeX, freeY];
+    } else if (phase === 'setup') {
+      scale = fitScale();
+      [tx, ty] = [w / 2, h / 2];
+    } else scale = ZOOM * dpr;
+    camera.resize(canvas.width / scale, canvas.height / scale);
     if (scene === 'title') {
       tx = w / 2;
       ty = h / 2;
     }
     if (snap) camera.snap(tx, ty);
     else camera.update(tx, ty);
+  }
+
+  /** The zoom that fits the whole estate in the window. */
+  function fitScale() {
+    return Math.min(canvas.width / estate.widthPx, canvas.height / estate.heightPx);
   }
 
   function resize() {
@@ -230,6 +285,18 @@ async function boot() {
     trapFiredAt.clear();
     trapHits.clear();
     trapJammedUntil.clear();
+    tripwireArmed.clear();
+    doorJammedUntil.clear();
+    trapEnergy = msg.energy ?? SABOTEUR_BASE_ENERGY;
+    maxTrapEnergy = msg.maxEnergy ?? SABOTEUR_BASE_ENERGY;
+    placed.clear();
+    selectTrap(null);
+    phase = msg.phase;
+    phaseEndsAt = performance.now() + msg.ms;
+    trapBar.show(msg.role === 'saboteur' && phase === 'setup');
+    trapBar.setEnergy(trapEnergy, maxTrapEnergy);
+    updateTrapBar();
+    sabScale = 0;
     lastTrapCheck = 0;
     hud.setHealth(msg.role === 'saboteur' ? null : hp);
     hud.setLoot(0, 0, interactions.lootables.length);
@@ -247,11 +314,16 @@ async function boot() {
       me.x = p.x;
       me.y = p.y;
       me.facing = p.facing;
+      freeX = p.x;
+      freeY = p.y;
     }
     abilities.setRound(myCharacter, msg.role);
     const role = msg.role === 'saboteur' ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
-    const crew = msg.players.map((p) => p.name).join(' · ');
-    banner.innerHTML = `<span class="kicker">${msg.size}-PLAYER HEIST</span><span>You are ${role}</span><span class="crew-list">${crew}</span>`;
+    const job =
+      msg.role === 'saboteur'
+        ? 'Rig the house: place up to 8 traps before the Runners go in. WASD pans, wheel zooms.'
+        : 'The Saboteur is rigging the house. Get ready to go in.';
+    banner.innerHTML = `<span class="kicker">${msg.size}-PLAYER HEIST</span><span>You are ${role}</span><span class="crew-list">${job}</span>`;
     banner.hidden = false;
     bannerUntil = performance.now() + BANNER_MS;
     setScene('match');
@@ -306,6 +378,9 @@ async function boot() {
         if (door) estate.setDoor(door, msg.open);
         break;
       }
+      case 'doorLocked':
+        doorJammedUntil.set(msg.id, performance.now() + msg.ms);
+        break;
       case 'loot':
         // Someone else picked it up: it's gone from the house for everyone.
         interactions.looted.add(msg.id);
@@ -316,8 +391,47 @@ async function boot() {
         if (r && msg.ability === 'quickstep') r.bandit.showTrail(QUICKSTEP_FRAMES + 8);
         break;
       }
+      case 'place':
+        placed.set(msg.trap.id, msg.trap);
+        break;
+      case 'phase':
+        phase = msg.phase;
+        phaseEndsAt = performance.now() + msg.ms;
+        selectTrap(null);
+        trapBar.show(false);
+        banner.innerHTML =
+          phase === 'live'
+            ? `<span class="kicker">SETUP OVER</span><span>THE HEIST IS ON</span><span class="crew-list">${match?.saboteur ? 'Watch them. Your traps are set.' : 'Get in, grab the loot, get out.'}</span>`
+            : `<span class="kicker">TIME'S UP</span><span>ROUND OVER</span><span class="crew-list">Results are coming soon. Esc for the safehouse.</span>`;
+        banner.hidden = false;
+        bannerUntil = performance.now() + BANNER_MS;
+        break;
+      case 'unplace':
+        placed.delete(msg.id);
+        break;
+      case 'placementRejected':
+        placed.delete(msg.id);
+        updateTrapBar();
+        toast(msg.reason);
+        break;
+      case 'energy':
+        trapEnergy = msg.current;
+        maxTrapEnergy = msg.max;
+        updateTrapBar();
+        break;
       case 'trap':
         trapFiredAt.set(msg.id, performance.now());
+        tripwireArmed.delete(msg.id);
+        break;
+      case 'tripwireArmed':
+        tripwireArmed.add(msg.id);
+        break;
+      case 'trapRefreshed':
+        trapFiredAt.delete(msg.id);
+        tripwireArmed.delete(msg.id);
+        break;
+      case 'doorJammed':
+        toast('Door jammed');
         break;
       case 'healed':
         if (match && !match.saboteur) healMe();
@@ -328,6 +442,7 @@ async function boot() {
         // A plate that was still flashing or live is defused: its shock never lands.
         const firedAt = trapFiredAt.get(msg.id);
         if (firedAt !== undefined && now < firedAt + TRAP_ARM_MS + TRAP_ACTIVE_MS) trapHits.add(`${msg.id}@${firedAt}`);
+        tripwireArmed.delete(msg.id);
         break;
       }
       case 'left':
@@ -429,7 +544,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -447,7 +562,9 @@ async function boot() {
     // Everyone else; the Saboteur (whoever it is) never loses HP, so First Aid never picks them.
     const crew = [...remotes.entries()]
       .map(([id, r]) => ({ id, x: r.bandit.x, y: r.bandit.y, hp: r.state.hp }));
-    return { me, send: (m: ClientMsg) => net.send(m), hp, setHp: healMe, crew };
+    const targetTrap = trapUnder(mouseX, mouseY);
+    const targetDoor = estateData.doors.find((door) => mouseX >= door.x && mouseX <= door.x + door.w && mouseY >= door.y && mouseY <= door.y + door.h);
+    return { me, send: (m: ClientMsg) => net.send(m), hp, setHp: healMe, crew, targetTrapId: targetTrap?.id, targetTrapReady: targetTrap ? trapIsReady(trapFiredAt.get(targetTrap.id), performance.now(), abilities.overclockWindow) : undefined, targetTrapJammed: targetTrap ? trapJammed(targetTrap.id) : undefined, targetDoorId: targetDoor?.id };
   }
 
   /** Back to full health (First Aid); also gets a knocked-out Runner straight back up. */
@@ -462,9 +579,61 @@ async function boot() {
 
   // ---------- Traps ----------
 
+  function selectTrap(kind: TrapKind | null) {
+    selectedTrap = kind;
+    trapBar.select(kind?.id ?? null);
+  }
+
+  const placedKinds = () => [...placed.values()].map((t) => t.kind);
+
+  function updateTrapBar() {
+    trapBar.setCounts(placedKinds());
+    trapBar.setEnergy(trapEnergy, maxTrapEnergy);
+  }
+
+  /** A short note for the Saboteur in the prompt box. */
+  function toast(text: string) {
+    hud.setPrompt(text);
+    toastUntil = performance.now() + 2000;
+  }
+
+  /** Placement snaps to half tiles so layouts stay tidy. */
+  const snap = (v: number) => Math.round(v / (ART_TILE / 2)) * (ART_TILE / 2);
+
+  /** Can this trap sit at (x, y)? Its middle (up to 1.5 tiles across) must be open floor, so
+   *  a big patch can spill under furniture and a laser can span a corridor wall to wall. */
+  function canPlace(kind: TrapKind, x: number, y: number) {
+    const hw = Math.min(kind.w - 6, 24) / 2;
+    const hh = Math.min(kind.h - 6, 24) / 2;
+    return !estate.boxBlocked(x - hw, y - hh, x + hw, y + hh);
+  }
+
+  function placeTrap(kind: TrapKind, mx: number, my: number) {
+    if (trapEnergy < kind.cost) return toast('Not enough trap energy');
+    const x = snap(mx);
+    const y = snap(my);
+    const refused = placementRefusal(placedKinds(), kind.id) ?? (canPlace(kind, x, y) ? null : 'It needs open floor');
+    if (refused) return toast(refused);
+    const trap: PlacedTrap = { id: `${myId}-${++placedCount}`, kind: kind.id, x, y };
+    placed.set(trap.id, trap);
+    trapEnergy -= kind.cost;
+    net.send({ t: 'place', trap });
+    updateTrapBar();
+  }
+
+  /** The placed trap under (x, y), topmost first. */
+  function placedUnder(x: number, y: number) {
+    return [...placed.values()]
+      .reverse()
+      .find((t) => {
+        const k = trapKind(t.kind)!;
+        return Math.abs(x - t.x) <= k.w / 2 && Math.abs(y - t.y) <= k.h / 2;
+      });
+  }
+
   const trapUnder = (x: number, y: number) => TRAPS.find((t) => Math.hypot(t.x - x, t.y - y) <= TRAP_RADIUS + 4);
   const trapJammed = (id: string) => performance.now() < (trapJammedUntil.get(id) ?? 0);
-  const trapReady = (id: string) => !trapJammed(id) && performance.now() >= (trapFiredAt.get(id) ?? -Infinity) + TRAP_ARM_MS + TRAP_COOLDOWN_MS;
+  const trapReady = (id: string) => !trapJammed(id) && trapIsReady(trapFiredAt.get(id), performance.now(), abilities.overclockWindow);
 
   /** A Runner standing on a plate while it's live gets shocked: damage and a stun. */
   function checkTraps() {
@@ -535,8 +704,25 @@ async function boot() {
       return;
     }
     if (performance.now() > bannerUntil) banner.hidden = true;
-    if (input.ability && !hud.messageOpen) abilities.use(abilityContext());
+    const left = Math.max(0, phaseEndsAt - performance.now());
+    hud.setTimer(phase === 'over' ? null : phase === 'setup' ? 'SETUP' : 'HEIST', left);
+    const sab = !!match?.saboteur;
+    if (input.ability && !hud.messageOpen && phase === 'live') abilities.use(abilityContext());
     abilities.render();
+    if (sab) {
+      saboteurUpdate(input);
+      sendPosition();
+      frameCamera(false);
+      return;
+    }
+    if (phase !== 'live') {
+      // Runners wait outside during setup, and stop when time's up.
+      me.update({ dx: 0, dy: 0, sprint: false }, estate);
+      hud.setPrompt(null);
+      sendPosition();
+      frameCamera(false);
+      return;
+    }
     if (hud.messageOpen) {
       if (input.action) hud.hideMessage();
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
@@ -560,7 +746,8 @@ async function boot() {
         net.send({ t: 'door', id: near.door.id, open: true });
       }
       const handsFull = !!carrying && near?.kind === 'item' && !!near.item.loot && !interactions.looted.has(near.item.id);
-      hud.setPrompt(near ? (handsFull ? 'Hands full: bank your loot at the GETAWAY first' : interactions.promptFor(near, estate)) : null);
+      const doorLockLeft = near?.kind === 'door' ? Math.max(0, (doorJammedUntil.get(near.door.id) ?? 0) - performance.now()) : 0;
+      hud.setPrompt(near ? (doorLockLeft ? `LOCKED ${Math.ceil(doorLockLeft / 1000)}s` : handsFull ? 'Hands full: bank your loot at the GETAWAY first' : interactions.promptFor(near, estate)) : null);
       if (near && input.action && !handsFull) {
         if (near.kind === 'door') {
           const refused = interactions.toggleDoor(near.door, estate, me, HITBOX);
@@ -582,6 +769,20 @@ async function boot() {
     hud.setArea(estate.areaAt(me.x, me.y - 4));
     sendPosition();
     frameCamera(false);
+  }
+
+  /** The Saboteur isn't in the house: they fly a camera round it and pick traps. */
+  function saboteurUpdate(input: { dx: number; dy: number; sprint: boolean }) {
+    if (phase === 'setup' && !hud.messageOpen) for (const kind of TRAP_KINDS) if (keyPressed(kind.key)) selectTrap(selectedTrap?.id === kind.id ? null : kind);
+    if (trapBar.visible && performance.now() - lastIconPaint > 120) {
+      lastIconPaint = performance.now();
+      trapBar.paintIcons(lastIconPaint);
+    }
+    const speed = ((input.sprint ? 12 : 6) * dpr) / scale;
+    freeX = Math.min(estate.widthPx, Math.max(0, freeX + input.dx * speed * 2));
+    freeY = Math.min(estate.heightPx, Math.max(0, freeY + input.dy * speed * 2));
+    hud.setArea(estate.areaAt(freeX, freeY));
+    if (performance.now() > toastUntil) hud.setPrompt(null);
   }
 
   // ---------- Draw ----------
@@ -611,7 +812,12 @@ async function boot() {
     };
 
     // Characters are drawn back to front so nearer ones overlap farther ones.
-    const actors = scene === 'title' ? [] : [me, ...[...remotes.values()].map((r) => r.bandit)].sort((a, b) => a.y - b.y);
+    // In a heist the Saboteur isn't in the house, so they're not drawn.
+    const inHouse = (id: string) => scene !== 'match' || (match?.saboteur ? id !== myId : true);
+    const actors =
+      scene === 'title'
+        ? []
+        : [...(inHouse(myId) ? [me] : []), ...[...remotes.entries()].filter(([id]) => inHouse(id)).map(([, r]) => r.bandit)].sort((a, b) => a.y - b.y);
 
     if (scene !== 'match') {
       blit(lobbyMap.image, lobbyMap.widthPx, lobbyMap.heightPx);
@@ -648,6 +854,7 @@ async function boot() {
     ctx.scale(scale, scale);
     drawTwinkles(camX, camY);
     drawGetaway(camX, camY);
+    drawPlacedTraps(camX, camY);
     drawTrapPlates(camX, camY);
     actors.forEach((b) => b.draw(ctx, camX, camY));
     ctx.restore();
@@ -665,6 +872,62 @@ async function boot() {
     ctx.restore();
     drawGetawayLabel(camX, camY);
     if (settings.values.nameTags) drawNameTags(camX, camY);
+    if (phase === 'setup' && !match?.saboteur) drawBlueprint(camX, camY);
+    if (match?.saboteur) drawTrapMarkers(camX, camY);
+  }
+
+  /** The Saboteur's own traps, outlined in their card colour so they're easy to find zoomed out. */
+  function drawTrapMarkers(camX: number, camY: number) {
+    ctx.save();
+    ctx.lineWidth = 2 * dpr;
+    for (const t of placed.values()) {
+      const k = trapKind(t.kind);
+      if (!k) continue;
+      ctx.strokeStyle = k.color;
+      ctx.globalAlpha = 0.85;
+      ctx.strokeRect(Math.round((t.x - k.w / 2 - camX) * scale), Math.round((t.y - k.h / 2 - camY) * scale), Math.round(k.w * scale), Math.round(k.h * scale));
+    }
+    ctx.restore();
+  }
+
+  /** Waiting Runners see the house as a blue plan while the Saboteur works. */
+  function drawBlueprint(camX: number, camY: number) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(24, 64, 150, 0.45)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'rgba(160, 210, 255, 0.12)';
+    const step = ART_TILE * 2;
+    for (let x = -camX % step; x < camera.viewW; x += step) ctx.fillRect(Math.round(x * scale), 0, 1, canvas.height);
+    for (let y = -camY % step; y < camera.viewH; y += step) ctx.fillRect(0, Math.round(y * scale), canvas.width, 1);
+    ctx.restore();
+  }
+
+  /** Traps the Saboteur placed: Runners see the disguised ones as harmless; the Saboteur sees them all. */
+  function drawPlacedTraps(camX: number, camY: number) {
+    const sab = !!match?.saboteur;
+    const view = sab ? 'saboteur' : 'runner';
+    const now = performance.now();
+    if (!sab && phase === 'setup') return;
+    ctx.imageSmoothingEnabled = false;
+    for (const t of [...placed.values()].sort((a, b) => a.y - b.y)) {
+      const kind = trapKind(t.kind);
+      if (kind) drawTrap(ctx, kind, view, t.x - camX, t.y - camY, now);
+    }
+    if (sab && selectedTrap && phase === 'setup') {
+      // A ghost under the cursor: green where it fits, red where it doesn't.
+      const x = snap(mouseX);
+      const y = snap(mouseY);
+      const ok = canPlace(selectedTrap, x, y) && !placementRefusal(placedKinds(), selectedTrap.id);
+      ctx.save();
+      ctx.globalAlpha = 0.6;
+      drawTrap(ctx, selectedTrap, 'saboteur', x - camX, y - camY, now);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = ok ? '#5cff8a' : '#ff4a5a';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 2]);
+      ctx.strokeRect(Math.round(x - selectedTrap.w / 2 - camX) + 0.5, Math.round(y - selectedTrap.h / 2 - camY) + 0.5, selectedTrap.w, selectedTrap.h);
+      ctx.restore();
+    }
   }
 
   /** Metal plates with hazard edges; dim while recharging, outlined for the Saboteur's cursor. */
@@ -703,6 +966,12 @@ async function boot() {
         ctx.strokeStyle = trapReady(t.id) ? '#ff4fb0' : '#6a6c78';
         ctx.lineWidth = 1;
         ctx.strokeRect(x - 2.5, y - 2.5, s + 5, s + 5);
+      }
+      if (tripwireArmed.has(t.id)) {
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#b45cff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x - 3.5, y - 3.5, s + 7, s + 7);
       }
       ctx.restore();
     }
@@ -1023,8 +1292,9 @@ async function boot() {
       ctx.fill();
     };
     const inMatch = scene === 'match';
-    for (const [id, r] of remotes) tag(r.bandit, id, r.state.name, r.state.character, inMatch && r.state.carrying, inMatch ? r.state.hp : MAX_HP);
-    tag(me, myId, myName, myCharacter, inMatch && !!carrying, inMatch ? hp : MAX_HP);
+    const hidden = (id: string) => inMatch && (match?.saboteur ? id === myId : false);
+    for (const [id, r] of remotes) if (!hidden(id)) tag(r.bandit, id, r.state.name, r.state.character, inMatch && r.state.carrying, inMatch ? r.state.hp : MAX_HP);
+    if (!hidden(myId)) tag(me, myId, myName, myCharacter, inMatch && !!carrying, inMatch ? hp : MAX_HP);
   }
 
   // Fixed 60 updates per second; draw once per animation frame.

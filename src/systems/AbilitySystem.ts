@@ -1,7 +1,7 @@
 import type { CharacterId } from '../config';
-import { type Ability, abilityFor, type Role } from '../data/characters';
+import { type Ability, abilityFor, type Role } from '../data/characters.ts';
 import type { Bandit } from '../entities/Bandit';
-import { HEAL_REACH, JAM_REACH, MAX_HP, TRAPS } from '../data/traps';
+import { HEAL_REACH, JAM_REACH, MAX_HP, OVERCLOCK_MS, TRAPS } from '../data/traps.ts';
 import type { ClientMsg } from '../net/protocol';
 
 // Quickstep: a dash of 64 art px (4 tiles, about 3-4 steps) in 14 frames (under a quarter second).
@@ -18,6 +18,12 @@ export interface AbilityContext {
   setHp?: (hp: number) => void;
   /** The other Runners in the heist (not the Saboteur). */
   crew?: { id: string; x: number; y: number; hp: number }[];
+  /** Shock Plate under the Saboteur's cursor, for targeted abilities. */
+  targetTrapId?: string;
+  targetTrapReady?: boolean;
+  targetTrapJammed?: boolean;
+  /** Door under the Saboteur's cursor, for Door Jam. */
+  targetDoorId?: string;
 }
 
 /**
@@ -29,6 +35,7 @@ export class AbilitySystem {
   private readyAt = 0;
   private usesLeft = Infinity;
   private noteUntil = 0;
+  private overclock: { startsAt: number; endsAt: number } | null = null;
   private root = document.getElementById('ability')!;
   private roleEl = document.getElementById('ability-role')!;
   private nameEl = document.getElementById('ability-name')!;
@@ -40,6 +47,7 @@ export class AbilitySystem {
     this.ability = abilityFor(character, role);
     this.readyAt = 0;
     this.usesLeft = this.ability.perRound ?? Infinity;
+    this.overclock = null;
     this.root.dataset.role = role;
     this.roleEl.textContent = role === 'runner' ? 'RUNNER' : 'SABOTEUR';
     this.nameEl.textContent = this.ability.name;
@@ -48,6 +56,10 @@ export class AbilitySystem {
   /** Is this the ability in play this round (for passives like Steady Carry)? */
   has(id: Ability['id']) {
     return this.ability?.id === id;
+  }
+
+  get overclockWindow() {
+    return this.overclock;
   }
 
   /** Q was pressed. */
@@ -64,12 +76,27 @@ export class AbilitySystem {
     if (fail) return this.note(fail);
     this.readyAt = now + a.cooldown * 1000;
     this.usesLeft--;
-    ctx.send({ t: 'ability', ability: a.id });
+    if (a.id !== 'tripwire' && a.id !== 'trapRefresh' && a.id !== 'doorJam') ctx.send({ t: 'ability', ability: a.id });
   }
 
   /** Runs the effect; returns why it couldn't, if it couldn't. */
   private apply(a: Ability, ctx: AbilityContext): string | null {
     switch (a.id) {
+      case 'overclock':
+        this.overclock = { startsAt: performance.now(), endsAt: performance.now() + OVERCLOCK_MS };
+        return null;
+      case 'tripwire':
+        if (!ctx.targetTrapId || ctx.targetTrapReady !== true || ctx.targetTrapJammed) return 'Aim at a ready Shock Plate';
+        ctx.send({ t: 'tripwire', id: ctx.targetTrapId });
+        return null;
+      case 'trapRefresh':
+        if (!ctx.targetTrapId || ctx.targetTrapReady !== false || ctx.targetTrapJammed) return 'Aim at a cooling Shock Plate';
+        ctx.send({ t: 'trapRefresh', id: ctx.targetTrapId });
+        return null;
+      case 'doorJam':
+        if (!ctx.targetDoorId) return 'Aim at a door';
+        ctx.send({ t: 'doorJam', id: ctx.targetDoorId });
+        return null;
       case 'quickstep':
         ctx.me.dash(QUICKSTEP_DISTANCE, QUICKSTEP_FRAMES);
         return null;
@@ -123,8 +150,12 @@ export class AbilitySystem {
     const spent = this.usesLeft <= 0;
     this.cdEl.style.height = spent ? '100%' : `${(left / (a.cooldown * 1000 || 1)) * 100}%`;
     this.root.classList.toggle('ready', !left && !spent && !a.needs);
+    const overclockLeft = this.overclock ? Math.max(0, this.overclock.endsAt - now) : 0;
+    this.root.classList.toggle('active', a.id === 'overclock' && overclockLeft > 0);
     if (now < this.noteUntil) return;
-    this.stateEl.textContent = a.needs
+    this.stateEl.textContent = a.id === 'overclock' && overclockLeft > 0
+      ? `ACTIVE ${Math.ceil(overclockLeft / 1000)}s`
+      : a.needs
       ? 'Coming soon'
       : a.passive
         ? 'Passive'
