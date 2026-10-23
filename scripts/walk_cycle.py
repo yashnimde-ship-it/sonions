@@ -83,20 +83,43 @@ def _front_back(view, back=False):
     body = opaque & ~legs & ~left_arm & ~right_arm
 
     lift = max(3, round(height * 0.065))  # how high the stepping foot comes up
-    swing = max(1, round(height * 0.03))  # how far an arm swings
+    swing = max(3, round(height * 0.06))  # how far the forward arm comes up
+
+    def arm(dst, mask, side, forward, dip):
+        """
+        One arm, swung: forward lifts it (hand tucked in toward the body, as if coming at
+        the camera); back drops it and lets the hand swing out. `side` is -1 for the arm
+        on the left of the image, +1 for the right.
+        """
+        rows = np.nonzero(mask.any(axis=1))[0]
+        if not len(rows):
+            return
+        r0, r1 = rows[0], rows[-1]
+        for y in range(r0, r1 + 1):
+            t = (y - r0) / max(1, r1 - r0)  # 0 at the shoulder, 1 at the hand
+            if forward:
+                dy, dx = -swing + dip, -side * round(2 * t)
+            else:
+                dy, dx = round(swing * 0.6) + dip, side * round(1.5 * t)
+            for x in np.nonzero(mask[y])[0]:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx < w:
+                    dst[ny, nx] = a[y, x]
 
     def pose(step_left, dip):
         out = np.zeros_like(a)
         # Planted leg first, then the body and arms, then the stepping leg (it reads as "in front").
         planted, stepping = (right_leg, left_leg) if step_left else (left_leg, right_leg)
         _paste(out, a, 0, 0, planted)
-        # From behind, the arm on the stepping side swings back (down); from the front, forward (up).
-        fwd_arm, back_arm = (right_arm, left_arm) if step_left else (left_arm, right_arm)
         _paste(out, a, 0, dip, body)
-        _paste(out, a, 0, dip - swing if not back else dip + swing, fwd_arm)
-        _paste(out, a, 0, dip + swing if not back else dip - swing, back_arm)
-        _paste(out, a, 0, -lift, stepping, shade=1.0)
-        # Close any gap between the body and a lifted leg by repeating the hip row.
+        # The arm opposite the stepping leg swings forward. Seen from behind, "forward" is
+        # away from the camera, so it drops instead of lifting.
+        left_fwd = not step_left
+        if back:
+            left_fwd = not left_fwd
+        arm(out, left_arm, -1, left_fwd, dip)
+        arm(out, right_arm, +1, not left_fwd, dip)
+        _paste(out, a, 0, -lift, stepping)
         return out
 
     passing = np.zeros_like(a)
@@ -105,7 +128,53 @@ def _front_back(view, back=False):
     return [_img(pose(True, 1)), _img(passing), _img(pose(False, 1)), _img(passing)]
 
 
-def _side(view):
+def _swing_forearm(out, a, box, amount, body_cx):
+    """
+    Swings the forearm in `box` (x0, y0, x1, y1, end exclusive; y0 is the elbow) as a rigid
+    piece rotating about the elbow, so the hand moves `amount` px sideways (negative is
+    forward when facing left). Where the arm was, a block of torso texture from beside it
+    is copied in, so nothing smears.
+    """
+    x0, y0, x1, y1 = box
+    h, w = a.shape[:2]
+    src = out.copy()
+    region = np.zeros((h, w), bool)
+    region[y0:y1, x0:x1] = src[y0:y1, x0:x1, 3] > 0
+    if not region.any():
+        return
+    # Pivot: the middle of the arm's top row (the elbow).
+    top_cols = np.nonzero(region[y0])[0]
+    px = (top_cols[0] + top_cols[-1]) / 2 if len(top_cols) else (x0 + x1) / 2
+    py = y0
+    length = max(1, y1 - 1 - y0)
+    theta = -np.arcsin(max(-0.9, min(0.9, amount / length)))
+    c, s_ = np.cos(theta), np.sin(theta)
+
+    # 1. Fill the arm's spot with torso texture: the same shape, copied from one arm-width
+    #    toward the body (falling back to the other side).
+    bw = x1 - x0
+    toward = 1 if body_cx >= (x0 + x1) / 2 else -1
+    for y, x in zip(*np.nonzero(region)):
+        for k in (toward, -toward, 2 * toward):
+            fx = x + k * bw
+            if 0 <= fx < w and src[y, fx, 3] > 0 and not region[y, fx]:
+                out[y, x] = src[y, fx]
+                break
+        else:
+            out[y, x] = 0
+
+    # 2. Draw the arm rotated about the elbow (inverse mapping, nearest pixel: crisp edges).
+    pad = abs(amount) + 2
+    for ty in range(max(0, y0 - 2), min(h, y1 + 2)):
+        for tx in range(max(0, x0 - pad), min(w, x1 + pad)):
+            rx, ry = tx - px, ty - py
+            sx = round(px + rx * c + ry * s_)
+            sy = round(py - rx * s_ + ry * c)
+            if 0 <= sx < w and 0 <= sy < h and region[sy, sx]:
+                out[ty, tx] = src[sy, sx]
+
+
+def _side(view, forearm=None):
     """
     Side view facing left. The profile art already stands mid-stride, so the walk opens and
     closes that stride: legs a little wider on the steps, drawn together on the passing
@@ -148,19 +217,30 @@ def _side(view):
                             px[:3] *= 0.8
                         dst[y, nx] = px.astype(np.uint8)
 
-    def pose(amount, dip):
+    def pose(amount, dip, arm=0):
         out = np.zeros_like(a)
         legs_moved(out, amount)
         _paste(out, a, 0, dip, body)
+        if forearm and arm:
+            x0, y0, x1, y1 = forearm
+            _swing_forearm(out, out.copy(), (x0, y0 + dip, x1, y1 + dip), arm, cx)
         return out
 
-    step = pose(max(1, round(half * 0.15)), 1)
+    reach = max(3, round(height * 0.06))
+    stride = max(1, round(half * 0.15))
+    # On the two steps the hand swings forward, then back, against the legs.
+    step_a = pose(stride, 1, -reach)
+    step_b = pose(stride, 1, reach)
     passing = pose(-round(half * 0.7), -1)
-    return [_img(step), _img(passing), _img(step), _img(passing)]
+    return [_img(step_a), _img(passing), _img(step_b), _img(passing)]
 
 
-def walk_frames(view, kind):
-    """Four walk frames for a view: kind is 'front', 'back' or 'side' (facing left)."""
+def walk_frames(view, kind, forearm=None):
+    """
+    Four walk frames for a view: kind is 'front', 'back' or 'side' (facing left). For the
+    side view, `forearm` is the near forearm's box in the frame (x0, y0, x1, y1; y0 at the
+    elbow): it can't be told apart from the torso automatically, so it's marked per character.
+    """
     if kind == 'side':
-        return _side(view)
+        return _side(view, forearm)
     return _front_back(view, back=(kind == 'back'))

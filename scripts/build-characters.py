@@ -26,6 +26,16 @@ FRAME_W, FRAME_H = 48, 72
 PANELS_X = [(20, 452), (456, 866), (870, 1291)]
 INSET = 10
 PORTRAIT = 160
+# The near forearm in each character's side frame (frame pixels: x0, y0, x1, y1, end
+# exclusive; y0 at the elbow). The arm overlaps the torso in profile, so it's marked by hand
+# for the walk cycle's arm swing (see walk_cycle.py). Re-check these if a concept changes.
+SIDE_FOREARM = {
+    'maya': (27, 37, 31, 49),
+    'dev': (30, 31, 35, 41),
+    'zoya': (20, 35, 27, 45),
+    'rex': (29, 32, 35, 45),
+    'iris': (30, 31, 36, 45),
+}
 # The sheets' cream background; enclosed pockets of it (between legs, under arms) are cleared too.
 PAPER = (254, 244, 228)
 
@@ -101,7 +111,7 @@ def build(char_id):
     stand = [frame(front), frame(back), frame(side)]
     frames = list(stand)
     for view, kind in zip(stand, ('front', 'back', 'side')):
-        frames += walk_frames(view, kind)
+        frames += walk_frames(view, kind, SIDE_FOREARM.get(char_id) if kind == 'side' else None)
     out = Image.new('RGBA', (FRAME_W * len(frames), FRAME_H), (0, 0, 0, 0))
     for i, f in enumerate(frames):
         out.alpha_composite(f, (i * FRAME_W, 0))
