@@ -6,6 +6,8 @@ export interface Interactable {
   name: string;
   text: string;
   loot?: number;
+  /** Runtime diamond location (art pixels); the Saboteur may change it during setup. */
+  lootPos?: { x: number; y: number };
 }
 
 /** A door from the reference: its spot (art px), its sprites in the atlas, its collision cells. */

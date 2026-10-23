@@ -12,7 +12,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
 import { LIVE_MS, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
-import { trapKind, type TrapKindId } from '../src/data/trapKinds.ts';
+import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { JAM_MS, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRAPS, TRIPWIRE_COOLDOWN_MS, trapIsReady } from '../src/data/traps.ts';
 import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Taken } from '../src/net/protocol.ts';
 
@@ -52,7 +52,8 @@ const doorJamReadyAt = new Map<string, number>();
 const doorLocks = new Map<string, Map<string, number>>();
 const saboteurEnergy = new Map<string, { current: number; max: number }>();
 /** Per match: the traps the Saboteur has placed (id -> kind), and where the round's clock is. */
-const placedTraps = new Map<string, Map<string, TrapKindId>>();
+const placedTraps = new Map<string, Map<string, PlacedTrap>>();
+const diamondPositions = new Map<string, Map<string, { x: number; y: number }>>();
 const phases = new Map<string, { phase: Phase; endsAt: number }>();
 const portalEnds = new Map<number, number>(); // portal size -> when its countdown ends (ms)
 let nextId = 1;
@@ -82,6 +83,23 @@ function distanceToSegment(x: number, y: number, ax: number, ay: number, bx: num
   const lengthSq = dx * dx + dy * dy;
   const t = lengthSq ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / lengthSq)) : 0;
   return Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+}
+
+function trapEffect(kind: TrapKindId) {
+  switch (kind) {
+    case 'spring': return { damage: 0, stunMs: 0 };
+    case 'snare': return { damage: 0, stunMs: 2500 };
+    case 'crusher': return { damage: 50, stunMs: 3000 };
+    case 'laser': return { damage: 20, stunMs: 0 };
+    case 'boulder': return { damage: 30, stunMs: 800 };
+    case 'glue':
+    case 'oil':
+    case 'magnet':
+    case 'gas':
+    case 'blackout': return { damage: 0, stunMs: 800 };
+    case 'fakeLoot': return { damage: 30, stunMs: 2000 };
+    case 'shock': return { damage: 25, stunMs: 2000 };
+  }
 }
 
 function toLobby(c: Client) {
@@ -117,6 +135,7 @@ function endMatch(matchId: string) {
   doorLocks.delete(matchId);
   saboteurEnergy.delete(matchId);
   placedTraps.delete(matchId);
+  diamondPositions.delete(matchId);
   phases.delete(matchId);
 }
 
@@ -142,6 +161,7 @@ function startMatch(size: number, crew: Client[]) {
   const maxEnergy = saboteurMaxEnergy(sabCharacter);
   saboteurEnergy.set(matchId, { current: maxEnergy, max: maxEnergy });
   placedTraps.set(matchId, new Map());
+  diamondPositions.set(matchId, new Map(estate.interactables.filter((i: { loot?: number }) => i.loot).map((i: { id: string; rect: number[] }) => [i.id, { x: ((i.rect[0] + i.rect[2] + 1) / 2) * TILE, y: ((i.rect[1] + i.rect[3] + 1) / 2) * TILE }])));
   phases.set(matchId, { phase: 'setup', endsAt: Date.now() + SETUP_MS });
   trapState.set(matchId, new Map(TRAPS.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
@@ -155,7 +175,7 @@ function startMatch(size: number, crew: Client[]) {
   for (const c of crew) {
     const visiblePlayers = players.filter((p) => p.id !== saboteur || c.state.id === saboteur);
     const isSaboteur = c.state.id === saboteur;
-    send(c, { t: 'match', matchId, size, players: visiblePlayers, role: isSaboteur ? 'saboteur' : 'runner', phase: 'setup', ms: SETUP_MS, ...(isSaboteur ? { energy: maxEnergy, maxEnergy } : {}) });
+    send(c, { t: 'match', matchId, size, players: visiblePlayers, role: isSaboteur ? 'saboteur' : 'runner', phase: 'setup', ms: SETUP_MS, ...(isSaboteur ? { energy: maxEnergy, maxEnergy, diamonds: [...(diamondPositions.get(matchId) ?? [])].map(([id, pos]) => ({ id, ...pos })) } : {}) });
   }
   console.log(`${matchId}: ${size}-player heist with ${players.map((p) => p.name).join(', ')}`);
 }
@@ -212,7 +232,7 @@ function tick() {
       p.endsAt = Date.now() + ms;
       for (const id of ids) {
         const c = clients.get(id);
-        if (c) send(c, { t: 'phase', phase: p.phase, ms });
+        if (c) send(c, { t: 'phase', phase: p.phase, ms, ...(p.phase === 'live' ? { diamonds: [...(diamondPositions.get(matchId) ?? [])].map(([diamondId, pos]) => ({ id: diamondId, ...pos })) } : {}) });
       }
     }
   }
@@ -257,6 +277,35 @@ function handle(c: Client, msg: ClientMsg) {
       s.stunned = !!msg.stunned;
       if (c.room !== 'lobby') {
         const now = Date.now();
+        const saboteurId = saboteurs.get(c.room);
+        if (saboteurId !== s.id && phases.get(c.room)?.phase === 'live') {
+          for (const plate of TRAPS) {
+            const state = trapState.get(c.room)?.get(plate.id);
+            if (!state || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null)) continue;
+            if (Math.hypot(fromX - plate.x, fromY - plate.y) <= TRAP_RADIUS || distanceToSegment(plate.x, plate.y, fromX, fromY, s.x, s.y) > TRAP_RADIUS) continue;
+            state.tripwired = false;
+            state.firedAt = now;
+            for (const id of matches.get(c.room) ?? []) {
+              const member = clients.get(id);
+              if (member) send(member, { t: 'trap', id: plate.id });
+            }
+          }
+          for (const trap of placedTraps.get(c.room)?.values() ?? []) {
+            const state = trapState.get(c.room)?.get(trap.id);
+            const radius = Math.max(12, Math.min(trapKind(trap.kind)!.w, trapKind(trap.kind)!.h) / 2);
+            if (!state || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null)) continue;
+            if (Math.hypot(fromX - trap.x, fromY - trap.y) <= radius || distanceToSegment(trap.x, trap.y, fromX, fromY, s.x, s.y) > radius) continue;
+            state.firedAt = now;
+            const effect = trapEffect(trap.kind);
+            const dx = s.x - trap.x;
+            const dy = s.y - trap.y;
+            const length = Math.hypot(dx, dy) || Math.hypot(s.x - fromX, s.y - fromY) || 1;
+            const knockback = trap.kind === 'spring' || trap.kind === 'boulder'
+              ? { x: s.x + (dx / length) * 64, y: s.y + (dy / length) * 64 }
+              : undefined;
+            send(c, { t: 'placedTrapHit', kind: trap.kind, ...effect, ...(knockback ? { knockback } : {}) });
+          }
+        }
         for (const plate of TRAPS) {
           const state = trapState.get(c.room)?.get(plate.id);
           if (!state?.tripwired || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null)) continue;
@@ -271,6 +320,29 @@ function handle(c: Client, msg: ClientMsg) {
         }
       }
       break;
+    case 'ready': {
+      const matchId = c.room;
+      if (saboteurs.get(matchId) !== s.id || phases.get(matchId)?.phase !== 'setup') break;
+      const round = phases.get(matchId)!;
+      round.phase = 'live';
+      round.endsAt = Date.now() + LIVE_MS;
+      const diamonds = [...(diamondPositions.get(matchId) ?? [])].map(([id, pos]) => ({ id, ...pos }));
+      for (const id of matches.get(matchId) ?? []) {
+        const member = clients.get(id);
+        if (member) send(member, { t: 'phase', phase: 'live', ms: LIVE_MS, diamonds });
+      }
+      break;
+    }
+    case 'diamond': {
+      const matchId = c.room;
+      const positions = diamondPositions.get(matchId);
+      const round = phases.get(matchId);
+      if (saboteurs.get(matchId) !== s.id || round?.phase !== 'setup' || !positions?.has(msg.id) || !Number.isFinite(msg.x) || !Number.isFinite(msg.y)) break;
+      if (msg.x < 0 || msg.y < 0 || msg.x > estate.width * TILE || msg.y > estate.height * TILE) break;
+      positions.set(msg.id, { x: msg.x, y: msg.y });
+      send(c, msg);
+      break;
+    }
     case 'portal': {
       if (c.room !== 'lobby') break;
       c.portalChoice = msg.size !== null && PORTALS.some((portal) => portal.size === msg.size) ? msg.size : null;
@@ -342,24 +414,23 @@ function handle(c: Client, msg: ClientMsg) {
       if (msg.t === 'place') {
         const trap = msg.trap;
         if (!trap || !trapKind(trap.kind) || !Number.isFinite(trap.x) || !Number.isFinite(trap.y) || typeof trap.id !== 'string' || placed.has(trap.id)) break;
-        if (placementRefusal(placed.values(), trap.kind)) break;
+        if (placementRefusal([...placed.values()].map((p) => p.kind), trap.kind)) break;
         const energy = saboteurEnergy.get(c.room);
         if (!energy || energy.current < trapKind(trap.kind)!.cost) {
           send(c, { t: 'placementRejected', id: trap.id, reason: 'Not enough energy' });
           break;
         }
         energy.current -= trapKind(trap.kind)!.cost;
-        placed.set(trap.id, trap.kind);
+        placed.set(trap.id, trap);
+        trapState.get(c.room)?.set(trap.id, { firedAt: null, jammedUntil: 0, tripwired: false });
       } else {
-        const kind = placed.get(msg.id);
-        if (!kind || !placed.delete(msg.id)) break;
+        const placedTrap = placed.get(msg.id);
+        if (!placedTrap || !placed.delete(msg.id)) break;
+        trapState.get(c.room)?.delete(msg.id);
         const energy = saboteurEnergy.get(c.room);
-        if (energy) energy.current = Math.min(energy.max, energy.current + trapKind(kind)!.cost);
+        if (energy) energy.current = Math.min(energy.max, energy.current + trapKind(placedTrap.kind)!.cost);
       }
-      for (const id of matches.get(c.room) ?? []) {
-        const member = clients.get(id);
-        if (member && member !== c) send(member, msg);
-      }
+      send(c, msg);
       const energy = saboteurEnergy.get(c.room);
       if (energy) send(c, { t: 'energy', current: energy.current, max: energy.max });
       break;

@@ -3,7 +3,7 @@
 import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node server
 import type { AbilityId } from '../data/characters.ts';
 import type { Phase } from '../data/round.ts';
-import type { PlacedTrap } from '../data/trapKinds.ts';
+import type { PlacedTrap, TrapKindId } from '../data/trapKinds.ts';
 
 export type Facing = 'up' | 'down' | 'left' | 'right';
 export type RoomKind = 'lobby' | 'match';
@@ -45,6 +45,10 @@ export type ClientMsg =
   | { t: 'move'; room: RoomKind; x: number; y: number; facing: Facing; moving: boolean; sprint: boolean; carrying: boolean; hp: number; stunned: boolean }
   /** Explicit lobby portal selection (also used when the player clicks a portal pad). */
   | { t: 'portal'; size: number | null }
+  /** Saboteur confirms setup early. */
+  | { t: 'ready' }
+  /** Saboteur relocates a diamond during setup, in art pixels. */
+  | { t: 'diamond'; id: string; x: number; y: number }
   | { t: 'character'; character: CharacterId }
   // In a match: shared world changes, relayed to everyone in it.
   | { t: 'door'; id: string; open: boolean }
@@ -81,19 +85,23 @@ export type ServerMsg =
    * A portal filled up: you are in a new match with these players. `role` is only your own:
    * nobody is told who the Saboteur is (except the Saboteur).
    */
-  | { t: 'match'; matchId: string; size: number; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number }
+  | { t: 'match'; matchId: string; size: number; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; diamonds?: { id: string; x: number; y: number }[] }
   /** The server rejected an optimistic trap placement. */
   | { t: 'placementRejected'; id: string; reason: string }
   /** Current Saboteur trap energy after a placement or pickup. */
   | { t: 'energy'; current: number; max: number }
+  /** Server acknowledgement of a Saboteur's diamond move. */
+  | { t: 'diamond'; id: string; x: number; y: number }
   /** The round moved on (setup -> live -> over); `ms` is how long this phase lasts. */
-  | { t: 'phase'; phase: Phase; ms: number }
+  | { t: 'phase'; phase: Phase; ms: number; diamonds?: { id: string; x: number; y: number }[] }
   | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
   | { t: 'door'; id: string; open: boolean }
   | { t: 'loot'; id: string; by: string }
   | { t: 'ability'; ability: AbilityId; by: string }
   /** A trap plate fired just now: it arms, then shocks whoever is standing on it. */
   | { t: 'trap'; id: string }
+  /** A hidden Saboteur trap auto-triggered on contact. */
+  | { t: 'placedTrapHit'; kind: TrapKindId; damage: number; stunMs: number; knockback?: { x: number; y: number } }
   /** The Saboteur's Tripwire was accepted; private to that Saboteur. */
   | { t: 'tripwireArmed'; id: string }
   /** The Saboteur's Trap Refresh was accepted; private to that Saboteur. */

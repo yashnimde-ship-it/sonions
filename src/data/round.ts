@@ -6,11 +6,11 @@ import type { CharacterId } from '../config.ts';
 
 export type Phase = 'setup' | 'live' | 'over';
 
-export const SETUP_MS = 75_000;
+export const SETUP_MS = 120_000;
 export const LIVE_MS = 240_000;
 
 /** Traps the Saboteur may place during setup, and how many of one kind. */
-export const TRAP_SLOTS = 8;
+export const TRAP_SLOTS = 10;
 export const MAX_PER_KIND = 2;
 export const MAX_FAKE_LOOT = 1;
 export const SABOTEUR_BASE_ENERGY = 200;

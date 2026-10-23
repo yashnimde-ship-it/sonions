@@ -38,9 +38,11 @@ export class InteractionSystem {
       const p = DOOR_REACH;
       const door = this.doors.find((d) => px >= d.x - p && px < d.x + d.w + p && py >= d.y - p && py < d.y + d.h + p);
       if (door) return { kind: 'door', door };
+      const diamond = this.items.find((i) => i.loot && !this.looted.has(i.id) && i.lootPos && Math.hypot(px - i.lootPos.x, py - i.lootPos.y) <= 18);
+      if (diamond) return { kind: 'item', item: diamond };
       const tx = Math.floor(px / ART_TILE);
       const ty = Math.floor(py / ART_TILE);
-      const hit = this.items.find((i) => tx >= i.rect[0] && tx <= i.rect[2] && ty >= i.rect[1] && ty <= i.rect[3]);
+      const hit = this.items.find((i) => (!i.loot || !i.lootPos) && tx >= i.rect[0] && tx <= i.rect[2] && ty >= i.rect[1] && ty <= i.rect[3]);
       if (hit) return { kind: 'item', item: hit };
     }
     return null;
