@@ -12,10 +12,13 @@ const FRAME_H = CHAR_FRAME_H;
 // On-screen size in art pixels.
 export const DRAW_W = FRAME_W * CHAR_DRAW_SCALE;
 export const DRAW_H = FRAME_H * CHAR_DRAW_SCALE;
-// Sheet order (FireRed's sAnimTable_Standard): 0-2 stand down/up/left, 3-4 walk down,
-// 5-6 walk up, 7-8 walk left. Right is the left frames mirrored.
+// Sheet order: 0-2 stand down/up/left, then a 4-frame walk (step, pass, step, pass) for
+// down (3-6), up (7-10) and left (11-14). Right is the left frames mirrored.
 const STAND: Record<Facing, number> = { down: 0, up: 1, left: 2, right: 2 };
-const WALK: Record<Facing, [number, number]> = { down: [3, 4], up: [5, 6], left: [7, 8], right: [7, 8] };
+const WALK: Record<Facing, number[]> = { down: [3, 4, 5, 6], up: [7, 8, 9, 10], left: [11, 12, 13, 14], right: [11, 12, 13, 14] };
+// Art px walked per frame of the cycle: one full cycle (two steps) is about 30 px, so the
+// feet keep pace with the ground whatever the speed.
+const STRIDE = 7.5;
 
 // How far the bandit slides sideways to get around a corner he walks into (art pixels).
 const CORNER_SLIDE = 7;
@@ -54,10 +57,11 @@ export class Bandit {
   /** Frames left stunned by a trap: no moving, no dashing. */
   stunFrames = 0;
   private sprinting = false;
-  private animTimer = 0;
   private step = 0;
-  /** Walk cycle phase, for the bob. */
+  /** Walk cycle phase, for the sprint hop. */
   private phase = 0;
+  /** Art px walked since the bandit last stood still (drives the walk frames). */
+  private walked = 0;
   private puffs: Puff[] = [];
   /** Frames of dash left (Quickstep), and the dash velocity. */
   private dashFrames = 0;
@@ -170,17 +174,18 @@ export class Bandit {
 
   private animate(distance: number, sprint: boolean) {
     this.phase += distance * 0.22;
-    const period = sprint ? 6 : 9;
-    if (++this.animTimer >= period) {
-      this.animTimer = 0;
-      this.step ^= 1;
-      if (sprint) this.puffs.push({ x: this.x - Math.sign(this.vx) * 4, y: this.y - 1, age: 0 });
-    }
+    // The walk frame follows distance travelled, not time, so the feet don't skate.
+    this.walked += distance;
+    const step = Math.floor(this.walked / STRIDE) % 4;
+    if (step !== this.step && step % 2 === 0 && sprint) this.puffs.push({ x: this.x - Math.sign(this.vx) * 4, y: this.y - 1, age: 0 });
+    this.step = step;
   }
 
   private rest() {
-    this.animTimer = 0;
     this.phase = 0;
+    // Start the next walk on a step, not mid-stride.
+    this.walked = 0;
+    this.step = 0;
   }
 
   private updatePuffs() {
@@ -273,8 +278,8 @@ export class Bandit {
 
   /** Draws in art pixels relative to the camera; the feet sit at (x, y). */
   draw(ctx: CanvasRenderingContext2D, camX: number, camY: number, shadow = true) {
-    // A little hop in the walk cycle; a bigger one when sprinting.
-    const bob = this.moving ? Math.abs(Math.sin(this.phase)) * (this.sprinting ? 2.5 : 1.5) : 0;
+    // The walk frames bob the body themselves (feet stay planted); sprinting adds a small hop.
+    const bob = this.moving && this.sprinting ? Math.abs(Math.sin(this.phase)) * 1.2 : 0;
     const px = Math.round(this.x - DRAW_W / 2 - camX);
     const py = Math.round(this.y - DRAW_H + 1 - camY - bob);
     if (shadow) {

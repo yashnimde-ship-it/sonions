@@ -1,4 +1,4 @@
-import { CHARACTERS, characterSheet, CHAR_FRAME_H, CHAR_FRAME_W } from '../config';
+import { CHARACTERS, characterSheet, CHAR_FRAME_H, CHAR_FRAME_W, CHAR_FRAMES } from '../config';
 import { CHARACTER_INFO } from '../data/characters';
 
 const LINEUP_SCALE = 2.5;
@@ -25,7 +25,7 @@ export class TitleUI {
       sprite.style.width = `${CHAR_FRAME_W * LINEUP_SCALE}px`;
       sprite.style.height = `${CHAR_FRAME_H * LINEUP_SCALE}px`;
       sprite.style.backgroundImage = `url(${characterSheet(id)})`;
-      sprite.style.backgroundSize = `${CHAR_FRAME_W * 9 * LINEUP_SCALE}px ${CHAR_FRAME_H * LINEUP_SCALE}px`;
+      sprite.style.backgroundSize = `${CHAR_FRAME_W * CHAR_FRAMES * LINEUP_SCALE}px ${CHAR_FRAME_H * LINEUP_SCALE}px`;
       lineup.append(el);
     });
 

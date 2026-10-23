@@ -11,6 +11,8 @@ export const CHARACTERS = ['maya', 'dev', 'zoya', 'rex', 'iris'] as const;
 export type CharacterId = (typeof CHARACTERS)[number];
 export const characterSheet = (id: CharacterId) => `/assets/characters/${id}.png`;
 export const CHAR_FRAME_W = 48;
+/** Frames per sheet: 3 standing, then a 4-frame walk for down, up and left. */
+export const CHAR_FRAMES = 15;
 export const CHAR_FRAME_H = 72;
 // Sheets are drawn at 0.6 size in art pixels, so a character stands about 43 art pixels
 // (2.7 tiles) tall: big enough to read clearly, still fitting through doorways.

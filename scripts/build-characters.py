@@ -1,15 +1,19 @@
 """Turn the art team's character concept sheets into in-game sprite sheets.
 
 Input:  art/characters/<id>.png  (portrait on top; front, side, back views below)
-Output: public/assets/characters/<id>.png    one row of 9 frames, FRAME_W x FRAME_H, transparent
+Output: public/assets/characters/<id>.png    one row of 15 frames, FRAME_W x FRAME_H, transparent
         public/assets/characters/<id>-portrait.png
 
-Frame order matches src/entities/Bandit.ts: stand down, stand up, stand left,
-walk down x2, walk up x2, walk left x2. Run: python3 scripts/build-characters.py
+Frame order matches src/entities/Bandit.ts: stand down, stand up, stand left, then a
+4-frame walk (step, pass, step, pass) for down, up and left. The concepts have one pose
+per view, so the walks are made from it by walk_cycle.py (legs step, arms swing, body
+bobs). Run: python3 scripts/build-characters.py
 """
 from pathlib import Path
 
 from PIL import Image, ImageDraw
+
+from walk_cycle import walk_frames
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / 'art' / 'characters'
@@ -94,9 +98,10 @@ def build(char_id):
     scale = min((FRAME_H - 3) / max(v.height for v in views), (FRAME_W - 2) / max(v.width for v in views))
     front, side, back = (shrink(v, scale) for v in (front, side, back))
 
-    frames = [frame(front), frame(back), frame(side)]
-    for view in (front, back, side):
-        frames += [frame(view, squash=0.95), frame(view, lift=2)]
+    stand = [frame(front), frame(back), frame(side)]
+    frames = list(stand)
+    for view, kind in zip(stand, ('front', 'back', 'side')):
+        frames += walk_frames(view, kind)
     out = Image.new('RGBA', (FRAME_W * len(frames), FRAME_H), (0, 0, 0, 0))
     for i, f in enumerate(frames):
         out.alpha_composite(f, (i * FRAME_W, 0))
