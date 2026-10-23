@@ -79,6 +79,8 @@ export type ClientMsg =
   | { t: 'hideIn'; spot: string }
   | { t: 'unhide' }
   | { t: 'seekSpot'; spot: string }
+  /** Hide & Seek: use an ability (Seeker: flare, scan; Hider: boost). */
+  | { t: 'hsAbility'; ability: 'flare' | 'scan' | 'boost' }
   /** Took the stairs to another deck of the ship, arriving at (x, y) there. */
   | { t: 'deck'; deck: MapId; x: number; y: number }
   // In a match: shared world changes, relayed to everyone in it.
@@ -203,6 +205,12 @@ export type ServerMsg =
   | { t: 'searched'; spot: string; found: string | null; name: string }
   /** Hide & Seek (Seeker): someone sprinting, heard at (x, y). */
   | { t: 'noise'; x: number; y: number }
+  /** Your ability went off: ready again in readyMs; `left` uses (the Flare). */
+  | { t: 'hsAbility'; ability: 'flare' | 'scan' | 'boost'; readyMs: number; left?: number }
+  /** The Seeker fired a flare: this deck is lit for ms. */
+  | { t: 'flare'; deck: string; ms: number }
+  /** The Seeker's scan: these hiding places have someone in them (to the Seeker), or you were scanned. */
+  | { t: 'scanned'; spots: string[]; ms: number; you?: boolean }
   /** Someone in the heist got caught by a trap: shown to everyone as a pop-up. */
   /** Someone was caught; (x, y) on `deck` is where (for the 4-second minimap flash). */
   | { t: 'trapAlert'; id: string; name: string; trap: string; area: string; x: number; y: number; deck: MapId }

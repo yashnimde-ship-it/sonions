@@ -75,3 +75,13 @@ export const NOISE_MS = 500;
 /** Points in Hide & Seek: the Seeker per Hider caught and for a win; a Hider for surviving
  *  the hunt, and a bonus for getting out through the main entrance. */
 export const HS_SCORE = { catch: 100, seekerWin: 150, survive: 150, escape: 50 };
+
+/** Hide & Seek abilities, checked by the server. The Seeker's Flare (Q) lights their whole
+ *  deck for a moment: every Hider out in the open shows up (and sees the flash, so can run).
+ *  Their Heartbeat scan (C) shows which hiding places near them have someone inside. A
+ *  Hider's Boost (Q) is a burst of speed, loud enough for the Seeker to hear. */
+export type HsAbility = 'flare' | 'scan' | 'boost';
+export const isHsAbility = (a: unknown): a is HsAbility => a === 'flare' || a === 'scan' || a === 'boost';
+export const FLARE = { ms: 1500, uses: 3, cooldownMs: 20_000 };
+export const SCAN = { ms: 2000, range: 320, cooldownMs: 45_000 };
+export const BOOST = { ms: 5000, cooldownMs: 60_000, speed: 1.6 };

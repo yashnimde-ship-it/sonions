@@ -1735,3 +1735,32 @@ kbd {
 }
 .mode-row button.on { color: #0e0a1a; background: #ffc94a; border-color: #ffc94a; }
 .mode-row .mode-note { flex-basis: 100%; font-size: calc(var(--u) * 0.85); color: #9a94b0; }
+
+/* ---------- Hide & Seek ability bar ---------- */
+#hs-abilities {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  pointer-events: none;
+}
+#hs-abilities[hidden] { display: none; }
+.hs-slot {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 12px;
+  background: rgba(14, 10, 26, 0.88);
+  border: 2px solid #4a3d6a;
+  border-radius: 6px;
+  color: #9a94b0;
+  font-size: 9px;
+}
+.hs-slot b { grid-row: span 2; font-size: 16px; color: #ffe39a; }
+.hs-slot span { color: #fff; }
+.hs-slot em { font-style: normal; }
+.hs-slot.ready { border-color: #6fe07a; }
+.hs-slot.ready em { color: #6fe07a; }

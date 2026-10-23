@@ -7,7 +7,7 @@ import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
 import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { cleanName } from './data/names';
-import { distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, isGameMode, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
+import { BOOST, FLARE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, isGameMode, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
 import { CUSTOM_MIN, CUSTOM_PAD, type Phase, placementRefusal, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H } from './entities/Bandit';
@@ -159,6 +159,14 @@ async function boot() {
   let seekerNow = '';
   /** The Seeker's gun as the server last told us, and recent shots (flash and tracer). */
   let gun = { ammo: GUN.ammo, reloadEnd: 0, hp: SEEKER_HP };
+  // Hide & Seek abilities: when each is ready again (performance.now; Infinity = used up),
+  // flares left, and what's running now.
+  const hsReady: Record<HsAbility, number> = { flare: 0, scan: 0, boost: 0 };
+  let flaresLeft = FLARE.uses;
+  let flareUntil = 0;
+  let boostUntil = 0;
+  let scan = { spots: [] as string[], until: 0 };
+  let hsSentAt = 0;
   const shots: { x0: number; y0: number; x1: number; y1: number; hit: boolean; at: number }[] = [];
   /** Hiders caught or escaped this round (ghosts from then on). */
   const caught = new Set<string>();
@@ -510,6 +518,10 @@ async function boot() {
     seekerNow = msg.seeker ?? '';
     if (!msg.resume) {
       gun = { ammo: GUN.ammo, reloadEnd: 0, hp: SEEKER_HP };
+      Object.assign(hsReady, { flare: 0, scan: 0, boost: 0 });
+      flaresLeft = FLARE.uses;
+      flareUntil = boostUntil = 0;
+      scan = { spots: [], until: 0 };
       shots.length = 0;
       caught.clear();
       escaped.clear();
@@ -855,6 +867,27 @@ async function boot() {
       }
       case 'noise':
         noises.push({ x: msg.x, y: msg.y, at: performance.now() });
+        break;
+      case 'hsAbility':
+        hsReady[msg.ability] = msg.readyMs < 0 ? Infinity : performance.now() + msg.readyMs;
+        if (msg.left !== undefined) flaresLeft = msg.left;
+        if (msg.ability === 'boost') {
+          boostUntil = performance.now() + BOOST.ms;
+          toast('Boost!');
+        }
+        sfx(msg.ability === 'boost' ? 'reload' : 'click');
+        break;
+      case 'flare':
+        flareUntil = performance.now() + msg.ms;
+        sfx('gunshot');
+        if (!match?.saboteur) hud.alert('<span class="who">The Seeker</span> <b>fired a flare!</b><span class="where">run or hide</span>', 'danger');
+        break;
+      case 'scanned':
+        if (msg.you) hud.alert('<span class="who">You</span> <b>were scanned!</b><span class="where">the Seeker knows someone is here</span>', 'danger');
+        else {
+          scan = { spots: msg.spots, until: performance.now() + msg.ms };
+          toast(msg.spots.length ? `Heartbeat: ${msg.spots.length} hiding place${msg.spots.length === 1 ? '' : 's'} nearby` : 'Heartbeat: nobody hiding nearby');
+        }
         break;
       case 'caught': {
         caught.add(msg.id);
@@ -1450,6 +1483,15 @@ async function boot() {
     // A finished reload: the gun is full again (the server agrees on its next shot).
     if (hs && sab && gun.ammo === 0 && gun.reloadEnd && performance.now() >= gun.reloadEnd) gun = { ...gun, ammo: GUN.ammo, reloadEnd: 0 };
     if (input.ability && !hud.messageOpen && phase === 'live' && !hs) abilities.use(abilityContext());
+    // Hide & Seek abilities: Seeker Q flare, C heartbeat scan; Hider Q boost (the server checks).
+    if (hs && phase === 'live' && !hud.messageOpen && !isGhost(myId) && performance.now() - hsSentAt > 300) {
+      const want: HsAbility | null = keyPressed('KeyQ') ? (sab ? 'flare' : hiddenIn ? null : 'boost') : sab && keyPressed('KeyC') ? 'scan' : null;
+      if (want && performance.now() >= hsReady[want]) {
+        hsSentAt = performance.now();
+        net.send({ t: 'hsAbility', ability: want });
+      }
+    }
+    renderHsBar(hs && phase !== 'over' && !isGhost(myId), sab);
     abilities.render();
     if (sab && !hs) {
       saboteurUpdate(input);
@@ -1482,7 +1524,7 @@ async function boot() {
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
       const now = performance.now();
-      me.carryMult = (myDiamond() ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1);
+      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (myDiamond() ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1);
       // Confusion Gas: left is right and up is down.
       // (In a hiding place you can't move.)
       const move = hiddenIn ? { ...input, dx: 0, dy: 0, sprint: false } : input;
@@ -1894,6 +1936,13 @@ async function boot() {
     g.fillStyle = 'rgba(2, 2, 8, 0.97)';
     g.fillRect(0, 0, dark.width, dark.height);
     const counting = seeker && phase === 'setup';
+    // A flare: the whole deck flashes bright, then fades back to dark.
+    const flare = (flareUntil - performance.now()) / FLARE.ms;
+    if (!counting && flare > 0) {
+      g.globalCompositeOperation = 'destination-out';
+      g.fillStyle = `rgba(0,0,0,${Math.min(0.9, flare * 1.4)})`;
+      g.fillRect(0, 0, dark.width, dark.height);
+    }
     if (!counting) {
       g.globalCompositeOperation = 'destination-out';
       const sx = (me.x - camX) * scale;
@@ -1975,6 +2024,25 @@ async function boot() {
     }
   }
 
+  /** The Hide & Seek ability bar: key, name and cooldown for each of my abilities. */
+  const hsBar = document.createElement('div');
+  hsBar.id = 'hs-abilities';
+  hsBar.hidden = true;
+  document.getElementById('hud')!.append(hsBar);
+  let hsBarHtml = '';
+  function renderHsBar(show: boolean, seeker: boolean) {
+    hsBar.hidden = !show;
+    if (!show) return;
+    const now = performance.now();
+    const slot = (key: string, name: string, a: HsAbility, extra = '') => {
+      const wait = hsReady[a] - now;
+      const state = a === 'boost' && now < boostUntil ? 'ACTIVE' : wait === Infinity ? 'USED UP' : wait > 0 ? `${Math.ceil(wait / 1000)}s` : 'READY';
+      return `<div class="hs-slot${state === 'READY' || state === 'ACTIVE' ? ' ready' : ''}"><b>${key}</b><span>${name}</span><em>${state}${extra}</em></div>`;
+    };
+    const html = seeker ? slot('Q', 'Flare', 'flare', ` · ${flaresLeft} left`) + slot('C', 'Heartbeat', 'scan') : slot('Q', 'Boost', 'boost');
+    if (html !== hsBarHtml) hsBar.innerHTML = hsBarHtml = html;
+  }
+
   /** Hide & Seek over the dark: the Seeker sees noise rings; everyone sees the open exit. */
   function drawHideSeekMarks(camX: number, camY: number) {
     const now = performance.now();
@@ -1993,6 +2061,21 @@ async function boot() {
       ctx.arc((n.x - camX) * scale, (n.y - 6 - camY) * scale, (6 + t * 22) * scale, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
+    }
+    // The Seeker's heartbeat scan: occupied hiding places near them pulse red.
+    if (now < scan.until) {
+      for (const sp of estate.data.hiding ?? []) {
+        if (!scan.spots.includes(sp.id)) continue;
+        const [x0, y0, x1, y1] = sp.box.map((v) => v * ART_TILE);
+        ctx.save();
+        ctx.globalAlpha = 0.45 + 0.35 * Math.sin(now / 90);
+        ctx.strokeStyle = '#ff4d6a';
+        ctx.fillStyle = 'rgba(255, 77, 106, 0.25)';
+        ctx.lineWidth = 2 * dpr;
+        ctx.fillRect((x0 - camX) * scale, (y0 - camY) * scale, (x1 - x0) * scale, (y1 - y0) * scale);
+        ctx.strokeRect((x0 - camX) * scale, (y0 - camY) * scale, (x1 - x0) * scale, (y1 - y0) * scale);
+        ctx.restore();
+      }
     }
     // The gangway glows green once the main entrance is open.
     if (phase === 'live' && phaseEndsAt - now <= ESCAPE_MS && deckId === mapId) {

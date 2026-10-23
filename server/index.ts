@@ -13,7 +13,7 @@ import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
-import { distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
+import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
@@ -139,6 +139,15 @@ interface Hunt {
   hidden: Map<string, string>;
   /** When each Hider last made a noise the Seeker heard. */
   noise: Map<string, number>;
+  /** Seeker abilities: flares left, when each is ready again, the lit deck and until when. */
+  flaresLeft: number;
+  flareReady: number;
+  flareUntil: number;
+  flareDeck: string;
+  scanReady: number;
+  /** Hiders' Boost: ready again at, and running until. */
+  boostReady: Map<string, number>;
+  boostUntil: Map<string, number>;
 }
 /** A deck's hiding places (from its layout). */
 const hideSpotsOn = (deck: MapId): HideSpot[] => (mapData[deck] as { hiding?: HideSpot[] }).hiding ?? [];
@@ -566,7 +575,7 @@ function startRound(matchId: string) {
   });
   saboteurs.set(matchId, saboteur);
   const hs = isHideSeek(matchId);
-  if (hs) hunts.set(matchId, { ammo: GUN.ammo, reloadUntil: 0, lastShot: 0, seekerHp: SEEKER_HP, hp: new Map(), caught: new Set(), escaped: new Set(), hidden: new Map(), noise: new Map() });
+  if (hs) hunts.set(matchId, { ammo: GUN.ammo, reloadUntil: 0, lastShot: 0, seekerHp: SEEKER_HP, hp: new Map(), caught: new Set(), escaped: new Set(), hidden: new Map(), noise: new Map(), flaresLeft: FLARE.uses, flareReady: 0, flareUntil: 0, flareDeck: '', scanReady: 0, boostReady: new Map(), boostUntil: new Map() });
   if (hs) {
     // Hide & Seek: the Seeker counts in the Staff Room while everyone else scatters.
     const seeker = clients.get(saboteur)!.state;
@@ -738,7 +747,7 @@ function tick() {
         const hunt = hunts.get(matchId);
         const ghost = !!hunt && !inPlay(hunt, id);
         seen = id === seeker.id
-          ? players.filter((p) => near(p, seeker, SEEKER_SEES_HIDERS) && (!hunt || (inPlay(hunt, p.id) && !hunt.hidden.has(p.id))))
+          ? players.filter((p) => (near(p, seeker, SEEKER_SEES_HIDERS) || (!!hunt && now < hunt.flareUntil && (p.deck ?? '') === hunt.flareDeck)) && (!hunt || (inPlay(hunt, p.id) && !hunt.hidden.has(p.id))))
           : ghost || near(c.state, seeker, HIDER_SEES_SEEKER) ? [...players, seeker] : players;
       }
       send(c, { t: 'snapshot', room: 'match', players: seen, portals: [], online, taken: [] });
@@ -829,7 +838,7 @@ function handle(c: Client, msg: ClientMsg) {
         if (spot) [s.x, s.y] = [hideSpotCenter(spot).x, hideSpotCenter(spot).y];
         checkEscape(c.room, c);
         const seeker = clients.get(saboteurs.get(c.room) ?? '');
-        if (seeker && inPlay(hunt, s.id) && msg.sprint && msg.moving && !spot && Date.now() - (hunt.noise.get(s.id) ?? 0) >= NOISE_MS && deckOf(seeker) === deckOf(c) && Math.hypot(seeker.state.x - s.x, seeker.state.y - s.y) <= NOISE_RANGE) {
+        if (seeker && inPlay(hunt, s.id) && (msg.sprint || Date.now() < (hunt.boostUntil.get(s.id) ?? 0)) && msg.moving && !spot && Date.now() - (hunt.noise.get(s.id) ?? 0) >= NOISE_MS && deckOf(seeker) === deckOf(c) && Math.hypot(seeker.state.x - s.x, seeker.state.y - s.y) <= NOISE_RANGE) {
           hunt.noise.set(s.id, Date.now());
           send(seeker, { t: 'noise', x: s.x, y: s.y });
         }
@@ -1166,6 +1175,38 @@ function handle(c: Client, msg: ClientMsg) {
       for (const id of matches.get(c.room) ?? []) {
         const m = clients.get(id);
         if (m) send(m, { t: 'searched', spot: spot.id, found: hider?.state.id ?? null, name: hider?.state.name ?? '' });
+      }
+      break;
+    }
+    case 'hsAbility': {
+      // Hide & Seek abilities, live phase only; the server keeps the cooldowns.
+      const hunt = hunts.get(c.room);
+      const now = Date.now();
+      if (!hunt || !isHsAbility(msg.ability) || phases.get(c.room)?.phase !== 'live') break;
+      const seeker = saboteurs.get(c.room) === s.id;
+      if (msg.ability === 'flare' && seeker && hunt.flaresLeft > 0 && now >= hunt.flareReady) {
+        hunt.flaresLeft--;
+        hunt.flareReady = now + FLARE.cooldownMs;
+        hunt.flareUntil = now + FLARE.ms;
+        hunt.flareDeck = s.deck ?? '';
+        send(c, { t: 'hsAbility', ability: 'flare', readyMs: hunt.flaresLeft ? FLARE.cooldownMs : -1, left: hunt.flaresLeft });
+        for (const id of matches.get(c.room) ?? []) {
+          const m = clients.get(id);
+          if (m && (m.state.deck ?? '') === hunt.flareDeck) send(m, { t: 'flare', deck: hunt.flareDeck, ms: FLARE.ms });
+        }
+      } else if (msg.ability === 'scan' && seeker && now >= hunt.scanReady) {
+        hunt.scanReady = now + SCAN.cooldownMs;
+        const spots = hideSpotsOn(deckOf(c)).filter((h) => [...hunt.hidden.values()].includes(h.id) && Math.hypot(hideSpotCenter(h).x - s.x, hideSpotCenter(h).y - s.y) <= SCAN.range);
+        send(c, { t: 'hsAbility', ability: 'scan', readyMs: SCAN.cooldownMs });
+        send(c, { t: 'scanned', spots: spots.map((h) => h.id), ms: SCAN.ms });
+        for (const [id, spot] of hunt.hidden) {
+          const m = clients.get(id);
+          if (m && spots.some((h) => h.id === spot)) send(m, { t: 'scanned', spots: [spot], ms: SCAN.ms, you: true });
+        }
+      } else if (msg.ability === 'boost' && !seeker && inPlay(hunt, s.id) && !hunt.hidden.has(s.id) && now >= (hunt.boostReady.get(s.id) ?? 0)) {
+        hunt.boostReady.set(s.id, now + BOOST.cooldownMs);
+        hunt.boostUntil.set(s.id, now + BOOST.ms);
+        send(c, { t: 'hsAbility', ability: 'boost', readyMs: BOOST.cooldownMs });
       }
       break;
     }

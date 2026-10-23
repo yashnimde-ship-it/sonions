@@ -108,6 +108,12 @@ for (let i = 0; i < count; i++) {
     const o = others[0];
     send({ t: 'shoot', x: o.x, y: o.y - 12 });
   }, 1000);
+  // ...and fire a flare now and then, and scan (the server says no while on cooldown).
+  setInterval(() => {
+    if (!inMatch || !saboteur || mode !== 'hideSeek' || ws.readyState !== WebSocket.OPEN) return;
+    send({ t: 'hsAbility', ability: 'flare' });
+    send({ t: 'hsAbility', ability: 'scan' });
+  }, 7000);
   // As a Runner: report position and health, and play medic for any hurt Runner every 4 s.
   setInterval(() => {
     if (!inMatch || saboteur || ws.readyState !== WebSocket.OPEN) return;
