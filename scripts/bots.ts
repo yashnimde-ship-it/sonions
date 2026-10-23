@@ -26,7 +26,6 @@ for (let i = 0; i < count; i++) {
   let myId = '';
   let saboteur = false;
   let others: { id: string; x: number; y: number; hp: number }[] = [];
-  let saboteurId = '';
   // As a Runner in a heist: stand at the spawn pretending to be hurt (40 HP) until healed.
   let hp = 40;
   let spot = { x: 0, y: 0 };
@@ -47,8 +46,7 @@ for (let i = 0; i < count; i++) {
     }
     if (msg.t === 'match') {
       inMatch = true;
-      saboteur = msg.saboteur === myId;
-      saboteurId = msg.saboteur;
+      saboteur = msg.role === 'saboteur';
       hp = 40;
       const meThere = msg.players.find((p) => p.id === myId);
       if (meThere) spot = { x: meThere.x, y: meThere.y };
@@ -92,7 +90,7 @@ for (let i = 0; i < count; i++) {
   }, 250);
   setInterval(() => {
     if (!inMatch || saboteur || ws.readyState !== WebSocket.OPEN) return;
-    const hurt = others.find((o) => o.id !== saboteurId && o.hp < 100);
+    const hurt = others.find((o) => o.hp < 100);
     if (hurt) {
       send({ t: 'heal', target: hurt.id });
       console.log(`Bot ${i + 1} sends First Aid to player ${hurt.id} (hp ${hurt.hp})`);

@@ -101,7 +101,8 @@ function startMatch(size: number, crew: Client[]) {
   saboteurs.set(matchId, saboteur);
   trapState.set(matchId, new Map(TRAPS.map((t) => [t.id, { readyAt: 0, jammedUntil: 0 }])));
   const players = crew.map((c) => ({ ...c.state }));
-  for (const c of crew) send(c, { t: 'match', matchId, size, players, saboteur });
+  // Each player learns only their own role, so the Saboteur stays secret.
+  for (const c of crew) send(c, { t: 'match', matchId, size, players, role: c.state.id === saboteur ? 'saboteur' : 'runner' });
   console.log(`${matchId}: ${size}-player heist with ${players.map((p) => p.name).join(', ')}`);
 }
 
@@ -222,6 +223,8 @@ function handle(c: Client, msg: ClientMsg) {
     case 'ability': {
       const match = matches.get(c.room);
       if (!match) break;
+      // The Saboteur's abilities would give them away; only Runners' are shown to others.
+      if (msg.t === 'ability' && saboteurs.get(c.room) === s.id) break;
       const out: ServerMsg =
         msg.t === 'loot' ? { t: 'loot', id: msg.id, by: s.id } : msg.t === 'ability' ? { t: 'ability', ability: msg.ability, by: s.id } : msg;
       for (const id of match) {

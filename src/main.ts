@@ -103,7 +103,7 @@ async function boot() {
   const toWorld = (e: PointerEvent): [number, number] => [(e.clientX * dpr) / scale + camera.x, (e.clientY * dpr) / scale + camera.y];
   canvas.addEventListener('pointermove', (e) => ([mouseX, mouseY] = toWorld(e)));
   canvas.addEventListener('pointerdown', (e) => {
-    if (scene !== 'match' || match?.saboteur !== myId) return;
+    if (scene !== 'match' || !match?.saboteur) return;
     const [x, y] = toWorld(e);
     const trap = trapUnder(x, y);
     if (trap && trapReady(trap.id)) net.send({ t: 'trap', id: trap.id });
@@ -125,7 +125,8 @@ async function boot() {
   let flashUntil = 0;
   let viewX = 0;
   let viewY = 0;
-  let match: { id: string; size: number; saboteur: string } | null = null;
+  /** The heist you're in; `saboteur` is whether *you* are it (nobody is told who else is). */
+  let match: { id: string; size: number; saboteur: boolean } | null = null;
   let bannerUntil = 0;
   let serverFull = false;
   /** Loot in my hands, and what I've banked this heist. */
@@ -230,11 +231,11 @@ async function boot() {
     trapHits.clear();
     trapJammedUntil.clear();
     lastTrapCheck = 0;
-    hud.setHealth(msg.saboteur === myId ? null : hp);
+    hud.setHealth(msg.role === 'saboteur' ? null : hp);
     hud.setLoot(0, 0, interactions.lootables.length);
     hud.setCarrying(null);
     hud.hideMessage();
-    match = { id: msg.matchId, size: msg.size, saboteur: msg.saboteur };
+    match = { id: msg.matchId, size: msg.size, saboteur: msg.role === 'saboteur' };
     profile.recordHeist();
     lobby.setMe(myName, myCharacter, profile);
     remotes.clear();
@@ -247,8 +248,8 @@ async function boot() {
       me.y = p.y;
       me.facing = p.facing;
     }
-    abilities.setRound(myCharacter, msg.saboteur === myId ? 'saboteur' : 'runner');
-    const role = msg.saboteur === myId ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
+    abilities.setRound(myCharacter, msg.role);
+    const role = msg.role === 'saboteur' ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
     const crew = msg.players.map((p) => p.name).join(' · ');
     banner.innerHTML = `<span class="kicker">${msg.size}-PLAYER HEIST</span><span>You are ${role}</span><span class="crew-list">${crew}</span>`;
     banner.hidden = false;
@@ -319,7 +320,7 @@ async function boot() {
         trapFiredAt.set(msg.id, performance.now());
         break;
       case 'healed':
-        if (match && match.saboteur !== myId) healMe();
+        if (match && !match.saboteur) healMe();
         break;
       case 'jam': {
         const now = performance.now();
@@ -443,8 +444,8 @@ async function boot() {
 
   /** Everything an ability may need, gathered fresh when Q is pressed. */
   function abilityContext() {
+    // Everyone else; the Saboteur (whoever it is) never loses HP, so First Aid never picks them.
     const crew = [...remotes.entries()]
-      .filter(([id]) => id !== match?.saboteur)
       .map(([id, r]) => ({ id, x: r.bandit.x, y: r.bandit.y, hp: r.state.hp }));
     return { me, send: (m: ClientMsg) => net.send(m), hp, setHp: healMe, crew };
   }
@@ -467,7 +468,7 @@ async function boot() {
 
   /** A Runner standing on a plate while it's live gets shocked: damage and a stun. */
   function checkTraps() {
-    if (!match || match.saboteur === myId) return;
+    if (!match || match.saboteur) return;
     const now = performance.now();
     const since = lastTrapCheck || now;
     lastTrapCheck = now;
@@ -668,7 +669,7 @@ async function boot() {
 
   /** Metal plates with hazard edges; dim while recharging, outlined for the Saboteur's cursor. */
   function drawTrapPlates(camX: number, camY: number) {
-    const sab = match?.saboteur === myId;
+    const sab = !!match?.saboteur;
     const hover = sab ? trapUnder(mouseX, mouseY) : undefined;
     for (const t of TRAPS) {
       const x = Math.round(t.x - TRAP_RADIUS - camX);

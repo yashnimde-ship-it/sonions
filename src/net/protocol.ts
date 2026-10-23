@@ -64,8 +64,11 @@ export type ServerMsg =
   | { t: 'character'; character: CharacterId }
   /** All five crew members are taken: the server can't fit another player right now. */
   | { t: 'full' }
-  /** A portal filled up: you are in a new match with these players. */
-  | { t: 'match'; matchId: string; size: number; players: PlayerState[]; saboteur: string }
+  /**
+   * A portal filled up: you are in a new match with these players. `role` is only your own:
+   * nobody is told who the Saboteur is (except the Saboteur).
+   */
+  | { t: 'match'; matchId: string; size: number; players: PlayerState[]; role: 'runner' | 'saboteur' }
   | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
   | { t: 'door'; id: string; open: boolean }
   | { t: 'loot'; id: string; by: string }
