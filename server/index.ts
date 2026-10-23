@@ -56,6 +56,18 @@ interface Client {
   dropTimer: ReturnType<typeof setTimeout> | null;
 }
 
+interface TrapRuntime {
+  firedAt: number | null;
+  jammedUntil: number;
+  tripwired: boolean;
+  /** Players who personally discovered this otherwise hidden trap. */
+  revealedTo?: Set<string>;
+  /** Laser grid stays hot after its first crossing. */
+  activeFrom?: number;
+  activeUntil?: number;
+  pendingLaser?: { playerId: string; fromX: number; fromY: number; hitAt: number };
+}
+
 /** How long a dropped player's seat (heist, role, character) is held for them to reconnect. */
 const RECONNECT_GRACE_MS = 30_000;
 /** Players by key, connected or holding a seat. */
@@ -107,7 +119,7 @@ function crewMap(crew: Client[]): MapId {
 }
 /** Per match: who the Saboteur is, and each trap plate's state (ms timestamps). */
 const saboteurs = new Map<string, string>();
-const trapState = new Map<string, Map<string, { firedAt: number | null; jammedUntil: number; tripwired: boolean }>>();
+const trapState = new Map<string, Map<string, TrapRuntime>>();
 /** Saboteur-only Overclock window; the ability cooldown prevents overlapping windows. */
 const overclockWindows = new Map<string, { startsAt: number; endsAt: number }>();
 const overclockReadyAt = new Map<string, number>();
@@ -206,7 +218,7 @@ function distanceToSegment(x: number, y: number, ax: number, ay: number, bx: num
 function trapEffect(kind: TrapKindId) {
   switch (kind) {
     case 'shock': return { damage: 25, stunMs: 2000 };
-    case 'laser': return { damage: 20, stunMs: 300 };
+    case 'laser': return { damage: 20, stunMs: 0 };
     case 'boulder': return { damage: 30, stunMs: 800 };
     case 'fakeLoot': return { damage: 30, stunMs: 2000 };
     default: return { damage: 0, stunMs: 0 };
@@ -214,7 +226,7 @@ function trapEffect(kind: TrapKindId) {
 }
 
 /** Traps that knock a carried diamond out of your hands. */
-const DROPS_DIAMOND = new Set<TrapKindId>(['spring', 'laser', 'magnet']);
+const DROPS_DIAMOND = new Set<TrapKindId>(['spring', 'magnet']);
 /** How far the magnet reaches, art px (4 tiles). */
 const MAGNET_REACH = 64;
 
@@ -227,7 +239,9 @@ function firePlaced(matchId: string, trap: PlacedTrap, victim: Client, fromX: nu
   const dy = s.y - fromY || s.y - trap.y;
   const len = Math.hypot(dx, dy) || 1;
   const knockback = trap.kind === 'spring' ? { x: s.x + (dx / len) * 64, y: s.y + (dy / len) * 64 } : trap.kind === 'boulder' ? { x: s.x + 56, y: s.y } : undefined;
-  send(victim, { t: 'placedTrapHit', kind: trap.kind, ...effect, ...(knockback ? { knockback } : {}) });
+  if (trap.kind !== 'laser') send(victim, { t: 'placedTrapHit', kind: trap.kind, ...effect, ...(knockback ? { knockback } : {}) });
+  const runtime = trapState.get(matchId)?.get(trap.id);
+  if (runtime) (runtime.revealedTo ??= new Set()).add(s.id);
   for (const id of matches.get(matchId) ?? []) {
     const member = clients.get(id);
     if (member) send(member, { t: 'trapFired', id: trap.id, kind: trap.kind, x: trap.x, y: trap.y, victim: s.id });
@@ -239,9 +253,6 @@ function firePlaced(matchId: string, trap: PlacedTrap, victim: Client, fromX: nu
       if (!c || id === saboteurs.get(matchId) || (c.state.character === 'zoya' && CHARACTER_INFO.zoya.runner === 'steadyCarry')) continue;
       if (deckOf(c) === onDeck(matchId, trap.deck) && Math.hypot(c.state.x - trap.x, c.state.y - trap.y) <= MAGNET_REACH) dropDiamond(matchId, id, trap.x, trap.y + 10);
     }
-  } else if (trap.kind === 'laser') {
-    // Knocked back the way you came, so the diamond doesn't land in the beam.
-    dropDiamond(matchId, s.id, fromX - (dx / len) * 12, fromY - (dy / len) * 12);
   } else if (DROPS_DIAMOND.has(trap.kind)) dropDiamond(matchId, s.id, knockback?.x ?? s.x, knockback?.y ?? s.y);
   if (trap.kind === 'fakeLoot') {
     // A decoy blows up once.
@@ -251,6 +262,19 @@ function firePlaced(matchId: string, trap: PlacedTrap, victim: Client, fromX: nu
       if (member) send(member, { t: 'unplace', id: trap.id });
     }
   }
+}
+
+/** Every live beam crossing hurts and drops carried loot back on the runner's approach side. */
+function laserHit(matchId: string, trap: PlacedTrap, victim: Client, fromX: number, fromY: number) {
+  const s = victim.state;
+  const runtime = trapState.get(matchId)?.get(trap.id);
+  if (runtime) (runtime.revealedTo ??= new Set()).add(s.id);
+  send(victim, { t: 'trapReveal', trap });
+  send(victim, { t: 'placedTrapHit', kind: 'laser', damage: 20, stunMs: 0 });
+  const dx = s.x - fromX || s.x - trap.x || 0.01;
+  const dy = s.y - fromY || s.y - trap.y;
+  const len = Math.hypot(dx, dy) || 1;
+  dropDiamond(matchId, s.id, fromX - (dx / len) * 12, fromY - (dy / len) * 12);
 }
 
 function toLobby(c: Client) {
@@ -445,8 +469,7 @@ function matchMsg(c: Client, matchId: string, resume = false): ServerMsg {
 /** What a reconnecting player missed: doors, and the traps they're allowed to know about. */
 function resyncMsg(matchId: string, c: Client): ServerMsg {
   const sab = saboteurs.get(matchId) === c.state.id;
-  const live = phases.get(matchId)?.phase !== 'setup';
-  const known = (t: PlacedTrap) => sab || (live && (t.kind === 'fakeLoot' || trapState.get(matchId)?.get(t.id)?.firedAt != null));
+  const known = (t: PlacedTrap) => sab || t.kind === 'fakeLoot' || !!trapState.get(matchId)?.get(t.id)?.revealedTo?.has(c.state.id);
   return {
     t: 'resync',
     doors: [...(doorStates.get(matchId) ?? [])].map(([id, open]) => ({ id, open })),
@@ -504,7 +527,8 @@ function updatePortals(now: number): PortalState[] {
 }
 
 function tick() {
-  const portals = updatePortals(Date.now());
+  const now = Date.now();
+  const portals = updatePortals(now);
   const online = joined().length;
   const taken: Taken[] = joined().map((c) => ({ character: c.state.character, name: c.state.name }));
   const lobbyPlayers = inRoom('lobby').map((c) => c.state);
@@ -519,9 +543,22 @@ function tick() {
       endMatch(matchId);
       continue;
     }
+    // A laser gives its 0.8s flicker warning, then hits the Runner who triggered it only if
+    // they're still in the beam when it becomes live.
+    for (const trap of placedTraps.get(matchId)?.values() ?? []) {
+      if (trap.kind !== 'laser') continue;
+      const state = trapState.get(matchId)?.get(trap.id);
+      const pending = state?.pendingLaser;
+      if (!state || !pending || now < pending.hitAt) continue;
+      state.pendingLaser = undefined;
+      const victim = clients.get(pending.playerId);
+      const radius = Math.max(12, Math.min(trapKind(trap.kind)!.w, trapKind(trap.kind)!.h) / 2);
+      if (victim?.room !== matchId || now >= (state.activeUntil ?? 0) || now < state.jammedUntil) continue;
+      if (Math.hypot(victim.state.x - trap.x, victim.state.y - trap.y) <= radius) laserHit(matchId, trap, victim, pending.fromX, pending.fromY);
+    }
     // The round's clock: setup, then the heist, then time's up.
     const p = phases.get(matchId);
-    if (p && p.phase !== 'over' && Date.now() >= p.endsAt) {
+    if (p && p.phase !== 'over' && now >= p.endsAt) {
       // Setup over: the heist starts. Heist over: the Saboteur held on to enough diamonds.
       if (p.phase === 'setup') goLive(matchId);
       else finish(matchId, 'saboteur');
@@ -529,7 +566,7 @@ function tick() {
     if (p?.phase === 'live') sendGlints(matchId);
     // The break after a round: then the next round, or after the last one the final results.
     const sr = series.get(matchId);
-    if (sr && !sr.done && sr.nextAt !== null && Date.now() >= sr.nextAt) {
+    if (sr && !sr.done && sr.nextAt !== null && now >= sr.nextAt) {
       sr.nextAt = null;
       if (sr.round + 1 >= sr.rounds) finishSeries(matchId);
       else {
@@ -600,9 +637,24 @@ function handle(c: Client, msg: ClientMsg) {
             if (trap.kind === 'fakeLoot' || onDeck(c.room, trap.deck) !== deck) continue;
             const state = trapState.get(c.room)?.get(trap.id);
             const radius = Math.max(12, Math.min(trapKind(trap.kind)!.w, trapKind(trap.kind)!.h) / 2);
-            if (!state || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null)) continue;
-            if (Math.hypot(fromX - trap.x, fromY - trap.y) <= radius || distanceToSegment(trap.x, trap.y, fromX, fromY, s.x, s.y) > radius) continue;
+            if (!state || now < state.jammedUntil) continue;
+            const entered = Math.hypot(fromX - trap.x, fromY - trap.y) > radius && distanceToSegment(trap.x, trap.y, fromX, fromY, s.x, s.y) <= radius;
+            if (trap.kind === 'laser' && state.activeUntil !== undefined) {
+              if (now < state.activeUntil) {
+                if (now >= (state.activeFrom ?? 0) && entered) laserHit(c.room, trap, c, fromX, fromY);
+                continue;
+              }
+              state.activeFrom = undefined;
+              state.activeUntil = undefined;
+            }
+            if (!trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null) || !entered) continue;
             state.firedAt = now;
+            if (trap.kind === 'laser') {
+              // Flicker a warning for 0.8s, then keep the beam live for 4s.
+              state.activeFrom = now + 800;
+              state.activeUntil = now + 4800;
+              state.pendingLaser = { playerId: s.id, fromX, fromY, hitAt: now + 800 };
+            }
             firePlaced(c.room, trap, c, fromX, fromY);
           }
         }
@@ -732,11 +784,17 @@ function handle(c: Client, msg: ClientMsg) {
       const trap = trapState.get(c.room)?.get(msg.id);
       const spot = spotOf(c.room, msg.id);
       const rules = spot ? trapRules(spot) : undefined;
-      if (!trap || trap.firedAt == null || trap.jammedUntil > now || trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null, rules)) break;
+      if (!trap || trap.firedAt == null || trap.jammedUntil > now || (trap.activeUntil !== undefined && now < trap.activeUntil) || trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null, rules)) break;
       if (!spendUse(c, 'trapRefresh')) break;
       trap.firedAt = null;
       trap.tripwired = false;
-      send(c, { t: 'trapRefreshed', id: msg.id });
+      trap.activeFrom = undefined;
+      trap.activeUntil = undefined;
+      trap.pendingLaser = undefined;
+      for (const id of matches.get(c.room) ?? []) {
+        const member = clients.get(id);
+        if (member) send(member, { t: 'trapRefreshed', id: msg.id });
+      }
       break;
     }
     case 'doorJam': {
@@ -835,6 +893,9 @@ function handle(c: Client, msg: ClientMsg) {
         if (!st) continue;
         st.jammedUntil = now + JAM_MS;
         st.tripwired = false;
+        st.activeFrom = undefined;
+        st.activeUntil = undefined;
+        st.pendingLaser = undefined;
       }
       for (const id of matches.get(c.room) ?? []) {
         const member = clients.get(id);

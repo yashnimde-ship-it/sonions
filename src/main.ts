@@ -20,6 +20,7 @@ import { InteractionSystem } from './systems/InteractionSystem';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { drawTrap } from './systems/TrapArt';
+import { play as sfx, setSoundEnabled } from './systems/Sound';
 import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
 import { HUD } from './ui/HUD';
 import { LobbyUI, type MapInfo, type StartState } from './ui/LobbyUI';
@@ -78,8 +79,9 @@ interface Remote {
 // Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
 // that). Bank it by walking into the GETAWAY zone on the street, in tiles.
 const CARRY_SLOW = 0.35;
-// Knocked out at 0 HP: down for 4 s, then back up with half health.
-const KO_FRAMES = 240;
+// A Runner respawns at the map entrance after a short knockout.
+const KO_RESPAWN_MS = 1500;
+const KO_FRAMES = Math.ceil((KO_RESPAWN_MS / 1000) * 60);
 const KO_HP = 50;
 const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#ff4fb0' };
 // ---------- This tab's player, across reloads and dropped connections ----------
@@ -270,6 +272,7 @@ async function boot() {
   let blackoutUntil = 0;
   /** A crusher I set off: if I'm still under it when it slams, it hurts. */
   const crushers: { x: number; y: number; at: number }[] = [];
+  let lastTickSec = 0;
   /** Which round of the match this is. */
   let roundNo = 1;
   let roundsTotal = 1;
@@ -283,6 +286,7 @@ async function boot() {
   /** My health (Runners only), and when each trap plate last fired (performance.now ms). */
   let hp = MAX_HP;
   let knockedOut = false;
+  let respawnAt = 0;
   const trapFiredAt = new Map<string, number>();
   const trapHits = new Set<string>();
   /** Plates jammed by Trap Jam, until when (performance.now ms). */
@@ -306,6 +310,10 @@ async function boot() {
   let toastUntil = 0;
   let trapNotice = '';
   let trapNoticeUntil = 0;
+  let impactStarted = 0;
+  let impactUntil = 0;
+  let impactColor = '#ff4557';
+  let impactShake = 0;
   /** The mouse in world (art) pixels, for the Saboteur picking traps. */
   let mouseX = -1;
   let mouseY = -1;
@@ -473,6 +481,7 @@ async function boot() {
     revealed.clear();
     crushers.length = 0;
     slowUntil = reverseUntil = blackoutUntil = 0;
+    impactStarted = impactUntil = impactShake = 0;
     me.rootFrames = me.slipFrames = 0;
     result = null;
     resultScreen.hide();
@@ -481,6 +490,7 @@ async function boot() {
     lighting = new LightingSystem(estate);
     hp = MAX_HP;
     knockedOut = false;
+    respawnAt = 0;
     me.stunFrames = 0;
     trapFiredAt.clear();
     trapHits.clear();
@@ -644,7 +654,10 @@ async function boot() {
         for (const d of diamonds) {
           if (d.place.at !== 'spot' || before.get(d.id) === d.place.spot) continue;
           const spot = spots.find((x) => x.id === (d.place as { spot: string }).spot);
-          if (spot && scene === 'match') fx.push({ kind: 'hide', ...spotCenter(spot), at: performance.now() });
+          if (spot && scene === 'match') {
+            fx.push({ kind: 'hide', ...spotCenter(spot), at: performance.now() });
+            if (match?.saboteur) sfx('hide');
+          }
         }
         searched.clear();
         for (const id of msg.searched) searched.add(id);
@@ -662,11 +675,15 @@ async function boot() {
         if (spot) fx.push({ kind: msg.found ? 'found' : 'empty', ...spotCenter(spot), at: performance.now() });
         if (msg.found) hud.setCarrying('CARRYING A DIAMOND · TAKE IT TO THE GETAWAY');
         else toast(`Nothing in the ${spot?.name ?? 'furniture'}`);
+        sfx(msg.found ? 'found' : 'empty');
         break;
       }
       case 'diamondEvent': {
         const who = msg.id === myId ? 'You' : esc(msg.name);
         const what = msg.kind === 'found' ? 'found a diamond' : msg.kind === 'banked' ? `banked a diamond · ${bankedN}/${needN}` : 'dropped a diamond';
+        if (msg.kind === 'banked') sfx('banked');
+        else if (msg.kind === 'dropped') sfx('dropped');
+        else if (msg.id !== myId) sfx('alert');
         hud.alert(`<span class="who">${who}</span> <b>${what}</b><span class="where">${esc(msg.area)}</span>`, msg.kind === 'dropped' ? 'danger' : 'good');
         break;
       }
@@ -675,11 +692,13 @@ async function boot() {
         diamonds = msg.diamonds;
         for (const t of msg.placed) placed.set(t.id, t);
         resultScreen.show(msg, myId, !!match?.saboteur);
+        if (msg.winner !== 'none') sfx((msg.winner === 'saboteur') === !!match?.saboteur ? 'win' : 'lose');
         frameCamera(true);
         break;
       }
       case 'final':
         resultScreen.showFinal(msg, myId);
+        sfx(msg.standings[0]?.id === myId ? 'win' : 'alert');
         break;
       case 'phase':
         phase = msg.phase;
@@ -718,6 +737,10 @@ async function boot() {
       }
       case 'placedTrapHit':
         applyPlacedTrapHit(msg.kind, msg.damage, msg.stunMs, msg.knockback);
+        break;
+      case 'trapReveal':
+        placed.set(msg.trap.id, msg.trap);
+        revealed.add(msg.trap.id);
         break;
       case 'trapFired':
         trapFired(msg);
@@ -809,7 +832,11 @@ async function boot() {
     online = 0;
     title.setBusy(false);
   };
-  settings.onChange(() => frameCamera(true));
+  setSoundEnabled(settings.values.sound);
+  settings.onChange(() => {
+    setSoundEnabled(settings.values.sound);
+    frameCamera(true);
+  });
 
   /** The party size you're standing in, if any. */
   function myPortal(): number | null {
@@ -904,7 +931,10 @@ async function boot() {
     const targetTrap = trapUnder(mouseX, mouseY);
     const tripOpen = !estate.boxBlocked(mouseX - 10, mouseY - 8, mouseX + 10, mouseY + 8);
     const targetDoor = estateData.doors.find((door) => mouseX >= door.x && mouseX <= door.x + door.w && mouseY >= door.y && mouseY <= door.y + door.h);
-    const placedReady = placedTarget ? trapIsReady(trapFiredAt.get(placedTarget.id), performance.now(), abilities.overclockWindow) : undefined;
+    const placedFiredAt = placedTarget ? trapFiredAt.get(placedTarget.id) : undefined;
+    const placedReady = placedTarget
+      ? trapIsReady(placedFiredAt, performance.now(), abilities.overclockWindow) && !(placedTarget.kind === 'laser' && placedFiredAt !== undefined && performance.now() < placedFiredAt + FX_MS.laser)
+      : undefined;
     return {
       me,
       send: (m: ClientMsg) => net.send(m),
@@ -924,6 +954,7 @@ async function boot() {
     hp = to;
     if (knockedOut) {
       knockedOut = false;
+      respawnAt = 0;
       me.stunFrames = 0;
     }
     hud.setHealth(hp);
@@ -996,16 +1027,47 @@ async function boot() {
     hp = Math.max(0, hp - damage);
     if (stunMs > 0) me.stun(Math.round((stunMs / 1000) * 60));
     if (hp === 0) {
-      knockedOut = true;
-      me.stun(KO_FRAMES);
+      beginKnockout();
     }
     hud.setHealth(hp);
+  }
+
+  function beginKnockout() {
+    knockedOut = true;
+    respawnAt = performance.now() + KO_RESPAWN_MS;
+    me.stun(KO_FRAMES);
+  }
+
+  function respawnRunner() {
+    const { spawn } = estateData;
+    me.respawn(spawn.x * ART_TILE, spawn.y * ART_TILE, spawn.facing);
+    freeX = me.x;
+    freeY = me.y;
+    hp = KO_HP;
+    knockedOut = false;
+    respawnAt = 0;
+    hud.setHealth(hp);
+    toast('Respawned at the entrance · dropped diamonds stay behind');
+  }
+
+  /** Short camera thump and colored edge flash make a trap hit read without hiding play. */
+  function trapImpact(color: string, shake = 3, duration = 260) {
+    impactStarted = performance.now();
+    if (impactStarted >= impactUntil) impactShake = 0;
+    impactUntil = impactStarted + duration;
+    impactColor = color;
+    impactShake = Math.max(impactShake, shake);
   }
 
   /** I set off a placed trap: what it does to me, by kind. */
   function applyPlacedTrapHit(kind: PlacedTrap['kind'], damage: number, stunMs: number, knockback?: { x: number; y: number }) {
     if (!match || match.saboteur) return;
     const now = performance.now();
+    const hitColors: Record<PlacedTrap['kind'], string> = {
+      shock: '#8fe8ff', spring: '#ffd25a', snare: '#e0bd75', glue: '#ffbd4a', oil: '#67d8ff', crusher: '#ff515d',
+      laser: '#ff5264', boulder: '#c0c4d0', magnet: '#55f4ee', gas: '#c379ff', blackout: '#a783ff', fakeLoot: '#ff9a38',
+    };
+    trapImpact(hitColors[kind], damage >= 30 || kind === 'crusher' || kind === 'spring' ? 6 : 3.5);
     hurt(damage, stunMs);
     let effect = '';
     switch (kind) {
@@ -1039,24 +1101,30 @@ async function boot() {
     trapNoticeUntil = now + 2500;
   }
 
-  /** A placed trap went off somewhere: everyone sees it, and some catch everyone nearby. */
+  /** Resolve a placed-trap event. Only its victim and the Saboteur see the trap itself. */
   function trapFired(msg: Extract<ServerMsg, { t: 'trapFired' }>) {
     const now = performance.now();
-    firing.push({ id: msg.id, kind: msg.kind, x: msg.x, y: msg.y, at: now });
-    trapFiredAt.set(msg.id, now);
-    revealed.add(msg.id);
-    // Runners didn't know it was there; now they do.
-    if (!placed.has(msg.id)) placed.set(msg.id, { id: msg.id, kind: msg.kind, x: msg.x, y: msg.y });
+    const seesTrap = !!match?.saboteur || msg.victim === myId;
+    if (seesTrap) {
+      firing.push({ id: msg.id, kind: msg.kind, x: msg.x, y: msg.y, at: now });
+      trapFiredAt.set(msg.id, now);
+      revealed.add(msg.id);
+      if (!placed.has(msg.id)) placed.set(msg.id, { id: msg.id, kind: msg.kind, x: msg.x, y: msg.y });
+    }
+    // The Saboteur hears every trap; only the Saboteur and its victim hear this one clearly.
+    if (match?.saboteur || msg.victim === myId) sfx(msg.kind);
     if (!match || match.saboteur || phase !== 'live') return;
     const d = Math.hypot(me.x - msg.x, me.y - msg.y);
     if (msg.kind === 'crusher' && msg.victim === myId) crushers.push({ x: msg.x, y: msg.y, at: now + CRUSHER_WARN_MS });
     if (msg.kind === 'magnet' && d <= 64 && d > 6) me.shove(msg.x - me.x, msg.y - me.y, d - 6, 60);
     if (msg.kind === 'gas' && d <= 44) {
+      trapImpact('#b45cff', 3);
       reverseUntil = now + 4000;
       trapNotice = 'Confusion Gas · your controls are reversed for 4s';
       trapNoticeUntil = now + 2500;
     }
     if (msg.kind === 'blackout' && estate.areaAt(msg.x, msg.y) === estate.areaAt(me.x, me.y - 4)) {
+      trapImpact('#9b6cff', 3.5);
       blackoutUntil = now + 6000;
       trapNotice = 'Blackout · the lights are out in here';
       trapNoticeUntil = now + 2500;
@@ -1070,6 +1138,7 @@ async function boot() {
       if (now < c.at) continue;
       crushers.splice(i, 1);
       if (Math.abs(me.x - c.x) <= 16 && Math.abs(me.y - c.y) <= 16) {
+        trapImpact('#ff4b58', 7);
         hurt(50, 3000);
         trapNotice = 'Crusher · 50 damage · 3s stun';
         trapNoticeUntil = now + 2500;
@@ -1154,11 +1223,7 @@ async function boot() {
     const now = performance.now();
     const since = lastTrapCheck || now;
     lastTrapCheck = now;
-    if (knockedOut && !me.stunned) {
-      knockedOut = false;
-      hp = KO_HP;
-      hud.setHealth(hp);
-    }
+    if (knockedOut) return;
     for (const t of traps) {
       const firedAt = trapFiredAt.get(t.id);
       if (firedAt === undefined || t.kind === 'spotlight') continue;
@@ -1170,7 +1235,9 @@ async function boot() {
       const progress = (now - liveFrom) / r.activeMs;
       if (!live || trapHits.has(key) || !inTrapArea(t, me.x, me.y, progress)) continue;
       trapHits.add(key);
+      trapImpact(r.damage > 0 ? '#ff5264' : '#a783ff', r.damage >= 25 ? 5 : 3);
       reportHit(SPOT_NAMES[t.kind ?? 'plate'] ?? 'Trap');
+      sfx(isPlate(t) ? 'shock' : 'boulder');
       hp = Math.max(0, hp - r.damage);
       if (r.stunMs) me.stun(Math.round((r.stunMs / 1000) * 60));
       if (r.knock) {
@@ -1181,8 +1248,8 @@ async function boot() {
         me.shove(dx, dy, r.knock, 10);
       }
       if (hp === 0) {
-        knockedOut = true;
-        me.stun(KO_FRAMES);
+        beginKnockout();
+        break;
       }
       hud.setHealth(hp);
     }
@@ -1242,6 +1309,10 @@ async function boot() {
     if (performance.now() > bannerUntil) banner.hidden = true;
     const left = Math.max(0, phaseEndsAt - performance.now());
     hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${phase === 'setup' ? 'SETUP' : 'HEIST'}`, left);
+    // A tick each second for the last ten.
+    const secs = Math.ceil(left / 1000);
+    if (phase === 'live' && secs <= 10 && secs > 0 && secs !== lastTickSec) sfx('tick');
+    lastTickSec = secs;
     resultScreen.tick();
     updateObjective();
     const sab = !!match?.saboteur;
@@ -1260,6 +1331,15 @@ async function boot() {
       sendPosition();
       frameCamera(false);
       return;
+    }
+    if (knockedOut) {
+      if (performance.now() >= respawnAt) respawnRunner();
+      else {
+        me.update({ dx: 0, dy: 0, sprint: false }, estate);
+        sendPosition();
+        frameCamera(false);
+        return;
+      }
     }
     if (hud.messageOpen) {
       if (input.action) hud.hideMessage();
@@ -1308,6 +1388,7 @@ async function boot() {
     }
     const near = interactions.nearby(me);
     let door = near?.kind === 'door' ? near.door : null;
+    if (me.bumped && !door) door = interactions.blockingDoor(me, estate, HITBOX);
     // Walking into a closed door pushes it open, so nobody stops dead in a doorway.
     if (me.bumped && door && !estate.isOpen(door) && !door.keypad) {
       estate.setDoor(door, true);
@@ -1343,7 +1424,9 @@ async function boot() {
       }
     } else if (door) {
       const lockLeft = Math.max(0, (doorJammedUntil.get(door.id) ?? 0) - now);
-      prompt = lockLeft ? `LOCKED ${Math.ceil(lockLeft / 1000)}s` : interactions.promptFor(near!, estate);
+      prompt = lockLeft ? `LOCKED ${Math.ceil(lockLeft / 1000)}s` : near?.kind === 'door' && near.door.id === door.id
+        ? interactions.promptFor(near, estate)
+        : `E  ${estate.isOpen(door) ? 'Close' : 'Open'} ${door.name}`;
       if (input.action && !lockLeft) {
         const refused = interactions.toggleDoor(door, estate, me, HITBOX);
         if (refused) hud.showMessage(refused);
@@ -1480,6 +1563,10 @@ async function boot() {
       return;
     }
 
+    const impactProgress = impactUntil > performance.now() ? (performance.now() - impactStarted) / (impactUntil - impactStarted) : 1;
+    const shake = impactProgress < 1 ? impactShake * dpr * (1 - impactProgress) ** 2 : 0;
+    ctx.save();
+    ctx.translate(Math.sin(frame * 2.7) * shake, Math.cos(frame * 3.4) * shake * 0.7);
     blit(estate.below, estate.widthPx, estate.heightPx);
     ctx.save();
     ctx.scale(scale, scale);
@@ -1510,7 +1597,20 @@ async function boot() {
     if (match?.saboteur && !result) drawTrapMarkers(camX, camY);
     if (match?.saboteur && phase === 'setup') drawSpotLabel(camX, camY);
     if (performance.now() < blackoutUntil && !match?.saboteur) drawBlackout(camX, camY);
+    if (!result && impactProgress < 1) drawImpactOverlay(impactProgress);
     if (result) drawReveal(camX, camY);
+    ctx.restore();
+  }
+
+  /** A soft colored vignette fades with the camera shake; the canvas world stays readable. */
+  function drawImpactOverlay(progress: number) {
+    const rgb = impactColor.match(/[\da-f]{2}/gi)?.slice(0, 3).map((part) => parseInt(part, 16)) ?? [255, 69, 87];
+    const alpha = Math.sin(Math.max(0, Math.min(1, progress)) * Math.PI) * 0.2;
+    const grad = ctx.createRadialGradient(canvas.width / 2, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.18, canvas.width / 2, canvas.height / 2, Math.max(canvas.width, canvas.height) * 0.72);
+    grad.addColorStop(0, `rgba(${rgb.join(',')},0)`);
+    grad.addColorStop(1, `rgba(${rgb.join(',')},${alpha})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
   /** Placed traps going off: each kind has its own animation, seen by everyone. */
@@ -1518,7 +1618,7 @@ async function boot() {
     const now = performance.now();
     for (let i = firing.length - 1; i >= 0; i--) {
       const f = firing[i];
-      if (now - f.at > FX_MS[f.kind]) firing.splice(i, 1);
+      if (trapJammed(f.id) || now - f.at > FX_MS[f.kind]) firing.splice(i, 1);
       else drawFired(ctx, f, camX, camY, now);
     }
   }

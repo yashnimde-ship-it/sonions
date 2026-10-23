@@ -51,6 +51,24 @@ export class InteractionSystem {
     return null;
   }
 
+  /** Find the nearest closed, walk-through door touching the player's collision box. */
+  blockingDoor(b: Bandit, map: TileMap, hit: Hitbox): Door | null {
+    const { cell, width } = map.data.collision;
+    const choices = this.doors.flatMap((door) => {
+      if (door.keypad || map.isOpen(door) || !door.cells.length) return [];
+      const xs = door.cells.map((n) => (n % width) * cell);
+      const ys = door.cells.map((n) => Math.floor(n / width) * cell);
+      const x0 = Math.min(...xs), y0 = Math.min(...ys);
+      const x1 = Math.max(...xs) + cell, y1 = Math.max(...ys) + cell;
+      const dx = Math.max(x0 - (b.x + hit.right), 0, (b.x + hit.left) - x1);
+      const dy = Math.max(y0 - (b.y + hit.bottom), 0, (b.y + hit.top) - y1);
+      const distance = Math.hypot(dx, dy);
+      return distance <= 8 ? [{ door, distance }] : [];
+    });
+    choices.sort((a, b) => a.distance - b.distance);
+    return choices[0]?.door ?? null;
+  }
+
   /** Label for the on-screen prompt. */
   promptFor(target: Target, map: TileMap): string {
     if (target.kind === 'door') return `E  ${map.isOpen(target.door) ? 'Close' : 'Open'} ${target.door.name}`;

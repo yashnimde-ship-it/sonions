@@ -88,6 +88,21 @@ export class Bandit {
     this.facing = facing;
   }
 
+  /** Move to a spawn point and clear momentum or trap movement that could leak into play. */
+  respawn(x: number, y: number, facing: Facing) {
+    this.x = x;
+    this.y = y;
+    this.facing = facing;
+    this.vx = this.vy = 0;
+    this.bumped = this.moving = this.sprinting = false;
+    this.stunFrames = this.rootFrames = this.slipFrames = 0;
+    this.hopFrames = this.dashFrames = this.knockFrames = 0;
+    this.dashVx = this.dashVy = this.knockVx = this.knockVy = 0;
+    this.trailFrames = 0;
+    this.trail.length = 0;
+    this.rest();
+  }
+
   update(input: MoveInput, map: Walkable) {
     if (this.knockFrames > 0) {
       // Shoved by a trap: carried along whatever the controls say (walls still stop it).

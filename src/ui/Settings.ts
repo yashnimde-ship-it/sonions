@@ -8,15 +8,18 @@ export interface SettingsValues {
   lighting: boolean;
   /** Whole-number pixel scaling: crisper pixels, the lobby camera follows you. */
   pixelPerfect: boolean;
+  /** Trap, diamond and round sound effects. */
+  sound: boolean;
 }
 
 const KEY = 'bandit-settings';
-const DEFAULTS: SettingsValues = { nameTags: true, lighting: true, pixelPerfect: false };
+const DEFAULTS: SettingsValues = { nameTags: true, lighting: true, pixelPerfect: false, sound: true };
 
 export const SETTING_LABELS: Record<keyof SettingsValues, [string, string]> = {
   nameTags: ['Name tags', 'Show names above players'],
   lighting: ['Lighting effects', 'Lamplight and dusk shading'],
   pixelPerfect: ['Sharp pixels', 'Whole-number scaling; the camera follows you'],
+  sound: ['Sound effects', 'Traps, diamonds and round results'],
 };
 
 export class Settings {

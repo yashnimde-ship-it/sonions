@@ -154,8 +154,10 @@ export type ServerMsg =
   | { t: 'ability'; ability: AbilityId; by: string }
   /** A trap plate fired just now: it arms, then shocks whoever is standing on it. */
   | { t: 'trap'; id: string }
-  /** A placed trap went off (everyone sees it): which one, where, and who set it off. */
+  /** A placed trap went off: who set it off (only they and the Saboteur see its reveal). */
   | { t: 'trapFired'; id: string; kind: TrapKindId; x: number; y: number; victim: string }
+  /** A live laser tagged this Runner after its initial reveal. */
+  | { t: 'trapReveal'; trap: PlacedTrap }
   /** A hidden Saboteur trap auto-triggered on contact. */
   | { t: 'placedTrapHit'; kind: TrapKindId; damage: number; stunMs: number; knockback?: { x: number; y: number } }
   /** The Saboteur's Tripwire was accepted; private to that Saboteur. */

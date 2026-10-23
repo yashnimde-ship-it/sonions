@@ -1,0 +1,146 @@
+// Sound effects, made on the fly with the Web Audio API (no audio files to load). Short and
+// quiet: a few oscillator notes and noise bursts per effect. Browsers only start audio after
+// the player has clicked or pressed a key, so the context is created on the first sound.
+
+import type { TrapKindId } from '../data/trapKinds';
+
+export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert';
+
+let ctx: AudioContext | null = null;
+let master: GainNode | null = null;
+let enabled = true;
+
+export function setSoundEnabled(on: boolean) {
+  enabled = on;
+}
+
+function audio() {
+  if (!ctx) {
+    const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return null;
+    ctx = new AC();
+    master = ctx.createGain();
+    master.gain.value = 0.35;
+    master.connect(ctx.destination);
+  }
+  if (ctx.state === 'suspended') void ctx.resume();
+  return ctx;
+}
+
+/** One note: a wave sliding from `from` to `to` Hz over `dur` seconds, starting `at` seconds in. */
+function tone(a: AudioContext, type: OscillatorType, from: number, to: number, dur: number, at = 0, vol = 0.5) {
+  const t = a.currentTime + at;
+  const o = a.createOscillator();
+  const g = a.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(from, t);
+  o.frequency.exponentialRampToValueAtTime(Math.max(20, to), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(master!);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+/** A burst of noise through a filter (thuds, hisses, crackles). */
+function noise(a: AudioContext, dur: number, at = 0, vol = 0.5, filter: BiquadFilterType = 'lowpass', freq = 800) {
+  const t = a.currentTime + at;
+  const buf = a.createBuffer(1, Math.ceil(a.sampleRate * dur), a.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  const src = a.createBufferSource();
+  src.buffer = buf;
+  const f = a.createBiquadFilter();
+  f.type = filter;
+  f.frequency.value = freq;
+  const g = a.createGain();
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f).connect(g).connect(master!);
+  src.start(t);
+}
+
+export function play(id: SoundId) {
+  if (!enabled) return;
+  const a = audio();
+  if (!a) return;
+  switch (id) {
+    case 'shock':
+      for (let i = 0; i < 4; i++) tone(a, 'square', 900 + Math.random() * 600, 200, 0.07, i * 0.05, 0.25);
+      noise(a, 0.25, 0, 0.3, 'highpass', 2000);
+      break;
+    case 'spring':
+      tone(a, 'sine', 180, 900, 0.25, 0, 0.5);
+      tone(a, 'sine', 900, 400, 0.2, 0.22, 0.3);
+      break;
+    case 'snare':
+      noise(a, 0.12, 0, 0.4, 'bandpass', 1500);
+      tone(a, 'triangle', 300, 120, 0.15, 0.03, 0.3);
+      break;
+    case 'glue':
+      tone(a, 'sine', 220, 90, 0.35, 0, 0.45);
+      noise(a, 0.3, 0.02, 0.2, 'lowpass', 400);
+      break;
+    case 'oil':
+      tone(a, 'sine', 600, 200, 0.4, 0, 0.3);
+      tone(a, 'sine', 500, 150, 0.4, 0.1, 0.2);
+      break;
+    case 'crusher':
+      tone(a, 'sawtooth', 70, 50, 1.4, 0, 0.12);
+      noise(a, 0.5, 1.5, 0.9, 'lowpass', 300);
+      tone(a, 'sine', 90, 30, 0.4, 1.5, 0.7);
+      break;
+    case 'laser':
+      tone(a, 'sawtooth', 1400, 300, 0.25, 0, 0.25);
+      tone(a, 'square', 1600, 600, 0.15, 0.08, 0.15);
+      break;
+    case 'boulder':
+      noise(a, 1, 0, 0.5, 'lowpass', 180);
+      tone(a, 'sine', 60, 40, 1, 0, 0.4);
+      break;
+    case 'magnet':
+      tone(a, 'sine', 120, 480, 1.2, 0, 0.3);
+      tone(a, 'sine', 125, 490, 1.2, 0, 0.2);
+      break;
+    case 'gas':
+      noise(a, 1.4, 0, 0.35, 'highpass', 3000);
+      break;
+    case 'blackout':
+      tone(a, 'square', 220, 40, 0.6, 0, 0.3);
+      noise(a, 0.15, 0, 0.4, 'highpass', 1500);
+      break;
+    case 'fakeLoot':
+      noise(a, 0.8, 0, 1, 'lowpass', 600);
+      tone(a, 'sine', 120, 30, 0.6, 0, 0.8);
+      break;
+    case 'found':
+      [880, 1175, 1568].forEach((f, i) => tone(a, 'triangle', f, f, 0.18, i * 0.07, 0.35));
+      break;
+    case 'banked':
+      [523, 659, 784, 1047].forEach((f, i) => tone(a, 'square', f, f, 0.14, i * 0.08, 0.18));
+      break;
+    case 'dropped':
+      tone(a, 'triangle', 700, 200, 0.3, 0, 0.35);
+      break;
+    case 'empty':
+      noise(a, 0.18, 0, 0.25, 'lowpass', 700);
+      break;
+    case 'hide':
+      tone(a, 'triangle', 1200, 600, 0.15, 0, 0.25);
+      break;
+    case 'win':
+      [523, 659, 784, 1047, 1319].forEach((f, i) => tone(a, 'square', f, f, 0.2, i * 0.1, 0.18));
+      break;
+    case 'lose':
+      [392, 330, 262, 196].forEach((f, i) => tone(a, 'triangle', f, f * 0.95, 0.3, i * 0.16, 0.3));
+      break;
+    case 'tick':
+      tone(a, 'square', 1000, 1000, 0.05, 0, 0.12);
+      break;
+    case 'alert':
+      tone(a, 'square', 660, 660, 0.08, 0, 0.15);
+      tone(a, 'square', 880, 880, 0.08, 0.1, 0.15);
+      break;
+  }
+}

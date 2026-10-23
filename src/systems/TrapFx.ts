@@ -26,7 +26,8 @@ export const FX_MS: Record<TrapKindId, number> = {
   glue: 5000,
   oil: 5000,
   crusher: CRUSHER_WARN_MS + 700,
-  laser: 800,
+  // 0.8s visible warning followed by a 4s live beam.
+  laser: 4800,
   boulder: 1100,
   magnet: 1500,
   gas: 4000,
@@ -173,15 +174,30 @@ export function drawFired(g: G, f: Fired, camX: number, camY: number, now: numbe
       break;
     }
     case 'laser': {
-      // The beams flare thick and white-hot, sparks spit off the posts.
-      const flare = Math.floor(t / 80) % 2 ? 1 : 0.6;
-      for (const by of [-3, 5]) {
-        rect(g, x - 19, y + by - 2, 38, 5, `rgba(255,59,74,${0.5 * flare})`);
-        rect(g, x - 19, y + by, 38, 1, '#ffffff');
-      }
-      for (let i = 0; i < 5; i++) {
-        const sx = i % 2 ? x - 20 : x + 20;
-        rect(g, sx + Math.sin(t / 30 + i) * 6, y - 8 + ((t / 10 + i * 7) % 18), 2, 2, '#ffd0d4');
+      if (t < 800) {
+        // The posts stutter before the beam locks on, giving the Runner a readable cue.
+        const flicker = Math.floor(t / 70) % 2 ? 0.8 : 0.18;
+        g.globalAlpha = flicker;
+        for (const by of [-3, 5]) rect(g, x - 19, y + by, 38, 1, '#ff5965');
+        for (const sx of [x - 20, x + 20]) {
+          rect(g, sx - 2, y - 8, 4, 16, '#ff3b4a');
+          circle(g, sx, y, 4 + (t / 800) * 3, '#ffd0d4', 0.8);
+        }
+        g.globalAlpha = 1;
+      } else {
+        // The grid stays bright for four full seconds. Pulses race along each beam.
+        const live = t - 800;
+        const flare = Math.floor(live / 90) % 2 ? 1 : 0.7;
+        for (const by of [-3, 5]) {
+          rect(g, x - 19, y + by - 3, 38, 7, `rgba(255,59,74,${0.42 * flare})`);
+          rect(g, x - 19, y + by, 38, 1, '#ffffff');
+          const pulseX = x - 19 + ((live / 4 + (by > 0 ? 19 : 0)) % 38);
+          circle(g, pulseX, y + by, 3, '#fff6d8', 0.95);
+        }
+        for (let i = 0; i < 5; i++) {
+          const sx = i % 2 ? x - 20 : x + 20;
+          rect(g, sx + Math.sin(live / 30 + i) * 6, y - 8 + ((live / 10 + i * 7) % 18), 2, 2, '#ffd0d4');
+        }
       }
       break;
     }
