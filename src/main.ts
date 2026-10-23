@@ -1003,8 +1003,8 @@ async function boot() {
       const color = CHARACTER_INFO[character].color;
       const sx = (b.x - camX) * scale;
       const sy = (b.y - DRAW_H - (bag ? 15 : 3) - camY) * scale;
-      const role = match?.saboteur === id ? ' [SAB]' : '';
-      textTag(`${name}${role}`, sx, sy, id === myId ? '#ffe39a' : color, size);
+      // No role on the tag: who the Saboteur is stays a secret (each player sees only their own role).
+      textTag(name, sx, sy, id === myId ? '#ffe39a' : color, size);
       // Hurt Runners show a small health bar over the name.
       if (health < MAX_HP) {
         const w = 40 * dpr;
