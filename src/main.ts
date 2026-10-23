@@ -1,107 +1,326 @@
 import '@fontsource/press-start-2p';
-import { ART_TILE, BANDIT_PLACEHOLDER, BANDIT_SHEET, HITBOX, ZOOM } from './config';
-import { Bandit } from './entities/Bandit';
+import { ART_TILE, CHAR_GLOW, CHARACTERS, type CharacterId, characterSheet, HITBOX, ZOOM } from './config';
+import { CHARACTER_INFO } from './data/characters';
+import { Bandit, DRAW_H } from './entities/Bandit';
+import { keyPressed, pollInput, readControls } from './input/Controls';
+import { type LobbyJson, LobbyMap } from './map/LobbyMap';
 import { type EstateJson, TileMap } from './map/TileMap';
+import { NetClient } from './net/NetClient';
+import { NET_HZ, type PlayerState, type PortalState, type ServerMsg } from './net/protocol';
 import { CameraSystem } from './systems/CameraSystem';
 import { InteractionSystem } from './systems/InteractionSystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { HUD } from './ui/HUD';
+import { LobbyUI } from './ui/LobbyUI';
+import { TitleUI } from './ui/TitleUI';
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error(`Missing ${src}. Run: npm run assets`));
+    img.onerror = () => reject(new Error(`Missing ${src}. Run: npm run assets && npm run lobby`));
     img.src = src;
   });
 }
 
-const KEYS: Record<string, string> = {
-  KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down', KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right',
-  ShiftLeft: 'sprint', ShiftRight: 'sprint', KeyE: 'interact', Enter: 'interact', Space: 'interact',
-};
+const fetchJson = <T,>(src: string) =>
+  fetch(src).then((r) => {
+    if (!r.ok) throw new Error(`Missing ${src}. Run: npm run assets && npm run lobby`);
+    return r.json() as Promise<T>;
+  });
+
+type Scene = 'title' | 'lobby' | 'match';
+
+interface Remote {
+  state: PlayerState;
+  bandit: Bandit;
+}
+
+const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#ff4fb0' };
+const BANNER_MS = 4000;
 
 async function boot() {
-  const [data, tileset, doorAtlas, banditSheet] = await Promise.all([
-    fetch('/assets/map/estate.json').then((r) => {
-      if (!r.ok) throw new Error('Missing /assets/map/estate.json. Run: npm run assets');
-      return r.json() as Promise<EstateJson>;
-    }),
+  const [estateData, tileset, doorAtlas, lobbyData, lobbyImage, ...sheetList] = await Promise.all([
+    fetchJson<EstateJson>('/assets/map/estate.json'),
     loadImage('/assets/tiles/tileset.png'),
     loadImage('/assets/map/doors.png'),
-    // The art team's sprite if it's there; otherwise the generated stand-in.
-    loadImage(BANDIT_SHEET).catch(() => {
-      console.info('bandit.png not found; using the placeholder sprite');
-      return loadImage(BANDIT_PLACEHOLDER);
-    }),
+    fetchJson<LobbyJson>('/assets/lobby/lobby.json'),
+    loadImage('/assets/lobby/lobby.png'),
+    ...CHARACTERS.map((id) => loadImage(characterSheet(id))),
   ]);
+  const sheets = Object.fromEntries(CHARACTERS.map((id, i) => [id, sheetList[i]])) as Record<CharacterId, HTMLImageElement>;
 
-  const map = new TileMap(data, tileset, doorAtlas);
-  const bandit = new Bandit(banditSheet, data.spawn.x * ART_TILE, data.spawn.y * ART_TILE, data.spawn.facing);
-  const camera = new CameraSystem(map.widthPx, map.heightPx);
-  const interactions = new InteractionSystem(data.interactables, data.doors);
-  const lighting = new LightingSystem(map);
+  const lobbyMap = new LobbyMap(lobbyData, lobbyImage);
+  // The estate is rebuilt for every heist, so doors and loot start fresh.
+  let estate = new TileMap(estateData, tileset, doorAtlas);
+  let interactions = new InteractionSystem(estateData.interactables, estateData.doors);
+  let lighting = new LightingSystem(estate);
+
+  const camera = new CameraSystem(lobbyMap.widthPx, lobbyMap.heightPx);
   const hud = new HUD();
-  hud.setLoot(0, 0, interactions.lootables.length);
+  const title = new TitleUI();
+  const lobby = new LobbyUI();
+  const net = new NetClient();
 
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   const ctx = canvas.getContext('2d')!;
+  const hudEl = document.getElementById('hud')!;
+  const banner = document.getElementById('match-banner')!;
+  let dpr = 1;
   let scale = ZOOM;
+  let scene: Scene = 'title';
 
-  // The canvas fills the window; how much of the world shows depends on its size.
+  let myId = '';
+  let myName = '';
+  let myCharacter: CharacterId = 'maya';
+  const me = new Bandit(sheets.maya, 0, 0, 'down');
+  const remotes = new Map<string, Remote>();
+  let portals: PortalState[] = [];
+  let match: { id: string; size: number; saboteur: string } | null = null;
+  let bannerUntil = 0;
+  let sendTimer = 0;
+  let lastSprint = false;
+
+  // ---------- Camera ----------
+
+  function world() {
+    return scene === 'match' ? { w: estate.widthPx, h: estate.heightPx } : { w: lobbyMap.widthPx, h: lobbyMap.heightPx };
+  }
+
+  function frameCamera(snap: boolean) {
+    const { w, h } = world();
+    camera.setWorld(w, h);
+    // The safehouse fits the window when it can; the estate is played up close.
+    scale = scene === 'match' ? ZOOM * dpr : Math.max(1.5 * dpr, Math.min(canvas.width / w, canvas.height / h));
+    camera.resize(canvas.width / scale, canvas.height / scale);
+    let [tx, ty] = [me.x, me.y - DRAW_H / 2];
+    if (scene === 'title') {
+      tx = w / 2;
+      ty = h / 2;
+    }
+    if (snap) camera.snap(tx, ty);
+    else camera.update(tx, ty);
+  }
+
   function resize() {
-    const dpr = window.devicePixelRatio || 1;
+    dpr = window.devicePixelRatio || 1;
     canvas.width = Math.round(window.innerWidth * dpr);
     canvas.height = Math.round(window.innerHeight * dpr);
-    scale = ZOOM * dpr;
-    camera.resize(canvas.width / scale, canvas.height / scale);
-    camera.snap(bandit.x, bandit.y - 8);
+    frameCamera(true);
   }
-  resize();
+
+  // ---------- Scenes ----------
+
+  function setScene(next: Scene) {
+    scene = next;
+    title.show(scene === 'title');
+    lobby.show(scene === 'lobby');
+    hudEl.hidden = scene !== 'match';
+    if (scene !== 'match') banner.hidden = true;
+    frameCamera(true);
+  }
+
+  function setCharacter(id: CharacterId) {
+    myCharacter = id;
+    me.sheet = sheets[id];
+    lobby.setMe(myName, id);
+  }
+
+  async function play() {
+    if (net.connected) return;
+    title.setBusy(true);
+    try {
+      await net.connect();
+    } catch (err) {
+      title.setBusy(false, (err as Error).message);
+      return;
+    }
+    myName = title.name || 'Bandit';
+    setCharacter(myCharacter);
+    net.send({ t: 'hello', name: myName, character: myCharacter });
+  }
+
+  function addRemote(p: PlayerState) {
+    remotes.set(p.id, { state: p, bandit: new Bandit(sheets[p.character], p.x, p.y, p.facing) });
+  }
+
+  function startMatch(msg: Extract<ServerMsg, { t: 'match' }>) {
+    estate = new TileMap(estateData, tileset, doorAtlas);
+    interactions = new InteractionSystem(estateData.interactables, estateData.doors);
+    lighting = new LightingSystem(estate);
+    hud.setLoot(0, 0, interactions.lootables.length);
+    hud.hideMessage();
+    match = { id: msg.matchId, size: msg.size, saboteur: msg.saboteur };
+    remotes.clear();
+    for (const p of msg.players) {
+      if (p.id !== myId) {
+        addRemote(p);
+        continue;
+      }
+      me.x = p.x;
+      me.y = p.y;
+      me.facing = p.facing;
+    }
+    const role = msg.saboteur === myId ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
+    const crew = msg.players.map((p) => p.name).join(' · ');
+    banner.innerHTML = `<span class="kicker">${msg.size}-PLAYER HEIST</span><span>You are ${role}</span><span class="crew-list">${crew}</span>`;
+    banner.hidden = false;
+    bannerUntil = performance.now() + BANNER_MS;
+    setScene('match');
+  }
+
+  net.onMessage = (msg) => {
+    switch (msg.t) {
+      case 'welcome':
+        myId = msg.id;
+        break;
+      case 'lobby':
+        match = null;
+        remotes.clear();
+        me.x = msg.x;
+        me.y = msg.y;
+        me.facing = 'down';
+        title.setBusy(false);
+        setScene('lobby');
+        break;
+      case 'match':
+        startMatch(msg);
+        break;
+      case 'snapshot': {
+        if ((msg.room === 'match') !== (scene === 'match')) break;
+        portals = msg.portals;
+        lobby.setPortals(portals, msg.online);
+        const seen = new Set<string>();
+        for (const p of msg.players) {
+          if (p.id === myId) continue;
+          seen.add(p.id);
+          const r = remotes.get(p.id);
+          if (!r) addRemote(p);
+          else {
+            if (r.state.character !== p.character) r.bandit.sheet = sheets[p.character];
+            r.state = p;
+          }
+        }
+        for (const id of remotes.keys()) if (!seen.has(id)) remotes.delete(id);
+        break;
+      }
+      case 'door': {
+        const door = estate.data.doors.find((d) => d.id === msg.id);
+        if (door) estate.setDoor(door, msg.open);
+        break;
+      }
+      case 'loot':
+        interactions.looted.add(msg.id);
+        hud.setLoot(interactions.totalLoot, interactions.looted.size, interactions.lootables.length);
+        break;
+      case 'left':
+        remotes.delete(msg.id);
+        break;
+    }
+  };
+  net.onClose = () => {
+    if (scene !== 'title') lobby.showDisconnected();
+  };
+
+  title.onPlay = play;
+  lobby.onPick = (id) => {
+    setCharacter(id);
+    net.send({ t: 'character', character: id });
+  };
+  // START HEIST: step into the portal closest to filling up (most players still needed least).
+  lobby.onQuickJoin = () => {
+    if (scene !== 'lobby' || lobby.pickerOpen) return;
+    const open = lobbyData.portals
+      .map((p) => ({ p, count: portals.find((s) => s.size === p.size)?.count ?? 0 }))
+      .filter(({ p, count }) => count < p.size && !LobbyMap.inside(p, me.x, me.y))
+      .sort((a, b) => a.p.size - a.count - (b.p.size - b.count) || a.p.size - b.p.size);
+    const pick = open[0];
+    if (!pick) return;
+    const seat = pick.count;
+    me.x = (pick.p.x + 1.2 + (seat % 3) * 1.3) * ART_TILE;
+    me.y = (pick.p.y + 2.2 + Math.floor(seat / 3) * 1.4) * ART_TILE;
+    me.facing = 'down';
+    frameCamera(true);
+  };
+  setScene('title');
   window.addEventListener('resize', resize);
+  resize();
 
-  const held = new Set<string>();
-  let pressed = new Set<string>();
-  window.addEventListener('keydown', (e) => {
-    const k = KEYS[e.code];
-    if (!k) return;
-    e.preventDefault();
-    if (!e.repeat) pressed.add(k);
-    held.add(k);
-  });
-  window.addEventListener('keyup', (e) => held.delete(KEYS[e.code]));
-  window.addEventListener('blur', () => held.clear());
+  if (import.meta.env.DEV)
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; } } }); // for playtests
 
-  if (import.meta.env.DEV) Object.assign(window, { game: { bandit, camera, map, interactions, hud } }); // for playtests
+  // ---------- Update ----------
+
+  const nearWardrobe = () => LobbyMap.inside(lobbyData.wardrobe, me.x, me.y);
+
+  /** About NET_HZ times a second; the server relays it to everyone in the same room. */
+  function sendPosition() {
+    if (++sendTimer < 60 / NET_HZ) return;
+    sendTimer = 0;
+    net.send({ t: 'move', room: scene === 'match' ? 'match' : 'lobby', x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, facing: me.facing, moving: me.moving, sprint: lastSprint });
+  }
 
   function update() {
-    const justPressed = pressed;
-    pressed = new Set();
+    pollInput();
+    const input = readControls();
+    lastSprint = input.sprint;
 
+    if (scene === 'title') {
+      if (keyPressed('Escape')) title.showHowTo(false);
+      return;
+    }
+
+    for (const r of remotes.values()) r.bandit.follow(r.state.x, r.state.y, r.state.facing, r.state.moving, r.state.sprint);
+
+    if (scene === 'lobby') {
+      if (lobby.pickerOpen) {
+        if (keyPressed('Escape')) lobby.closePicker();
+        else if (keyPressed('KeyA') || keyPressed('ArrowLeft')) lobby.movePick(-1);
+        else if (keyPressed('KeyD') || keyPressed('ArrowRight')) lobby.movePick(1);
+        else if (input.action) lobby.confirmPick();
+        me.update({ dx: 0, dy: 0, sprint: false }, lobbyMap);
+      } else {
+        me.update(input, lobbyMap);
+        if (input.action && nearWardrobe()) lobby.openPicker(myCharacter);
+      }
+      sendPosition();
+      frameCamera(false);
+      return;
+    }
+
+    // Match: the heist. Rounds, traps and roles come from the Runner and Saboteur systems.
+    if (keyPressed('Escape')) {
+      net.send({ t: 'leave' });
+      return;
+    }
+    if (performance.now() > bannerUntil) banner.hidden = true;
     if (hud.messageOpen) {
-      if (justPressed.has('interact')) hud.hideMessage();
-      bandit.update({ dx: 0, dy: 0, sprint: false }, map);
+      if (input.action) hud.hideMessage();
+      me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
-      const dx = (held.has('right') ? 1 : 0) - (held.has('left') ? 1 : 0);
-      const dy = (held.has('down') ? 1 : 0) - (held.has('up') ? 1 : 0);
-      bandit.update({ dx, dy, sprint: held.has('sprint') }, map);
-
-      const near = interactions.nearby(bandit);
-      hud.setPrompt(near ? interactions.promptFor(near, map) : null);
-      if (near && justPressed.has('interact')) {
+      me.update(input, estate);
+      const near = interactions.nearby(me);
+      hud.setPrompt(near ? interactions.promptFor(near, estate) : null);
+      if (near && input.action) {
         if (near.kind === 'door') {
-          const refused = interactions.toggleDoor(near.door, map, bandit, HITBOX);
+          const refused = interactions.toggleDoor(near.door, estate, me, HITBOX);
           if (refused) hud.showMessage(refused);
+          else net.send({ t: 'door', id: near.door.id, open: estate.isOpen(near.door) });
         } else {
+          const fresh = !!near.item.loot && !interactions.looted.has(near.item.id);
           hud.showMessage(interactions.interact(near.item));
           hud.setPrompt(null);
+          if (fresh) net.send({ t: 'loot', id: near.item.id });
           hud.setLoot(interactions.totalLoot, interactions.looted.size, interactions.lootables.length);
         }
       }
     }
-    hud.setArea(map.areaAt(bandit.x, bandit.y - 4));
-    camera.update(bandit.x, bandit.y - 8);
+    hud.setArea(estate.areaAt(me.x, me.y - 4));
+    sendPosition();
+    frameCamera(false);
   }
+
+  // ---------- Draw ----------
 
   let frame = 0;
   function draw() {
@@ -115,20 +334,65 @@ async function boot() {
     ctx.fillStyle = '#0e1014';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Only the visible part of each layer is drawn (camera culling).
-    const blit = (layer: HTMLCanvasElement) => {
+    // Only the visible part of a layer is drawn (camera culling).
+    const blit = (layer: CanvasImageSource, lw: number, lh: number) => {
       const sx = Math.max(0, camX);
       const sy = Math.max(0, camY);
-      const sw = Math.min(layer.width - sx, vw - (sx - camX));
-      const sh = Math.min(layer.height - sy, vh - (sy - camY));
+      const sw = Math.min(lw - sx, vw - (sx - camX));
+      const sh = Math.min(lh - sy, vh - (sy - camY));
       if (sw <= 0 || sh <= 0) return;
       ctx.drawImage(layer, sx, sy, sw, sh, (sx - camX) * scale, (sy - camY) * scale, sw * scale, sh * scale);
     };
-    blit(map.below);
 
-    // Twinkles on anything still worth stealing.
+    // Characters are drawn back to front so nearer ones overlap farther ones.
+    const actors = scene === 'title' ? [] : [me, ...[...remotes.values()].map((r) => r.bandit)].sort((a, b) => a.y - b.y);
+
+    if (scene !== 'match') {
+      blit(lobbyMap.image, lobbyMap.widthPx, lobbyMap.heightPx);
+      if (scene === 'lobby') {
+        ctx.save();
+        ctx.scale(scale, scale);
+        drawPortalFloors(camX, camY);
+        actors.forEach((b) => b.draw(ctx, camX, camY));
+        ctx.restore();
+      }
+      // Lamplight over the room (and the players in it).
+      blit(lobbyMap.shade, lobbyMap.widthPx, lobbyMap.heightPx);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      blit(lobbyMap.glow, lobbyMap.widthPx, lobbyMap.heightPx);
+      ctx.restore();
+      if (scene === 'title') return;
+      ctx.save();
+      ctx.scale(scale, scale);
+      drawPortalFrames(camX, camY);
+      ctx.globalAlpha = CHAR_GLOW;
+      actors.forEach((b) => b.draw(ctx, camX, camY, false));
+      ctx.restore();
+      drawPortalLabels(camX, camY);
+      drawWardrobePrompt(camX, camY);
+      drawNameTags(camX, camY);
+      return;
+    }
+
+    blit(estate.below, estate.widthPx, estate.heightPx);
     ctx.save();
     ctx.scale(scale, scale);
+    drawTwinkles(camX, camY);
+    actors.forEach((b) => b.draw(ctx, camX, camY));
+    ctx.restore();
+    blit(estate.above, estate.widthPx, estate.heightPx);
+    lighting.draw(ctx, camX, camY, vw, vh, scale);
+    // Characters again over the darkness, so players can always see each other.
+    ctx.save();
+    ctx.scale(scale, scale);
+    ctx.globalAlpha = CHAR_GLOW;
+    actors.forEach((b) => b.draw(ctx, camX, camY, false));
+    ctx.restore();
+    drawNameTags(camX, camY);
+  }
+
+  function drawTwinkles(camX: number, camY: number) {
     for (const item of interactions.lootables) {
       if (interactions.looted.has(item.id)) continue;
       const cx = ((item.rect[0] + item.rect[2] + 1) / 2) * ART_TILE - camX;
@@ -140,11 +404,180 @@ async function boot() {
       ctx.fillRect(Math.round(cx) - 2, Math.round(cy), 5, 1);
       ctx.fillRect(Math.round(cx), Math.round(cy) - 2, 1, 5);
     }
-    bandit.draw(ctx, camX, camY);
-    ctx.restore();
+  }
 
-    blit(map.above);
-    lighting.draw(ctx, camX, camY, vw, vh, scale);
+  /** The "E  CUSTOMIZE" plate over the wardrobe; it lights up when you're close enough. */
+  function drawWardrobePrompt(camX: number, camY: number) {
+    if (lobby.pickerOpen) return;
+    const w = lobbyData.wardrobe;
+    const near = nearWardrobe();
+    const size = Math.round(9 * dpr);
+    const sx = ((w.x + w.w / 2) * ART_TILE - camX) * scale;
+    const sy = ((w.y - 4.2) * ART_TILE - camY) * scale + (near ? Math.sin(frame / 8) * 2 * dpr : 0);
+    ctx.save();
+    ctx.globalAlpha = near ? 1 : 0.75;
+    keyTag('E', 'CUSTOMIZE', sx, sy, near ? '#ffc94a' : '#fff4e6', size);
+    ctx.restore();
+  }
+
+  /** The tinted pad under the players. */
+  function drawPortalFloors(camX: number, camY: number) {
+    for (const p of lobbyData.portals) {
+      const state = portals.find((s) => s.size === p.size);
+      const counting = state?.countdown != null;
+      ctx.save();
+      ctx.fillStyle = PORTAL_COLORS[p.size] ?? '#ffffff';
+      ctx.globalAlpha = counting ? 0.35 + 0.3 * Math.abs(Math.sin(frame / 6)) : 0.26;
+      ctx.fillRect(p.x * ART_TILE - camX, p.y * ART_TILE - camY, p.w * ART_TILE, p.h * ART_TILE);
+      ctx.restore();
+    }
+  }
+
+  /** Neon frames, a crew icon per seat, and a sign plate; drawn over the lamplight so they glow. */
+  function drawPortalFrames(camX: number, camY: number) {
+    const pulse = 0.65 + 0.35 * Math.sin(frame / 15);
+    for (const p of lobbyData.portals) {
+      const state = portals.find((s) => s.size === p.size);
+      const color = PORTAL_COLORS[p.size] ?? '#ffffff';
+      const x = Math.round(p.x * ART_TILE - camX);
+      const y = Math.round(p.y * ART_TILE - camY);
+      const w = p.w * ART_TILE;
+      const h = p.h * ART_TILE;
+      ctx.save();
+      // Dark bezel, then a glowing double neon line.
+      ctx.strokeStyle = '#0e0a1a';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(x, y, w, h);
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10 * dpr * pulse;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 6.5, y + 6.5, w - 13, h - 13);
+      ctx.shadowBlur = 0;
+      // Bright corner brackets.
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff4e6';
+      for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
+        ctx.fillRect(dx > 0 ? cx + 1 : cx - 9, dy > 0 ? cy + 1 : cy - 3, 8, 2);
+        ctx.fillRect(dx > 0 ? cx + 1 : cx - 3, dy > 0 ? cy + 1 : cy - 9, 2, 8);
+      }
+      // One little person per seat: lit when taken.
+      const count = state?.count ?? 0;
+      const gap = 13;
+      const left = x + w / 2 - ((p.size - 1) * gap) / 2;
+      for (let i = 0; i < p.size; i++) person(left + i * gap, y + h * 0.38, i < count ? color : 'rgba(255,244,230,0.3)');
+      // The sign plate above the pad, hung on two posts.
+      ctx.fillStyle = '#6b4529';
+      ctx.fillRect(x + 10, y - 4, 2, 4);
+      ctx.fillRect(x + w - 12, y - 4, 2, 4);
+      ctx.fillStyle = '#16101e';
+      ctx.fillRect(x + 4, y - 15, w - 8, 12);
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 6 * dpr;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 4.5, y - 14.5, w - 9, 11);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+  }
+
+  /** A tiny pixel person (head and shoulders) centred on (x, y), in art pixels. */
+  function person(x: number, y: number, color: string) {
+    const px = Math.round(x);
+    const py = Math.round(y);
+    ctx.fillStyle = color;
+    ctx.fillRect(px - 3, py - 8, 6, 6);
+    ctx.fillRect(px - 2, py - 9, 4, 1);
+    ctx.fillRect(px - 5, py, 10, 5);
+    ctx.fillRect(px - 4, py - 1, 8, 1);
+  }
+
+  function drawPortalLabels(camX: number, camY: number) {
+    for (const p of lobbyData.portals) {
+      const state = portals.find((s) => s.size === p.size);
+      const color = PORTAL_COLORS[p.size] ?? '#ffffff';
+      const cx = ((p.x + p.w / 2) * ART_TILE - camX) * scale;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `${Math.round(8 * dpr)}px "Press Start 2P"`;
+      ctx.fillStyle = color;
+      ctx.fillText(`${p.size} PLAYERS`, cx, (p.y * ART_TILE - 9 - camY) * scale);
+      const countY = ((p.y + p.h * 0.75) * ART_TILE - camY) * scale;
+      if (state?.countdown != null) {
+        const midY = ((p.y + p.h / 2) * ART_TILE - camY) * scale;
+        ctx.font = `${Math.round(30 * dpr)}px "Press Start 2P"`;
+        ctx.fillStyle = '#0e0a1a';
+        ctx.fillText(String(state.countdown), cx + 3 * dpr, midY + 3 * dpr);
+        ctx.fillStyle = '#fff4e6';
+        ctx.fillText(String(state.countdown), cx, midY);
+      } else {
+        ctx.font = `${Math.round(13 * dpr)}px "Press Start 2P"`;
+        ctx.fillStyle = '#0e0a1a';
+        ctx.fillText(`${state?.count ?? 0}/${p.size}`, cx + 2 * dpr, countY + 2 * dpr);
+        ctx.fillStyle = '#fff4e6';
+        ctx.fillText(`${state?.count ?? 0}/${p.size}`, cx, countY);
+      }
+    }
+  }
+
+  /** A key cap followed by a label, on a dark plate, centred at (sx, sy) in screen pixels. */
+  function keyTag(key: string, text: string, sx: number, sy: number, color: string, size: number) {
+    ctx.font = `${size}px "Press Start 2P"`;
+    ctx.textBaseline = 'middle';
+    const pad = size * 0.8;
+    const capW = size * 2;
+    const textW = ctx.measureText(text).width;
+    const w = pad + capW + pad + textW + pad;
+    const h = size * 2.6;
+    const x = sx - w / 2;
+    ctx.fillStyle = 'rgba(14, 10, 26, 0.9)';
+    ctx.fillRect(x, sy - h / 2, w, h);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1, dpr);
+    ctx.strokeRect(x + 0.5, sy - h / 2 + 0.5, w - 1, h - 1);
+    ctx.fillStyle = '#fff4e6';
+    ctx.fillRect(x + pad, sy - size, capW, size * 2);
+    ctx.fillStyle = '#0e0a1a';
+    ctx.textAlign = 'center';
+    ctx.fillText(key, x + pad + capW / 2, sy + 1);
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.fillText(text, x + pad * 2 + capW, sy + 1);
+  }
+
+  /** A text label with a dark backing, in screen pixels; sy is its bottom edge. */
+  function textTag(text: string, sx: number, sy: number, color: string, size: number) {
+    ctx.font = `${size}px "Press Start 2P"`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    const w = ctx.measureText(text).width + size;
+    ctx.fillStyle = 'rgba(14, 10, 26, 0.85)';
+    ctx.fillRect(sx - w / 2, sy - size * 1.7, w, size * 1.7);
+    ctx.fillStyle = color;
+    ctx.fillText(text, sx, sy - size * 0.35);
+  }
+
+  function drawNameTags(camX: number, camY: number) {
+    const size = Math.round(8 * dpr);
+    const tag = (b: Bandit, id: string, name: string, character: CharacterId) => {
+      const color = CHARACTER_INFO[character].color;
+      const sx = (b.x - camX) * scale;
+      const sy = (b.y - DRAW_H - 3 - camY) * scale;
+      const role = match?.saboteur === id ? ' [SAB]' : '';
+      textTag(`${name}${role}`, sx, sy, id === myId ? '#ffe39a' : color, size);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(sx - 4 * dpr, sy);
+      ctx.lineTo(sx + 4 * dpr, sy);
+      ctx.lineTo(sx, sy + 4 * dpr);
+      ctx.fill();
+    };
+    for (const [id, r] of remotes) tag(r.bandit, id, r.state.name, r.state.character);
+    tag(me, myId, myName, myCharacter);
   }
 
   // Fixed 60 updates per second; draw once per animation frame.

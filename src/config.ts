@@ -3,14 +3,20 @@ export const ART_TILE = 16;
 export const ZOOM = 2;
 export const SCREEN_TILE = ART_TILE * ZOOM;
 
-// Bandit sprite sheet (made by the art team). One row of frames, each FRAME_W x FRAME_H
-// art pixels, in this order: stand down, stand up, stand left, walk down x2, walk up x2,
-// walk left x2. Facing right mirrors the left frames. The feet sit on the frame's
-// bottom row. If bandit.png is missing, the generated placeholder is used instead.
-export const BANDIT_SHEET = '/assets/characters/bandit.png';
-export const BANDIT_PLACEHOLDER = '/assets/characters/bandit-placeholder.png';
-export const BANDIT_FRAME_W = 16;
-export const BANDIT_FRAME_H = 24;
+// Character sprite sheets (built from the art team's concepts by scripts/build-characters.py).
+// One row of frames, each CHAR_FRAME_W x CHAR_FRAME_H sheet pixels, in this order: stand down,
+// stand up, stand left, walk down x2, walk up x2, walk left x2. Facing right mirrors the left
+// frames. The feet sit on the frame's bottom row.
+export const CHARACTERS = ['maya', 'dev', 'zoya', 'rex', 'iris'] as const;
+export type CharacterId = (typeof CHARACTERS)[number];
+export const characterSheet = (id: CharacterId) => `/assets/characters/${id}.png`;
+export const CHAR_FRAME_W = 48;
+export const CHAR_FRAME_H = 72;
+// Sheets are drawn at 0.6 size in art pixels, so a character stands about 43 art pixels
+// (2.7 tiles) tall: big enough to read clearly, still fitting through doorways.
+export const CHAR_DRAW_SCALE = 0.6;
+// After the dusk lighting, characters are drawn again at this opacity so they stay readable.
+export const CHAR_GLOW = 0.75;
 
 // Movement in art pixels per frame (60 frames per second).
 export const WALK_SPEED = 1.25;

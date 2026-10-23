@@ -18,6 +18,12 @@ export class CameraSystem {
     this.worldH = worldH;
   }
 
+  /** Switches to another map (the lobby or the estate). */
+  setWorld(worldW: number, worldH: number) {
+    this.worldW = worldW;
+    this.worldH = worldH;
+  }
+
   resize(viewW: number, viewH: number) {
     this.viewW = viewW;
     this.viewH = viewH;

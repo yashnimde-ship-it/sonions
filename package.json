@@ -8,14 +8,21 @@
     "check": "node scripts/check-reachability.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lobby": "node scripts/generate-lobby.mjs",
+    "server": "node server/index.ts",
+    "characters": "python3 scripts/build-characters.py",
+    "bots": "node scripts/bots.ts"
   },
   "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.2",
     "fast-png": "^8.0.0",
     "typescript": "~6.0.2",
     "vite": "^8.3.5"
   },
   "dependencies": {
-    "@fontsource/press-start-2p": "^5.3.0"
+    "@fontsource/press-start-2p": "^5.3.0",
+    "ws": "^8.22.0"
   }
 }

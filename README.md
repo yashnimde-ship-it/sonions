@@ -172,3 +172,25 @@ If the sheet uses a different frame size or order, change `BANDIT_FRAME_W/H` in
 - No other characters yet (no homeowners or dog AI), no sound, no minimap, and no win
   screen beyond a message when all nine items are taken.
 - Loot is not saved between sessions.
+
+## Online multiplayer (safehouse lobby)
+
+Everyone who opens the game joins one **safehouse lobby**. Walk into the **2**, **3** or
+**4 player** portal: once it has that many players for 3 seconds, the server sends that crew
+into its own copy of the estate. Change character at the wardrobe (E). Esc leaves a heist.
+
+```bash
+npm run server   # game server: lobby, portals, matches (ws://localhost:3001/ws)
+npm run dev      # the game; other laptops on the same Wi-Fi open http://<your-ip>:5173
+npm run bots -- 3 4   # optional: 3 test bots walk into the 4-player portal
+```
+
+For one-port hosting, `npm run build` then `npm run server` serves the game at
+http://localhost:3001.
+
+| File | What it does |
+| --- | --- |
+| `server/index.ts` | Lobby, portal matchmaking (first in, first out), match rooms, relays positions, doors and loot |
+| `src/net/protocol.ts` | Every message between game and server |
+| `scripts/generate-lobby.mjs` | Paints the safehouse with the estate's painters (`npm run lobby`) |
+| `scripts/build-characters.py` | Concept sheets in `art/characters/` to sprite sheets (`npm run characters`) |
