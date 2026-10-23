@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from walk_cycle import walk_frames
+from walk_cycle import narrow_stance, walk_frames
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / 'art' / 'characters'
@@ -108,7 +108,8 @@ def build(char_id):
     scale = min((FRAME_H - 3) / max(v.height for v in views), (FRAME_W - 2) / max(v.width for v in views))
     front, side, back = (shrink(v, scale) for v in (front, side, back))
 
-    stand = [frame(front), frame(back), frame(side)]
+    # Front and back stand with the feet together (the concepts are a wide A-pose).
+    stand = [narrow_stance(frame(front)), narrow_stance(frame(back)), frame(side)]
     frames = list(stand)
     for view, kind in zip(stand, ('front', 'back', 'side')):
         frames += walk_frames(view, kind, SIDE_FOREARM.get(char_id) if kind == 'side' else None)

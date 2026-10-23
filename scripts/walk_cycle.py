@@ -64,6 +64,39 @@ def _anatomy(a):
     return top, bottom, hip, crotch_x, hip_l, hip_r
 
 
+def narrow_stance(view):
+    """
+    Front/back views: the concepts stand in a wide A-pose. This angles each leg in from the
+    hip so the feet end up close together, like a normal stance: no shift at the hip, the
+    most at the feet. Used for the standing frames and as the base of the walk.
+    """
+    a = _rgba(view)
+    h, w = a.shape[:2]
+    top, bottom, hip, cx, _, _ = _anatomy(a)
+    opaque = a[:, :, 3] > 0
+    # The gap between the feet, a few rows above the soles.
+    row = opaque[max(hip, bottom - 4)]
+    left_feet = np.nonzero(row[:cx])[0]
+    right_feet = np.nonzero(row[cx:])[0]
+    if not len(left_feet) or not len(right_feet):
+        return view
+    gap = (right_feet[0] + cx) - left_feet[-1] - 1
+    pull = max(0, (gap - 2) // 2)  # leave about 2 px between the feet
+    if pull == 0:
+        return view
+    out = a.copy()
+    out[hip:] = 0
+    top_leg = hip - 1
+    for y in range(top_leg, bottom + 1):
+        t = (y - top_leg) / max(1, bottom - top_leg)
+        d = round(pull * t)
+        for x in np.nonzero(opaque[y])[0]:
+            nx = x + d if x < cx else x - d
+            if 0 <= nx < w:
+                out[y, nx] = a[y, x]
+    return _img(out)
+
+
 def _front_back(view, back=False):
     a = _rgba(view)
     h, w = a.shape[:2]
@@ -235,6 +268,30 @@ def _side(view, forearm=None):
     return [_img(step_a), _img(passing), _img(step_b), _img(passing)]
 
 
+def _drop_specks(img, max_size=4):
+    """Removes tiny detached bits (a few pixels cut loose when parts move) from a frame."""
+    a = _rgba(img)
+    alpha = a[:, :, 3] > 0
+    h, w = alpha.shape
+    seen = np.zeros_like(alpha)
+    for sy, sx in zip(*np.nonzero(alpha)):
+        if seen[sy, sx]:
+            continue
+        comp = [(sy, sx)]
+        seen[sy, sx] = True
+        for y, x in comp:
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and alpha[ny, nx] and not seen[ny, nx]:
+                        seen[ny, nx] = True
+                        comp.append((ny, nx))
+        if len(comp) <= max_size:
+            for y, x in comp:
+                a[y, x] = 0
+    return _img(a)
+
+
 def walk_frames(view, kind, forearm=None):
     """
     Four walk frames for a view: kind is 'front', 'back' or 'side' (facing left). For the
@@ -242,5 +299,7 @@ def walk_frames(view, kind, forearm=None):
     elbow): it can't be told apart from the torso automatically, so it's marked per character.
     """
     if kind == 'side':
-        return _side(view, forearm)
-    return _front_back(view, back=(kind == 'back'))
+        frames = _side(view, forearm)
+    else:
+        frames = _front_back(narrow_stance(view), back=(kind == 'back'))
+    return [_drop_specks(f) for f in frames]
