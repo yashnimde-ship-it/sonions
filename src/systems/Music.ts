@@ -31,8 +31,9 @@ function fadeTo(target: number, then?: () => void) {
   const from = a.volume;
   const start = performance.now();
   const step = (now: number) => {
-    const t = Math.min(1, (now - start) / FADE_MS);
-    a.volume = from + (target - from) * t;
+    // A frame's timestamp can be a touch earlier than `start`, so keep t (and the volume) in range.
+    const t = Math.max(0, Math.min(1, (now - start) / FADE_MS));
+    a.volume = Math.max(0, Math.min(1, from + (target - from) * t));
     if (t < 1) fade = requestAnimationFrame(step);
     else then?.();
   };

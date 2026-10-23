@@ -24,9 +24,10 @@ export const SEEKER_START = { x: 98.4, y: 44.2 };
 /** The open gangway at the main entrance, where Hiders escape (tiles, main floor). */
 export const ESCAPE_ZONE = { x: 54.6, y: 48.2, w: 8.6, h: 2.2 };
 
-/** How far each side can see in the dark (art px). Hiders: a small circle. Seeker: a
- *  flashlight cone ahead (and a little glow round their feet). */
-export const HIDER_LIGHT = 52;
+/** How far each side can see in the dark (art px). Hiders: a round light that isn't stopped by
+ *  walls or furniture (kept under HIDER_SEES_SEEKER). Seeker: a flashlight cone ahead (and a
+ *  little glow round their feet). */
+export const HIDER_LIGHT = 100;
 export const SEEKER_GLOW = 26;
 export const FLASHLIGHT_RANGE = 170;
 export const FLASHLIGHT_HALF_ANGLE = Math.PI / 5;

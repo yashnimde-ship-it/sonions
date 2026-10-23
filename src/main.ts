@@ -1922,7 +1922,7 @@ async function boot() {
     const left = blackoutUntil - performance.now();
     const sx = (me.x - camX) * scale;
     const sy = (me.y - 18 - camY) * scale;
-    const r = 84 * scale; // about 5 tiles: dark enough to hurt, wide enough to find the door
+    const r = 110 * scale; // about 7 tiles: dark enough to hurt, wide enough to find the door
     ctx.save();
     const grad = ctx.createRadialGradient(sx, sy, r * 0.55, sx, sy, r);
     grad.addColorStop(0, 'rgba(0,0,0,0)');
@@ -2018,7 +2018,13 @@ async function boot() {
         lit(FLASHLIGHT_RANGE, angle - FLASHLIGHT_HALF_ANGLE, angle + FLASHLIGHT_HALF_ANGLE, 72, 0.6);
         lit(SEEKER_GLOW, 0, Math.PI * 2, 32, 0.3);
       } else {
-        lit(HIDER_LIGHT, 0, Math.PI * 2, 64, 0.35);
+        // Hiders: a plain round light that doesn't bend round walls or furniture.
+        const r = HIDER_LIGHT * scale;
+        const grad = g.createRadialGradient(sx, sy, r * 0.5, sx, sy, r);
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grad;
+        g.fillRect(sx - r, sy - r, r * 2, r * 2);
       }
     }
     // Muzzle flashes light up the shooter (and where the shot landed) for a moment.
