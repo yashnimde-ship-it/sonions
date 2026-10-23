@@ -1,28 +1,38 @@
-// Builds the Midnight Museum map from its reference (map/museumLayout.mjs), in the same
-// format as the estate, so the game's TileMap, lighting, doors and collision all just work:
-//   public/assets/maps/museum/map.json      tile layers, collision, areas, lights, loot, doors
-//   public/assets/maps/museum/tileset.png   deduplicated 16x16 art tiles
-//   public/assets/maps/museum/doors.png     closed + open sprites for the vault door
-//   public/assets/maps/museum/preview.png   the composited map (lobby thumbnail, Map Info)
+// Builds a heist map from its reference and a layout file (map/museumLayout.mjs,
+// map/cruiseB1Layout.mjs), in the same format as the estate, so the game's TileMap,
+// lighting, doors and collision all just work:
+//   <out>/map.json      tile layers, collision, areas, lights, loot, doors, stairs, hiding spots
+//   <out>/tileset.png   deduplicated 16x16 art tiles
+//   <out>/doors.png     closed + open sprites for each door
+//   <out>/preview.png   the composited map (lobby thumbnail, Map Info)
+//
+// A layout may also export:
+//   NAME              the map's display name
+//   inside(tx, ty)    the playable area (tiles); everything else is solid (the cruise's ocean)
+//   FOLIAGE = false   skip the garden-foliage collision pass
+//   STAIRS            stairwells: interaction zones with destination metadata
+//   HIDING_SPOTS      places a player can hide (metadata for the hide mechanic)
+//   OFF_LIMITS        area names nobody can reach on purpose (the open sea)
 //
 // Steps: the reference (already 96 x 64 tiles at 16 px) has its room-name plaques painted
 // over with the floor beside them; it's cut into 16x16 tiles and deduplicated. Collision is
 // built from traced walls (with doorway gaps), exhibit and furniture boxes, and the garden's
 // foliage (detected by colour, outside the building).
 //
-// Usage: npm run museum
+// Usage: node scripts/generate-museum.mjs [layout.mjs] [out dir]
+//        npm run museum   /   npm run cruise
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { encode } from 'fast-png';
 import { CELL, CH, CW, doorCells } from '../map/collisionMap.mjs';
-import * as L from '../map/museumLayout.mjs';
 import { loadReference } from '../map/referenceExtract.mjs';
 import { doorSprites } from '../map/referenceLayers.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const OUT = path.join(ROOT, 'public', 'assets', 'maps', 'museum');
+const L = await import(pathToFileURL(path.resolve(ROOT, process.argv[2] ?? 'map/museumLayout.mjs')).href);
+const OUT = path.resolve(ROOT, process.argv[3] ?? 'public/assets/maps/museum');
 const TILE = 16;
 const W = L.WIDTH * TILE;
 const H = L.HEIGHT * TILE;
@@ -110,9 +120,9 @@ L.WALLS.forEach(cover);
 L.SOLIDS.forEach(cover);
 // Garden foliage (trees, hedges, flower beds) blocks: a cell is solid when most of it is
 // leafy green. Only outside the building, where the art has no walls to go by.
-const inBuilding = (x, y) => L.BUILDING.some(([x0, y0, x1, y1]) => x >= x0 * TILE && x < x1 * TILE && y >= y0 * TILE && y < y1 * TILE);
+const inBuilding = (x, y) => (L.BUILDING ?? []).some(([x0, y0, x1, y1]) => x >= x0 * TILE && x < x1 * TILE && y >= y0 * TILE && y < y1 * TILE);
 let foliage = 0;
-for (let cy = 0; cy < CH; cy++)
+for (let cy = 0; cy < CH && L.FOLIAGE !== false; cy++)
   for (let cx = 0; cx < CW; cx++) {
     if (inBuilding(cx * CELL + 4, cy * CELL + 4)) continue;
     let green = 0;
@@ -127,6 +137,10 @@ for (let cy = 0; cy < CH; cy++)
       foliage++;
     }
   }
+// Outside the playable area (the cruise ship's hull and the ocean) is solid.
+if (L.inside)
+  for (let cy = 0; cy < CH; cy++)
+    for (let cx = 0; cx < CW; cx++) if (!L.inside(((cx + 0.5) * CELL) / TILE, ((cy + 0.5) * CELL) / TILE)) grid[cy * CW + cx] = 1;
 // The world's edge.
 for (let cx = 0; cx < CW; cx++) grid[cx] = grid[(CH - 1) * CW + cx] = 1;
 for (let cy = 0; cy < CH; cy++) grid[cy * CW] = grid[cy * CW + CW - 1] = 1;
@@ -174,7 +188,7 @@ for (const r of L.ROOMS)
 // ---------- Map JSON and preview ----------
 
 const map = {
-  name: 'Midnight Museum',
+  name: L.NAME ?? 'Midnight Museum',
   tileSize: TILE,
   width: L.WIDTH,
   height: L.HEIGHT,
@@ -194,13 +208,16 @@ const map = {
     return { id: d.id, name: d.name, x: d.x, y: d.y, w: d.w, h: d.h, atlas: d.atlas, cells: doorCells(L.DOORS[i].hit ?? d.box), reach, ...(L.DOORS[i].keypad ? { keypad: true } : {}) };
   }),
   spawn: L.SPAWN,
+  ...(L.STAIRS ? { stairs: L.STAIRS } : {}),
+  ...(L.HIDING_SPOTS ? { hiding: L.HIDING_SPOTS } : {}),
+  ...(L.OFF_LIMITS ? { offLimits: L.OFF_LIMITS } : {}),
 };
 fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, 'map.json'), JSON.stringify(map));
 writePng('preview.png', W, H, floor.data);
 
 const solid = grid.reduce((a, b) => a + b, 0);
-console.log(`museum: ${L.WIDTH}x${L.HEIGHT} tiles, ${tiles.length} unique tiles`);
+console.log(`${L.NAME ?? 'museum'}: ${L.WIDTH}x${L.HEIGHT} tiles, ${tiles.length} unique tiles`);
 console.log(`collision: ${solid} solid cells (${foliage} foliage); ${doors.length} door(s); ${L.INTERACTABLES.filter((i) => i.loot).length} loot`);
 console.log(`areas: ${areaNames.join(', ')}`);
 console.log(`done in ${Date.now() - t0} ms -> ${OUT}`);

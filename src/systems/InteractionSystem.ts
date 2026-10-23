@@ -56,7 +56,7 @@ export class InteractionSystem {
     if (target.kind === 'door') return `E  ${map.isOpen(target.door) ? 'Close' : 'Open'} ${target.door.name}`;
     const item = target.item;
     if (item.loot && !this.looted.has(item.id)) return `E  Steal ${item.name} ($${item.loot})`;
-    return `E  Check ${item.name}`;
+    return item.id.startsWith('stairs') ? `E  Climb ${item.name}` : `E  Check ${item.name}`;
   }
 
   /**

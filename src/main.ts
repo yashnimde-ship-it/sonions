@@ -1,7 +1,7 @@
 import '@fontsource/press-start-2p';
 import { ART_TILE, CHAR_GLOW, CHARACTERS, type CharacterId, characterSheet, HITBOX, ZOOM } from './config';
 import { CHARACTER_INFO } from './data/characters';
-import { MAP_IDS, type MapId, MAPS } from './data/maps';
+import { isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
 import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
@@ -108,7 +108,7 @@ async function boot() {
   let myMap: MapId = 'estate';
   try {
     const saved = localStorage.getItem('bandit-map');
-    if (saved === 'estate' || saved === 'museum') myMap = saved;
+    if (isMapId(saved)) myMap = saved;
   } catch {
     // Storage blocked: the estate.
   }

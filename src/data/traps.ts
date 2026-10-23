@@ -82,6 +82,18 @@ export const MUSEUM_TRAPS: TrapSpot[] = [
   { id: 'restroom', room: 'Restrooms', x: 61.6 * T, y: 46.6 * T },
 ];
 
+/** Luxury Cruise B1: Shock Plates in the corridors and rooms (tiles x 16, see map/cruiseB1Layout.mjs). */
+export const CRUISE_B1_TRAPS: TrapSpot[] = [
+  { id: 'cargo', room: 'Cargo Hold', x: 18 * T, y: 27.5 * T },
+  { id: 'corridor-w', room: 'Corridor', x: 30 * T, y: 26.2 * T },
+  { id: 'corridor-e', room: 'Corridor', x: 70 * T, y: 26.2 * T },
+  { id: 'crew', room: 'Crew Quarters', x: 47.5 * T, y: 19.6 * T },
+  { id: 'engine', room: 'Engine Room', x: 40.4 * T, y: 36.8 * T },
+  { id: 'maint', room: 'Maintenance', x: 66 * T, y: 38 * T },
+  { id: 'aft', room: 'Corridor', x: 76.2 * T, y: 40 * T },
+  { id: 'pump', room: 'Water Pump Room', x: 82 * T, y: 49 * T },
+];
+
 /** Where a rolling stand is `t` (0..1) of the way through its run; other traps stay put. */
 export function trapPosition(spot: TrapSpot, t: number): [number, number] {
   if (spot.toX === undefined || spot.toY === undefined) return [spot.x, spot.y];

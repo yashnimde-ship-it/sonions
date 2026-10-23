@@ -13,7 +13,8 @@
     "server": "node server/index.ts",
     "characters": "python3 scripts/build-characters.py",
     "bots": "node scripts/bots.ts",
-    "museum": "node scripts/generate-museum.mjs"
+    "museum": "node scripts/generate-museum.mjs",
+    "cruise": "node scripts/generate-museum.mjs map/cruiseB1Layout.mjs public/assets/maps/cruise-b1"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

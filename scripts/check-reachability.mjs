@@ -89,7 +89,9 @@ if (unreachableItems.length) {
 }
 
 const all = new Set(map.areas.names);
-const missing = [...all].filter((a) => !reachedAreas.has(a));
+// Areas a map marks as off-limits (the cruise's open sea) don't count.
+const offLimits = new Set(map.offLimits ?? []);
+const missing = [...all].filter((a) => !reachedAreas.has(a) && !offLimits.has(a));
 console.log(`reachable areas (${reachedAreas.size}/${all.size}): ${[...reachedAreas].sort().join(', ')}`);
 if (missing.length) {
   console.log(`UNREACHABLE: ${missing.join(', ')}`);
