@@ -154,3 +154,73 @@ export function objectSprites(layers, plan) {
   }
   return sprites;
 }
+
+/**
+ * Closed and open sprites for every door in M.DOOR_SLABS. Closed is the reference as
+ * drawn. Open keeps the frame (posts and lintel) and replaces the slab with the room
+ * beyond (the floor just past the wall, shaded darker toward the top), with the
+ * leaves swung back against the posts.
+ */
+export function doorSprites(ref, floorLayer) {
+  const W = ref.w;
+  const LEAF = 4;
+  return M.DOOR_SLABS.map((d) => {
+    // A roll-up garage door has no frame to speak of and no leaves.
+    const POST = d.rolling ? 0 : 3;
+    const LINTEL = d.rolling ? 2 : 5;
+    const x = Math.floor(d.box[0] * TILE);
+    const y = Math.floor(d.box[1] * TILE);
+    const w = Math.ceil(d.box[2] * TILE) - x;
+    const h = Math.ceil(d.box[3] * TILE) - y;
+    const closed = new Uint8Array(w * h * 4);
+    for (let j = 0; j < h; j++)
+      for (let i = 0; i < w; i++) {
+        const s = ((y + j) * W + x + i) * 3;
+        closed.set([ref.rgb[s], ref.rgb[s + 1], ref.rgb[s + 2], 255], (j * w + i) * 4);
+      }
+    // The door's wood color: the median of the slab's middle.
+    const wood = [];
+    for (let j = Math.floor(h * 0.35); j < h * 0.75; j++)
+      for (let i = Math.floor(w * 0.2); i < w * 0.45; i++) wood.push((j * w + i) * 4);
+    const lumOf = (k) => closed[k] * 0.3 + closed[k + 1] * 0.59 + closed[k + 2] * 0.11;
+    wood.sort((a, b) => lumOf(a) - lumOf(b));
+    const mid = wood[wood.length >> 1];
+    const woodC = [closed[mid], closed[mid + 1], closed[mid + 2]];
+    const woodDark = woodC.map((c) => Math.round(c * 0.55));
+
+    // The opening shows the room beyond: its median floor color (sampled just past the
+    // wall, so stray furniture and other doors don't matter), shaded darker toward the
+    // top for depth, with faint board lines.
+    const band = [];
+    for (let sy = Math.max(0, y - 14); sy < y - 2; sy++)
+      for (let i = POST; i < w - POST; i++) band.push((sy * W + x + i) * 4);
+    const fl = (k) => floorLayer.data[k] * 0.3 + floorLayer.data[k + 1] * 0.59 + floorLayer.data[k + 2] * 0.11;
+    band.sort((p, q) => fl(p) - fl(q));
+    const fm = band[band.length >> 1];
+    const floorC = band.length ? [floorLayer.data[fm], floorLayer.data[fm + 1], floorLayer.data[fm + 2]] : [60, 45, 35];
+    const open = closed.slice();
+    const innerH = h - LINTEL;
+    for (let j = LINTEL; j < h; j++)
+      for (let i = POST; i < w - POST; i++) {
+        const t = (j - LINTEL) / innerH;
+        let shade = 0.3 + 0.62 * t;
+        if ((h - 1 - j) % 5 === 0) shade *= 0.86;
+        if (j === h - 1) shade = 0.45;
+        open.set([...floorC.map((c) => Math.round(c * shade)), 255], (j * w + i) * 4);
+      }
+    // Leaves folded back against the posts (both sides for a double door).
+    const double = w >= 2.8 * TILE;
+    if (d.rolling) return { id: d.id, name: d.name, box: d.box, x, y, w, h, closed, open };
+    const leafCols = [];
+    for (let k = 0; k < LEAF; k++) leafCols.push(POST + k);
+    if (double) for (let k = 0; k < LEAF; k++) leafCols.push(w - POST - 1 - k);
+    for (const i of leafCols)
+      for (let j = LINTEL; j < h - 1; j++) {
+        const inner = i === POST + LEAF - 1 || i === w - POST - LEAF;
+        const outer = i === POST || i === w - POST - 1;
+        const c = inner ? woodDark : outer ? woodC.map((v) => Math.min(255, Math.round(v * 1.25))) : woodC;
+        open.set([...c, 255], (j * w + i) * 4);
+      }
+    return { id: d.id, name: d.name, box: d.box, x, y, w, h, closed, open };
+  });
+}

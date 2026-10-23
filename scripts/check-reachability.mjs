@@ -1,5 +1,7 @@
 // Verifies every area of the estate can be reached from the spawn point, by flood-
 // filling the collision grid with the bandit's real feet hitbox in 4px steps.
+// Runs with every door open (everything must be reachable, including each door from
+// at least one side), then with every door closed (to show what the doors guard).
 //
 // Usage: node scripts/check-reachability.mjs
 
@@ -27,26 +29,39 @@ const blocked = (x, y) => {
 
 const W = (map.width * T) / STEP;
 const H = (map.height * T) / STEP;
-const seen = new Uint8Array(W * H);
-const sx = Math.round((map.spawn.x * T) / STEP);
-const sy = Math.round((map.spawn.y * T) / STEP);
-const queue = [[sx, sy]];
-seen[sy * W + sx] = 1;
-const reachedAreas = new Set();
-while (queue.length) {
-  const [x, y] = queue.pop();
-  const tx = Math.floor((x * STEP) / T);
-  const ty = Math.floor((y * STEP - 3) / T);
-  reachedAreas.add(map.areas.names[map.areas.data[ty * map.width + tx]]);
-  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-    const nx = x + dx;
-    const ny = y + dy;
-    if (nx < 0 || ny < 0 || nx >= W || ny >= H || seen[ny * W + nx]) continue;
-    if (blocked(nx * STEP, ny * STEP)) continue;
-    seen[ny * W + nx] = 1;
-    queue.push([nx, ny]);
+const doors = map.doors ?? [];
+
+function flood() {
+  const seen = new Uint8Array(W * H);
+  const sx = Math.round((map.spawn.x * T) / STEP);
+  const sy = Math.round((map.spawn.y * T) / STEP);
+  const queue = [[sx, sy]];
+  seen[sy * W + sx] = 1;
+  const reachedAreas = new Set();
+  while (queue.length) {
+    const [x, y] = queue.pop();
+    const tx = Math.floor((x * STEP) / T);
+    const ty = Math.floor((y * STEP - 3) / T);
+    reachedAreas.add(map.areas.names[map.areas.data[ty * map.width + tx]]);
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H || seen[ny * W + nx]) continue;
+      if (blocked(nx * STEP, ny * STEP)) continue;
+      seen[ny * W + nx] = 1;
+      queue.push([nx, ny]);
+    }
   }
+  return { seen, reachedAreas };
 }
+
+// All doors closed first: just report what's still reachable.
+for (const d of doors) for (const c of d.cells) grid[c] = 1;
+const closedAreas = flood().reachedAreas;
+for (const d of doors) for (const c of d.cells) grid[c] = 0;
+const { seen, reachedAreas } = flood();
+const behindDoors = [...reachedAreas].filter((a) => !closedAreas.has(a)).sort();
+console.log(`doors: ${doors.length}; with all doors closed, out of reach: ${behindDoors.join(', ') || 'nothing'}`);
 
 // Every interactable must be reachable by the same probe the game uses (src/systems/InteractionSystem.ts).
 const REACH = 12;
@@ -60,10 +75,14 @@ for (let y = 0; y < H; y++)
         const tx = Math.floor((x * STEP + ax * d) / T);
         const ty = Math.floor((y * STEP - 4 + ay * d) / T);
         for (const i of map.interactables) if (tx >= i.rect[0] && tx <= i.rect[2] && ty >= i.rect[1] && ty <= i.rect[3]) touched.add(i.id);
+        const px = x * STEP + ax * d;
+        const py = y * STEP - 4 + ay * d;
+        for (const dr of doors) if (px >= dr.x && px < dr.x + dr.w && py >= dr.y && py < dr.y + dr.h) touched.add(dr.id);
       }
   }
-const unreachableItems = map.interactables.filter((i) => !touched.has(i.id)).map((i) => i.id);
-console.log(`interactables reachable: ${touched.size}/${map.interactables.length}`);
+const targets = [...map.interactables, ...doors];
+const unreachableItems = targets.filter((i) => !touched.has(i.id)).map((i) => i.id);
+console.log(`interactables + doors reachable: ${targets.length - unreachableItems.length}/${targets.length}`);
 if (unreachableItems.length) {
   console.log(`UNREACHABLE ITEMS: ${unreachableItems.join(', ')}`);
   process.exitCode = 1;

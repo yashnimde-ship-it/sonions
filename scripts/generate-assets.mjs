@@ -2,6 +2,7 @@
 //   public/assets/tiles/tileset.png       deduplicated 16x16 art tiles (32x32 on screen)
 //   public/assets/map/estate.json         tile layers, collision, areas, lights, interactables
 //   public/assets/characters/bandit-placeholder.png   stand-in bandit (the real one is bandit.png)
+//   public/assets/map/doors.png           closed + open sprite for every door
 //   public/assets/map/preview.png         the composited map, for checking the art
 //   public/assets/furniture/*.png         every object cut out of the reference, plus furniture.json
 //
@@ -16,13 +17,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encode } from 'fast-png';
 import { FRAME_H, FRAME_W, banditFrames } from '../map/bandit.mjs';
-import { CELL, CH, CW, buildCollision } from '../map/collisionMap.mjs';
+import { artWallMask } from '../map/artWalls.mjs';
+import { CELL, CH, CW, buildCollision, doorCells } from '../map/collisionMap.mjs';
 import { TILE } from '../map/draw.mjs';
 import { buildPlan, paint } from '../map/mapBuilder.mjs';
 import * as M from '../map/mapData.mjs';
 import { EXTRACT_OPTIONS, REFERENCE } from '../map/referenceConfig.mjs';
 import { loadReference } from '../map/referenceExtract.mjs';
-import { objectSprites, referenceLayers } from '../map/referenceLayers.mjs';
+import { doorSprites, objectSprites, referenceLayers } from '../map/referenceLayers.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const OUT = path.join(ROOT, 'public', 'assets');
@@ -38,8 +40,25 @@ const writePng = (rel, w, h, data) => {
 const t0 = Date.now();
 const plan = buildPlan();
 const procedural = process.argv.includes('--procedural');
-const layers = procedural ? paint(plan) : referenceLayers(loadReference(path.join(ROOT, REFERENCE)), plan, EXTRACT_OPTIONS).layers;
-const collision = buildCollision(plan);
+const ref = procedural ? null : loadReference(path.join(ROOT, REFERENCE));
+const layers = procedural ? paint(plan) : referenceLayers(ref, plan, EXTRACT_OPTIONS).layers;
+// Reference mode reads the walls from the art so collision matches the picture exactly.
+const collision = buildCollision(plan, procedural ? {} : { wallMask: artWallMask(ref, plan, EXTRACT_OPTIONS) });
+
+// Doors: a closed and an open sprite for each wooden door, side by side in one atlas.
+const doors = procedural ? [] : doorSprites(ref, layers.floor);
+const atlasW = Math.max(1, ...doors.map((d) => d.w * 2));
+const atlasH = Math.max(1, doors.reduce((h, d) => h + d.h, 0));
+const atlas = new Uint8Array(atlasW * atlasH * 4);
+let atlasY = 0;
+for (const d of doors) {
+  d.atlas = [0, atlasY];
+  for (let y = 0; y < d.h; y++) {
+    atlas.set(d.closed.subarray(y * d.w * 4, (y + 1) * d.w * 4), ((atlasY + y) * atlasW) * 4);
+    atlas.set(d.open.subarray(y * d.w * 4, (y + 1) * d.w * 4), ((atlasY + y) * atlasW + d.w) * 4);
+  }
+  atlasY += d.h;
+}
 
 // ---------- Tileset: cut every layer into 16x16 tiles and dedupe ----------
 
@@ -136,9 +155,11 @@ const estate = {
   indoor,
   lights: M.LIGHTS,
   interactables: M.INTERACTABLES,
+  doors: doors.map((d) => ({ id: d.id, name: d.name, x: d.x, y: d.y, w: d.w, h: d.h, atlas: d.atlas, cells: doorCells(d.box) })),
   spawn: M.SPAWN,
 };
 fs.mkdirSync(path.join(OUT, 'map'), { recursive: true });
+writePng('map/doors.png', atlasW, atlasH, atlas);
 fs.writeFileSync(path.join(OUT, 'map', 'estate.json'), JSON.stringify(estate));
 
 // ---------- Furniture: each object as its own sprite ----------
@@ -181,6 +202,6 @@ const solid = collision.reduce((a, b) => a + b, 0);
 console.log(`map ${M.WIDTH}x${M.HEIGHT} tiles (${W * 2}x${H * 2} px on screen)`);
 console.log(`art: ${procedural ? 'procedural painters' : `reference image (${furniture.length} furniture sprites)`}`);
 console.log(`tileset: ${tiles.length} unique tiles`);
-console.log(`collision: ${CW}x${CH} cells, ${solid} solid`);
+console.log(`collision: ${CW}x${CH} cells, ${solid} solid; ${doors.length} doors`);
 console.log(`areas: ${areaNames.join(', ')}`);
 console.log(`done in ${Date.now() - t0} ms -> ${OUT}`);

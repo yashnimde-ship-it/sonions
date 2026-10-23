@@ -51,6 +51,28 @@ export const DOORS = [
   { rect: [55, 41, 56, 41], kind: 'patio' },
 ];
 
+/**
+ * The wooden doors drawn in the reference: [x0, y0, x1, y1] in tiles (x1/y1 exclusive),
+ * the door's whole slab including its frame. They start closed and block the way;
+ * press E to open them. (The pale strips on vertical walls are doorways seen edge-on
+ * and are always open.)
+ */
+export const DOOR_SLABS = [
+  { id: 'door-bath', name: 'bathroom door', box: [44.2, 16.4, 47.5, 19.7] },
+  { id: 'door-kitchen', name: 'kitchen door', box: [35.0, 18.8, 38.5, 22.1] },
+  { id: 'door-master', name: 'bedroom door', box: [52.0, 18.6, 55.2, 22.1] },
+  { id: 'door-closet', name: 'closet door', box: [35.0, 25.2, 38.0, 28.8] },
+  { id: 'door-dining', name: 'dining room door', box: [54.1, 25.2, 58.0, 28.5] },
+  { id: 'door-front', name: 'front door', box: [43.4, 39.4, 47.9, 43.9] },
+  { id: 'door-patio', name: 'patio door', box: [54.1, 39.9, 58.2, 42.9] },
+  { id: 'door-storage', name: 'storage door', box: [20.9, 13.1, 23.0, 15.9] },
+  { id: 'door-study', name: 'study door', box: [28.6, 35.7, 30.8, 38.5] },
+  { id: 'door-yard', name: 'back door', box: [70.2, 19.6, 73.8, 23.0] },
+  { id: 'door-blue', name: 'bedroom door', box: [64.9, 29.9, 67.9, 33.4] },
+  { id: 'door-purple', name: 'bedroom door', box: [64.9, 35.0, 67.9, 38.7] },
+  { id: 'door-garage', name: 'garage door', box: [10.2, 19.6, 18.2, 20.8], rolling: true },
+];
+
 /** Windows in exterior walls: [x0, y0, x1, y1] inclusive. */
 export const WINDOWS = [
   [13, 6, 16, 6], [22, 6, 23, 6], [29, 6, 32, 6], [36, 6, 37, 6], [44, 6, 46, 6], [58, 6, 62, 6],
@@ -314,7 +336,6 @@ export const INTERACTABLES = [
   { id: 'mailbox2', rect: [50, 52, 51, 53], name: 'mailbox', text: 'Empty. The neighbors must have already checked.' },
   { id: 'veggies', rect: [86, 33, 92, 41], name: 'vegetable garden', text: 'Tomatoes, carrots and lettuce. Somebody has a green thumb.' },
   { id: 'toilet', rect: [43, 12, 44, 14], name: 'toilet', text: 'Not now!' },
-  { id: 'frontdoor', rect: [44, 39, 47, 41], name: 'front door', text: "The front door was left unlocked. How careless." },
 ];
 
 /** Where the bandit starts: on the sidewalk outside the front gate (tiles). */

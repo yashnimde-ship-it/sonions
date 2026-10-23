@@ -1,5 +1,5 @@
 import '@fontsource/press-start-2p';
-import { ART_TILE, BANDIT_PLACEHOLDER, BANDIT_SHEET, ZOOM } from './config';
+import { ART_TILE, BANDIT_PLACEHOLDER, BANDIT_SHEET, HITBOX, ZOOM } from './config';
 import { Bandit } from './entities/Bandit';
 import { type EstateJson, TileMap } from './map/TileMap';
 import { CameraSystem } from './systems/CameraSystem';
@@ -22,12 +22,13 @@ const KEYS: Record<string, string> = {
 };
 
 async function boot() {
-  const [data, tileset, banditSheet] = await Promise.all([
+  const [data, tileset, doorAtlas, banditSheet] = await Promise.all([
     fetch('/assets/map/estate.json').then((r) => {
       if (!r.ok) throw new Error('Missing /assets/map/estate.json. Run: npm run assets');
       return r.json() as Promise<EstateJson>;
     }),
     loadImage('/assets/tiles/tileset.png'),
+    loadImage('/assets/map/doors.png'),
     // The art team's sprite if it's there; otherwise the generated stand-in.
     loadImage(BANDIT_SHEET).catch(() => {
       console.info('bandit.png not found; using the placeholder sprite');
@@ -35,10 +36,10 @@ async function boot() {
     }),
   ]);
 
-  const map = new TileMap(data, tileset);
+  const map = new TileMap(data, tileset, doorAtlas);
   const bandit = new Bandit(banditSheet, data.spawn.x * ART_TILE, data.spawn.y * ART_TILE, data.spawn.facing);
   const camera = new CameraSystem(map.widthPx, map.heightPx);
-  const interactions = new InteractionSystem(data.interactables);
+  const interactions = new InteractionSystem(data.interactables, data.doors);
   const lighting = new LightingSystem(map);
   const hud = new HUD();
   hud.setLoot(0, 0, interactions.lootables.length);
@@ -86,11 +87,16 @@ async function boot() {
       bandit.update({ dx, dy, sprint: held.has('sprint') }, map);
 
       const near = interactions.nearby(bandit);
-      hud.setPrompt(near ? interactions.promptFor(near) : null);
+      hud.setPrompt(near ? interactions.promptFor(near, map) : null);
       if (near && justPressed.has('interact')) {
-        hud.showMessage(interactions.interact(near));
-        hud.setPrompt(null);
-        hud.setLoot(interactions.totalLoot, interactions.looted.size, interactions.lootables.length);
+        if (near.kind === 'door') {
+          const refused = interactions.toggleDoor(near.door, map, bandit, HITBOX);
+          if (refused) hud.showMessage(refused);
+        } else {
+          hud.showMessage(interactions.interact(near.item));
+          hud.setPrompt(null);
+          hud.setLoot(interactions.totalLoot, interactions.looted.size, interactions.lootables.length);
+        }
       }
     }
     hud.setArea(map.areaAt(bandit.x, bandit.y - 4));

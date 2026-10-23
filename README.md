@@ -31,7 +31,12 @@ Open the printed URL in Chrome. Other scripts:
 | --- | --- |
 | W A S D / Arrow keys | Move |
 | Shift | Sprint |
-| E (or Enter / Space) | Interact: examine, or steal loot. Also closes messages |
+| E (or Enter / Space) | Interact: open or close doors, examine, steal loot. Also closes messages |
+
+Every wooden door starts **closed** and blocks the way. Walk up to one and press E to
+open it (E again closes it; a door won't close while you're standing in it). That
+includes the front door, the patio and back doors, and the roll-up garage door. The
+pale strips on vertical walls are doorways seen edge-on and are always open.
 
 Nine items are worth stealing (look for the twinkle): the toolbox, cookie jar, TV,
 laptop, jewelry box, gold watch, game console, piggy bank and silverware.
@@ -55,7 +60,8 @@ map/                      build-time map definition and painters (Node, ES modul
   tileDefinitions.mjs     ground, floor, wall, door, window, fence and road painters
   referenceExtract.mjs    separates furniture and props from floor and lawn in the reference
   referenceLayers.mjs     builds the art layers and per-object sprites from the reference
-  referenceConfig.mjs     reference path and extraction settings
+  referenceConfig.mjs     reference path, extraction settings, extra window walls
+  artWalls.mjs            reads the house walls from the reference (for collision)
   furniture.mjs           procedural object painters (only with --procedural)
   mapBuilder.mjs          house plan (used for collision and areas) + procedural layers
   collisionMap.mjs        collision grid derived from the data (not from the art)
@@ -74,7 +80,7 @@ src/                      the game (TypeScript, Canvas 2D)
   systems/InteractionSystem.ts  what's in reach, prompts, loot tracking
   systems/LightingSystem.ts     dusk, lit interiors, lamp light (visible area only)
   ui/HUD.ts               fixed DOM HUD: loot, area name, prompt, messages
-public/assets/            generated: tiles/tileset.png, map/estate.json, furniture/*.png (+ furniture.json),
+public/assets/            generated: tiles/tileset.png, map/estate.json, map/doors.png, furniture/*.png (+ furniture.json),
                           characters/bandit-placeholder.png
                           provided by the art team: characters/bandit.png
 ```
@@ -101,8 +107,10 @@ Every object in `mapData` is also exported as its own transparent PNG in
 The generator cuts every layer into 16x16 tiles and deduplicates them into one
 tileset (about 2,000 unique tiles); the map JSON stores each layer as tile IDs.
 
-**Collision** is a separate 192 x 128 grid of half-tile cells, built from walls,
-fences and each object's footprint (trimmed so you can stand right next to
+**Collision** is a separate 192 x 128 grid of half-tile cells. Walls are read straight
+from the reference (`artWalls.mjs`): the thick dark-navy wall bands are kept and thin
+furniture outlines are dropped, so collision follows the drawn walls exactly; exterior
+windows (pale strips) are kept solid. Then come fences and each object's footprint (trimmed so you can stand right next to
 furniture; small props block their lower half), plus the trees, bushes and hedges
 traced from the reference (trees block their trunk). The bandit
 collides with his feet hitbox, moving one axis at a time so he slides along walls.
@@ -111,6 +119,13 @@ collides with his feet hitbox, moving one axis at a time so he slides along wall
 draws only the camera's visible rectangle at 2x with nearest-neighbor scaling, then
 the bandit, the overhead layer, and the lighting overlay (computed for the visible
 area only). The HUD is DOM, so it stays fixed while the world scrolls.
+
+**Doors.** `DOOR_SLABS` in `mapData.mjs` lists each wooden door in the reference. The
+generator writes a closed sprite (the reference as drawn) and an open one (frame kept,
+the opening tinted with the floor beyond, leaves folded back) to `map/doors.png`, and
+each door's collision cells to the map JSON. Those cells are open in the saved grid;
+the game closes every door at start and opens it on E (`TileMap.setDoor`). `npm run check`
+verifies everything is reachable with doors open and reports what the doors guard.
 
 ## Bandit sprite (art team)
 
@@ -136,8 +151,7 @@ If the sheet uses a different frame size or order, change `BANDIT_FRAME_W/H` in
 - The map art is the reference image, cut into layers. Where furniture was removed,
   the floor underneath is filled in from nearby floor, so it can look streaky if a
   piece is ever moved.
-- Doors are drawn closed in the reference, but they're open doorways in the game.
-- No door animations or locked doors.
+- Doors open instantly (no swing animation) and none are locked yet.
 - No other characters yet (no homeowners or dog AI), no sound, no minimap, and no win
   screen beyond a message when all nine items are taken.
 - Loot is not saved between sessions.

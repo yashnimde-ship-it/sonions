@@ -1,4 +1,5 @@
-// Collision, built from the map data rather than the artwork. Cells are half a tile
+// Collision, built from the map data (and, in reference mode, the walls read from the
+// art by artWalls.mjs) rather than the tile art. Cells are half a tile
 // (8 art px, 16 px on screen) so furniture blocks roughly where it is drawn.
 
 import { BUSH_SCALE } from './mapBuilder.mjs';
@@ -9,7 +10,19 @@ const PER_TILE = 16 / CELL;
 export const CW = M.WIDTH * PER_TILE;
 export const CH = M.HEIGHT * PER_TILE;
 
-export function buildCollision(plan) {
+/** The collision cells covered by a door slab (box in tiles, end exclusive). */
+export function doorCells([x0, y0, x1, y1]) {
+  const cells = [];
+  for (let cy = Math.floor(y0 * PER_TILE); cy < Math.ceil(y1 * PER_TILE); cy++)
+    for (let cx = Math.floor(x0 * PER_TILE); cx < Math.ceil(x1 * PER_TILE); cx++) cells.push(cy * CW + cx);
+  return cells;
+}
+
+/**
+ * opts.wallMask: per-art-pixel wall mask (from the reference); walls come from it instead
+ * of the plan. Door slab cells are always left open here; the game closes them.
+ */
+export function buildCollision(plan, opts = {}) {
   const grid = new Uint8Array(CW * CH);
   const solidTile = (tx, ty) => {
     for (let j = 0; j < PER_TILE; j++) for (let i = 0; i < PER_TILE; i++) grid[(ty * PER_TILE + j) * CW + tx * PER_TILE + i] = 1;
@@ -29,7 +42,19 @@ export function buildCollision(plan) {
   };
 
   // Walls (doors are carved out of the plan already).
-  for (let y = 0; y < M.HEIGHT; y++) for (let x = 0; x < M.WIDTH; x++) if (plan[y][x].kind === 'wall') solidTile(x, y);
+  const mask = opts.wallMask;
+  if (mask) {
+    // A cell is wall when enough of its pixels are.
+    const W = M.WIDTH * 16;
+    for (let cy = 0; cy < CH; cy++)
+      for (let cx = 0; cx < CW; cx++) {
+        let n = 0;
+        for (let y = 0; y < CELL; y++) for (let x = 0; x < CELL; x++) n += mask[(cy * CELL + y) * W + cx * CELL + x];
+        if (n >= 12) grid[cy * CW + cx] = 1;
+      }
+  } else {
+    for (let y = 0; y < M.HEIGHT; y++) for (let x = 0; x < M.WIDTH; x++) if (plan[y][x].kind === 'wall') solidTile(x, y);
+  }
 
   // Fences: everything beyond the top/side fences, and the front wall except its gates.
   const { top, bottom, left, right, gates } = M.FENCE;
@@ -68,6 +93,7 @@ export function buildCollision(plan) {
     solidBox(x - rt, y - rt * 0.8, rt * 2, rt * 1.6);
   }
   for (const [kind, x, y] of M.LAMPS) if (kind === 'post') solidBox(x + 0.1, y + 1.1, 0.5, 0.45);
+  if (mask) for (const d of M.DOOR_SLABS) for (const c of doorCells(d.box)) grid[c] = 0;
 
   return grid;
 }

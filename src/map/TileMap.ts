@@ -8,6 +8,18 @@ export interface Interactable {
   loot?: number;
 }
 
+/** A door from the reference: its spot (art px), its sprites in the atlas, its collision cells. */
+export interface Door {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  atlas: [number, number]; // closed sprite here; the open one sits right of it
+  cells: number[];
+}
+
 export interface Light {
   x: number;
   y: number;
@@ -28,13 +40,15 @@ export interface EstateJson {
   indoor: number[];
   lights: Light[];
   interactables: Interactable[];
+  doors: Door[];
   spawn: { x: number; y: number; facing: 'up' | 'down' | 'left' | 'right' };
 }
 
 /**
  * The estate's tilemap. Tile layers are drawn once from the tileset into two
  * canvases: everything under the player, and the overhead layer above. Collision
- * is a separate half-tile grid, independent of the art.
+ * is a separate half-tile grid, independent of the tiles. Doors redraw their spot on
+ * the lower canvas when they open or close.
  */
 export class TileMap {
   readonly data: EstateJson;
@@ -43,14 +57,42 @@ export class TileMap {
   readonly widthPx: number;
   readonly heightPx: number;
   private collision: Uint8Array;
+  private doorAtlas: HTMLImageElement;
+  private readonly openDoors = new Set<string>();
 
-  constructor(data: EstateJson, tileset: HTMLImageElement) {
+  constructor(data: EstateJson, tileset: HTMLImageElement, doorAtlas: HTMLImageElement) {
     this.data = data;
     this.widthPx = data.width * ART_TILE;
     this.heightPx = data.height * ART_TILE;
     this.below = this.render(tileset, ['floor', 'walls', 'objects']);
     this.above = this.render(tileset, ['overhead']);
     this.collision = Uint8Array.from(atob(data.collision.data), (c) => c.charCodeAt(0));
+    this.doorAtlas = doorAtlas;
+    for (const door of data.doors) this.setDoor(door, false); // every door starts closed
+  }
+
+  isOpen(door: Door): boolean {
+    return this.openDoors.has(door.id);
+  }
+
+  /** Opens or closes a door: swaps its sprite and blocks or frees its doorway. */
+  setDoor(door: Door, open: boolean) {
+    if (open) this.openDoors.add(door.id);
+    else this.openDoors.delete(door.id);
+    for (const c of door.cells) this.collision[c] = open ? 0 : 1;
+    const ctx = this.below.getContext('2d')!;
+    const [ax, ay] = door.atlas;
+    ctx.drawImage(this.doorAtlas, ax + (open ? door.w : 0), ay, door.w, door.h, door.x, door.y, door.w, door.h);
+  }
+
+  /** Would the door's doorway overlap the box (art px)? So a door can't shut on the bandit. */
+  doorOverlaps(door: Door, x0: number, y0: number, x1: number, y1: number): boolean {
+    const { cell, width } = this.data.collision;
+    return door.cells.some((c) => {
+      const cx = (c % width) * cell;
+      const cy = Math.floor(c / width) * cell;
+      return cx < x1 && cx + cell > x0 && cy < y1 && cy + cell > y0;
+    });
   }
 
   private render(tileset: HTMLImageElement, layers: (keyof EstateJson['layers'])[]): HTMLCanvasElement {
