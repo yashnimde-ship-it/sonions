@@ -13,6 +13,8 @@
 //   STAIRS            stairwells: interaction zones with destination metadata
 //   HIDING_SPOTS      places a player can hide (metadata for the hide mechanic)
 //   OFF_LIMITS        area names nobody can reach on purpose (the open sea)
+//   AUTO_WALLS        also read walls from the art's dark wall bands (inside() only), with
+//                     NOT_WALLS boxes clearing anything it mistakes for wall
 //
 // Steps: the reference (already 96 x 64 tiles at 16 px) has its room-name plaques painted
 // over with the floor beside them; it's cut into 16x16 tiles and deduplicated. Collision is
@@ -25,9 +27,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { encode } from 'fast-png';
-import { CELL, CH, CW, doorCells } from '../map/collisionMap.mjs';
-import { loadReference } from '../map/referenceExtract.mjs';
+import { decode, encode } from 'fast-png';
+import { artWallMask } from '../map/artWalls.mjs';
+import { CELL } from '../map/collisionMap.mjs';
 import { doorSprites } from '../map/referenceLayers.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -46,7 +48,22 @@ const writePng = (rel, w, h, data) => {
 };
 
 const t0 = Date.now();
-const ref = loadReference(path.join(ROOT, L.REFERENCE));
+// The collision grid (8 px cells) for this map's size.
+const CW = W / CELL;
+const CH = H / CELL;
+const doorCells = ([x0, y0, x1, y1]) => {
+  const cells = [];
+  for (let cy = Math.floor((y0 * TILE) / CELL); cy < Math.ceil((y1 * TILE) / CELL); cy++)
+    for (let cx = Math.floor((x0 * TILE) / CELL); cx < Math.ceil((x1 * TILE) / CELL); cx++) cells.push(cy * CW + cx);
+  return cells;
+};
+const ref = (() => {
+  const png = decode(fs.readFileSync(path.join(ROOT, L.REFERENCE)));
+  if (png.width !== W || png.height !== H) throw new Error(`${L.REFERENCE} must be ${W}x${H} (${L.WIDTH}x${L.HEIGHT} tiles)`);
+  const rgb = new Uint8Array(W * H * 3);
+  for (let i = 0; i < W * H; i++) rgb.set(png.data.subarray(i * png.channels, i * png.channels + 3), i * 3);
+  return { w: W, h: H, rgb };
+})();
 
 // ---------- Paint over the room-name plaques ----------
 
@@ -117,6 +134,21 @@ const cover = ([x0, y0, x1, y1]) => {
     for (let cx = Math.max(0, Math.floor(((x0 + m) * TILE) / CELL)); cx < Math.min(CW, Math.ceil(((x1 - m) * TILE) / CELL)); cx++) grid[cy * CW + cx] = 1;
 };
 L.WALLS.forEach(cover);
+if (L.AUTO_WALLS) {
+  // Walls read from the art: a cell is wall when enough of it is wall band.
+  const mask = artWallMask(ref, null, { region: (x, y) => L.inside(x / TILE, y / TILE), windows: [], ...L.AUTO_WALLS });
+  const auto = new Uint8Array(CW * CH);
+  for (let cy = 0; cy < CH; cy++)
+    for (let cx = 0; cx < CW; cx++) {
+      let n = 0;
+      for (let y = 0; y < CELL; y++) for (let x = 0; x < CELL; x++) n += mask[(cy * CELL + y) * W + cx * CELL + x];
+      if (n >= 16) auto[cy * CW + cx] = 1;
+    }
+  for (const [x0, y0, x1, y1] of L.NOT_WALLS ?? [])
+    for (let cy = Math.floor((y0 * TILE) / CELL); cy < Math.ceil((y1 * TILE) / CELL); cy++)
+      for (let cx = Math.floor((x0 * TILE) / CELL); cx < Math.ceil((x1 * TILE) / CELL); cx++) auto[cy * CW + cx] = 0;
+  for (let i = 0; i < auto.length; i++) if (auto[i]) grid[i] = 1;
+}
 L.SOLIDS.forEach(cover);
 // Garden foliage (trees, hedges, flower beds) blocks: a cell is solid when most of it is
 // leafy green. Only outside the building, where the art has no walls to go by.

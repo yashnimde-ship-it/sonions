@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
-import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondsToWin, distToSpot, type HidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom } from '../src/data/diamonds.ts';
+import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
@@ -886,7 +886,7 @@ function handle(c: Client, msg: ClientMsg) {
 
 // ---------- Diamonds ----------
 
-const spotsOf = (matchId: string): HidingSpot[] => mapData[matchMaps.get(matchId) ?? 'estate'].interactables;
+const spotsOf = (matchId: string): HidingSpot[] => mapData[matchMaps.get(matchId) ?? 'estate'].interactables.filter(isHidingSpot);
 const spotRoomOf = (matchId: string, spot: HidingSpot) => {
   const data = mapData[matchMaps.get(matchId) ?? 'estate'];
   return spotRoom(spot, data.areas, data.width);

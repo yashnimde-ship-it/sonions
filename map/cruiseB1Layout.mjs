@@ -283,8 +283,8 @@ export const INTERACTABLES = [
   { id: 'ledger', rect: [80, 35, 80, 35], name: 'fuel ledger', loot: 200, text: 'A ledger of off-the-books fuel sales.' },
   { id: 'pearls', rect: [79, 48, 79, 48], name: 'smuggled pearls', loot: 650, text: 'A pouch of pearls hidden behind the pumps.' },
   // Stairwells (handled specially by the game: they lead to other decks)
-  { id: 'stairs-main', rect: [52, 25, 56, 33], name: 'stairs to F1', text: 'Main Floor (F1) is coming soon.' },
-  { id: 'stairs-aft', rect: [64, 46, 67, 54], name: 'stairs to F1', text: 'Main Floor (F1) is coming soon.' },
+  { id: 'stairs-main', rect: [52, 25, 56, 33], name: 'stairs to F1', text: "These stairs aren't connected yet. Pick LUXURY CRUISE — F1 in Map Info to play the Main Floor." },
+  { id: 'stairs-aft', rect: [64, 46, 67, 54], name: 'stairs to F1', text: "These stairs aren't connected yet. Pick LUXURY CRUISE — F1 in Map Info to play the Main Floor." },
   { id: 'engines', rect: [32, 38, 37, 38], name: 'engines', text: 'Two huge diesel engines, thrumming away.' },
 ];
 

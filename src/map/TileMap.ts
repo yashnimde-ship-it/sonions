@@ -26,6 +26,15 @@ export interface Door {
   keypad?: boolean;
 }
 
+export interface Stairwell {
+  id: string;
+  name: string;
+  /** Tiles [x0, y0, x1, y1]. */
+  zone: [number, number, number, number];
+  /** The deck it leads to and the arrival point there (for deck travel). */
+  to: { deck: string; arrive: string };
+}
+
 export interface Light {
   x: number;
   y: number;
@@ -47,6 +56,8 @@ export interface EstateJson {
   lights: Light[];
   interactables: Interactable[];
   doors: Door[];
+  /** Stairwells to other decks (cruise maps): where E works, and where they lead. */
+  stairs?: Stairwell[];
   spawn: { x: number; y: number; facing: 'up' | 'down' | 'left' | 'right' };
 }
 

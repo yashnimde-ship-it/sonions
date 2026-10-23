@@ -20,7 +20,10 @@ export const PICKUP_REACH = 18;
 /** Within this distance a hiding spot with a diamond in it glints for a Runner, art px. */
 export const GLINT_REACH = 40;
 
-/** A piece of furniture that can hold a diamond (every interactable in the map). */
+/** Stairwells lead to other decks; they aren't furniture, so they never hold a diamond. */
+export const isHidingSpot = (s: { id: string }) => !s.id.startsWith('stairs');
+
+/** A piece of furniture that can hold a diamond (every interactable in the map but stairwells). */
 export interface HidingSpot {
   id: string;
   name: string;

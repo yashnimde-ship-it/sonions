@@ -5,7 +5,7 @@ import { isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
 import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
-import { type Diamond, distToSpot, type HidingSpot, PICKUP_REACH, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
+import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { cleanName } from './data/names';
 import { CUSTOM_MIN, CUSTOM_PAD, type Phase, placementRefusal, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
@@ -418,7 +418,7 @@ async function boot() {
     abilities.traps = traps;
     estate = new TileMap(estateData, world.tiles, world.doors);
     interactions = new InteractionSystem(createInteractables(), estateData.doors);
-    spots = estateData.interactables;
+    spots = estateData.interactables.filter(isHidingSpot);
     diamonds = [];
     searched.clear();
     glints = new Set();
@@ -1270,7 +1270,16 @@ async function boot() {
       if (best < dd) door = null;
     }
     let prompt: string | null = null;
-    if (door) {
+    // A stairwell to another deck. Decks are separate maps and travel between them isn't
+    // built yet, so it says where it goes instead of moving anyone.
+    const stair = door ? undefined : estateData.stairs?.find((st) => {
+      const [x0, y0, x1, y1] = st.zone.map((v) => v * ART_TILE);
+      return me.x >= x0 - 6 && me.x <= x1 + 6 && me.y >= y0 - 6 && me.y <= y1 + 6;
+    });
+    if (stair) {
+      prompt = `E  Climb the ${stair.name}`;
+      if (input.action) hud.showMessage(stairMessage(stair.to.deck));
+    } else if (door) {
       const lockLeft = Math.max(0, (doorJammedUntil.get(door.id) ?? 0) - now);
       prompt = lockLeft ? `LOCKED ${Math.ceil(lockLeft / 1000)}s` : interactions.promptFor(near!, estate);
       if (input.action && !lockLeft) {
@@ -1302,6 +1311,13 @@ async function boot() {
     }
     if (!input.actionHeld || me.moving || !spot || searching?.spot !== spot.id) searching = null;
     hud.setPrompt(now < trapNoticeUntil ? trapNotice : now < toastUntil ? hud.promptText : prompt);
+  }
+
+  /** What a stairwell says: decks that exist are separate maps (pick them in Map Info). */
+  function stairMessage(deck: string) {
+    if (deck === 'cruise-f2') return 'Top Deck (F2) is coming soon.';
+    const def = isMapId(deck) ? MAPS[deck] : null;
+    return def ? `These stairs lead to ${def.name}. Travel between decks isn't connected yet: pick it in Map Info to play that deck.` : 'These stairs are closed.';
   }
 
   /** The Saboteur isn't in the house: they fly a camera round it and pick traps. */
