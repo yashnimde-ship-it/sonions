@@ -215,23 +215,45 @@ export const OBJECTS = [
   { type: 'doormat', x: 44.6, y: 42.2, w: 2.8, h: 1.4, solid: false },
 ];
 
-/** Trees: [x, y] of the trunk base in tiles, canopy radius in art pixels. */
+// Trees, bushes and hedges, traced from the reference image (tile coordinates).
+// Sizes are canopy radii in tiles; tree x/y is the base of the trunk.
+
+/** Trees: [trunk x, trunk y, canopy radius px (procedural art), canopy center x, canopy center y, canopy radius tiles]. */
+const tree = (x, y, cx, cy, r) => [x, y, Math.round((r * TILE_PX) / 1.25), cx, cy, r];
+const TILE_PX = 16;
 export const TREES = [
-  [6.6, 5, 26], [14.4, 4.8, 22], [23.6, 4.8, 22], [29.2, 4.6, 24], [34.4, 4.8, 22], [55.4, 5, 24], [62.6, 4.8, 24], [88.6, 4.6, 24],
-  [11.6, 34.6, 30], [5.4, 51, 24], [21.4, 52, 28], [35.6, 52, 22], [63.6, 51.6, 26], [69.6, 51.4, 24], [79.4, 52, 26],
-  [78.6, 30.4, 26], [90, 30.2, 24], [75.4, 50.4, 20], [18, 4.4, 18], [48.6, 4.6, 18], [69, 5, 20],
+  // Along the back fence
+  tree(7, 6.2, 7, 3.5, 2.6), tree(13.5, 4.8, 13.5, 2.2, 2.2), tree(27.5, 6, 27.3, 3, 2.6), tree(33, 6, 33, 3, 2.5),
+  tree(45.5, 5, 45.5, 3.8, 1.2), tree(55.5, 6.3, 55.5, 3.3, 2.6), tree(63.5, 6.2, 63, 3, 2.6), tree(89.5, 4.6, 89.5, 2.5, 2.6),
+  // West lawn
+  tree(11.8, 35.2, 11.5, 32.5, 2.6), tree(5.8, 51.8, 5.5, 49.5, 2.8),
+  // Front yard
+  tree(21.5, 52.6, 21, 49.5, 2.8), tree(64.2, 52.4, 64, 50, 2.3), tree(70.2, 52.4, 70, 49.5, 2.5), tree(79, 51.6, 78.8, 49.5, 2.2),
+  // Backyard
+  tree(80.5, 31.2, 80, 29, 2.3), tree(90.5, 29.7, 90, 27.5, 2.3),
 ];
 
-/** Bushes and hedges: [x, y, radius px, flower colors or null]. */
+/** Bushes: [x, y, radius px (procedural art), flower colors or null]. Radius from tiles. */
+const bush = (x, y, r, flowers = null) => [x, y, Math.round((r * TILE_PX) / 1.4), flowers];
 export const BUSHES = [
-  ...Array.from({ length: 22 }, (_, i) => [3.6, 8 + i * 2, 10, i % 4 === 1 ? ['pk2', 'r3'] : null]),
-  ...Array.from({ length: 21 }, (_, i) => [92.4, 6 + i * 2.2, 10, i % 5 === 2 ? ['y2', 'r3'] : null]),
-  [17.4, 47.6, 8, ['pk2', 'r3']], [24, 49, 9, null], [31, 49.6, 8, null], [37.6, 47.6, 7, ['pk2', 'y2']], [40.6, 47.8, 6, null],
-  [50.6, 47.8, 6, null], [53.6, 47.6, 8, null], [57.6, 47.4, 9, null], [61, 48, 7, ['y2', 'r3']], [66, 50, 9, null],
-  [72.6, 49, 8, ['pk2', 'r3']], [82.6, 49.6, 9, ['y2', 'r3']], [86.6, 51, 8, null],
-  [15, 30, 8, ['pk2', 'r3']], [14.6, 36.6, 7, null], [70, 4.6, 8, ['pk2', 'r3']], [76.4, 4.4, 7, ['r3', 'y2']],
-  [44.4, 3.8, 7, ['pk2', 'y2']], [39.6, 4.4, 7, null], [78.6, 35, 7, ['y2', 'r3']], [78.6, 40, 8, ['pk2', 'r3']],
-  [29.6, 54.6, 7, ['pk2', 'r3']], [56.4, 54.8, 7, ['y2', 'r3']], [17, 54.6, 6, ['pk2', 'y2']],
+  // Back fence
+  bush(41.5, 4.8, 1.3, ['pk2', 'r3']), bush(66.5, 4.8, 1.2, ['y2', 'r3']), bush(75.5, 5.6, 1.2, ['pk2', 'r3']), bush(11.5, 4.5, 1, ['pk2', 'r3']),
+  // West lawn
+  bush(14.5, 37.2, 1.2, ['pk2', 'r3']), bush(14.5, 41.5, 1.3), bush(14.5, 49, 1.6, ['pk2', 'y2']),
+  // Front yard
+  bush(17.5, 49, 1.5), bush(25, 48.5, 1.3), bush(31, 48.7, 1.8), bush(36.8, 46.2, 1.4, ['pk2', 'y2']),
+  bush(59.5, 46.5, 1.3, ['y2', 'r3']), bush(60.5, 49, 1.6), bush(67, 48.5, 1.4), bush(73.5, 48.8, 1.3),
+  bush(82, 49, 1.8, ['y2', 'r3']), bush(85, 51, 1.5),
+  bush(25, 53.6, 1.6), bush(32, 53.6, 1.6), bush(38.8, 53.5, 1.3), bush(56.3, 53.5, 1.4), bush(66, 53.6, 1.6), bush(73.5, 53.6, 1.6),
+  // Backyard
+  bush(88.8, 12.6, 1.2, ['r3', 'y2']), bush(80, 34.5, 1.5, ['y2', 'r3']), bush(80.5, 41, 1.4, ['pk2', 'r3']),
+];
+
+/** Hedges: solid rectangles [x0, y0, x1, y1] in tiles (fence-side hedges in the reference). */
+export const HEDGES = [
+  [3, 9, 6, 46], // west fence
+  [92.2, 12, 93, 52], // east fence
+  [55.5, 45, 60.5, 47.2], // right of the porch
 ];
 
 export const FLOWER_PATCHES = [

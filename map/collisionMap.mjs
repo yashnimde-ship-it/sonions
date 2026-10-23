@@ -62,6 +62,7 @@ export function buildCollision(plan) {
     }
   }
   for (const [x, y] of M.TREES) solidBox(x - 0.45, y - 0.7, 0.9, 0.75);
+  for (const [x0, y0, x1, y1] of M.HEDGES) solidBox(x0, y0, x1 - x0, y1 - y0);
   for (const [x, y, r] of M.BUSHES) {
     const rt = ((r * BUSH_SCALE) / 16) * 0.7;
     solidBox(x - rt, y - rt * 0.8, rt * 2, rt * 1.6);

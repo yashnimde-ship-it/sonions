@@ -99,6 +99,19 @@ export function referenceLayers(ref, plan, opts) {
     const px = [ref.rgb[i * 3], ref.rgb[i * 3 + 1], ref.rgb[i * 3 + 2], 255];
     (green[i] ? overhead : objects).data.set(px, i * 4);
   }
+  // Tree canopies go overhead so the bandit walks behind them. They are the reference's
+  // own pixels, so the copy is invisible until he's underneath. The trunk base stays below.
+  for (const [, trunkY, , cx, cy, r] of M.TREES) {
+    const rr = r * TILE * 0.95;
+    const yMax = Math.min((trunkY - 0.5) * TILE, cy * TILE + rr);
+    for (let y = Math.floor(cy * TILE - rr); y < yMax; y++)
+      for (let x = Math.floor(cx * TILE - rr); x <= cx * TILE + rr; x++) {
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        if ((x - cx * TILE) ** 2 + (y - cy * TILE) ** 2 > rr * rr) continue;
+        const i = y * W + x;
+        overhead.data.set([ref.rgb[i * 3], ref.rgb[i * 3 + 1], ref.rgb[i * 3 + 2], 255], i * 4);
+      }
+  }
   return { layers: { floor, walls, objects, overhead }, mask, green };
 }
 

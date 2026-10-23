@@ -3,8 +3,9 @@
 A top-down pixel-art heist game set in a cozy suburban estate at dusk. Sneak in
 from the street, explore the house and grounds, and steal everything worth taking.
 
-Built with the same stack as the FireRed remake: **TypeScript + Canvas + Vite**,
-with art generated at build time and compiled into a tilemap.
+Built with the same stack as the FireRed remake: **TypeScript + Canvas + Vite**.
+The map art is cut straight out of the reference image at build time and compiled
+into a tilemap, so the game looks exactly like the reference.
 
 ## Run
 
@@ -18,7 +19,8 @@ Open the printed URL in Chrome. Other scripts:
 
 | Command | What it does |
 | --- | --- |
-| `npm run assets` | Regenerate everything in `public/assets/` from `map/` |
+| `npm run assets` | Regenerate everything in `public/assets/` from the reference and `map/` |
+| `npm run assets -- --procedural` | Same, but with the older hand-written painters instead of the reference art |
 | `npm run check` | Flood-fill the collision map from the spawn point and confirm every room and interactable is reachable |
 | `npm run build` | Type-check and build for production into `dist/` |
 | `npm run preview` | Serve the production build |
@@ -51,14 +53,18 @@ map/                      build-time map definition and painters (Node, ES modul
   mapData.mjs             the layout: rooms, hallways, doors, windows, grounds, objects,
                           trees, lights, interactables, spawn — all in tile coordinates
   tileDefinitions.mjs     ground, floor, wall, door, window, fence and road painters
-  furniture.mjs           object painters (beds, sofas, kitchen, car, pool, trees, ...)
-  mapBuilder.mjs          house plan + the four art layers
+  referenceExtract.mjs    separates furniture and props from floor and lawn in the reference
+  referenceLayers.mjs     builds the art layers and per-object sprites from the reference
+  referenceConfig.mjs     reference path and extraction settings
+  furniture.mjs           procedural object painters (only with --procedural)
+  mapBuilder.mjs          house plan (used for collision and areas) + procedural layers
   collisionMap.mjs        collision grid derived from the data (not from the art)
   bandit.mjs              PLACEHOLDER bandit sprite (the real one comes from the art team)
   draw.mjs                pixel drawing primitives and the dusk palette
 scripts/
   generate-assets.mjs     paints, dedupes 16x16 tiles into a tileset, writes the map JSON
   check-reachability.mjs  verifies every room and interactable can be reached
+  preview-extract.mjs     debug view of what the extraction counts as furniture
 src/                      the game (TypeScript, Canvas 2D)
   main.ts                 loading, input, fixed 60 fps loop, rendering order
   config.ts               zoom, speeds, hitbox, camera easing
@@ -68,25 +74,37 @@ src/                      the game (TypeScript, Canvas 2D)
   systems/InteractionSystem.ts  what's in reach, prompts, loot tracking
   systems/LightingSystem.ts     dusk, lit interiors, lamp light (visible area only)
   ui/HUD.ts               fixed DOM HUD: loot, area name, prompt, messages
-public/assets/            generated: tiles/tileset.png, map/estate.json, characters/bandit-placeholder.png
+public/assets/            generated: tiles/tileset.png, map/estate.json, furniture/*.png (+ furniture.json),
+                          characters/bandit-placeholder.png
                           provided by the art team: characters/bandit.png
 ```
 
-**How the map is built.** `mapBuilder` first builds a plan: room interiors, then
-walls (shared walls stay walls), then any hallway edge facing outdoors becomes an
-exterior wall, then doors and windows are carved in. It paints four layers:
+**How the map is built.** `mapBuilder` builds a plan from `mapData`: room interiors,
+then walls (shared walls stay walls), then any hallway edge facing outdoors becomes an
+exterior wall, then doors and windows are carved in. The plan was traced from the
+reference and drives collision and area names.
 
-1. **floor**: ground, lawn, paths, pool deck, interior floors and wall faces
-2. **walls**: walls, windows and doorways
-3. **objects**: furniture, props, fences, tree trunks (drawn under the bandit)
-4. **overhead**: tree canopies and pergola beams (drawn over the bandit)
+The art comes from the reference itself (16 reference pixels = 1 tile, so nothing is
+scaled). For each room, the floor colors are learned along the walls and the floor
+is flood-filled away; what's left is furniture. Outdoors, the same happens against
+the lawn. That gives four layers:
+
+1. **floor**: the reference's floors, walls and ground, with the area under each
+   piece of furniture filled from the same floor pattern a tile or more away
+2. **walls**: empty in reference mode (walls are part of the floor art)
+3. **objects**: the furniture and props cut out of the reference (drawn under the bandit)
+4. **overhead**: tree canopies (drawn over the bandit, so he walks behind them)
+
+Every object in `mapData` is also exported as its own transparent PNG in
+`public/assets/furniture/`, listed with its position in `furniture.json`.
 
 The generator cuts every layer into 16x16 tiles and deduplicates them into one
 tileset (about 2,000 unique tiles); the map JSON stores each layer as tile IDs.
 
 **Collision** is a separate 192 x 128 grid of half-tile cells, built from walls,
 fences and each object's footprint (trimmed so you can stand right next to
-furniture; small props block their lower half; trees block their trunk). The bandit
+furniture; small props block their lower half), plus the trees, bushes and hedges
+traced from the reference (trees block their trunk). The bandit
 collides with his feet hitbox, moving one axis at a time so he slides along walls.
 
 **Rendering.** The layers are drawn once into two canvases at load. Each frame
@@ -115,9 +133,11 @@ If the sheet uses a different frame size or order, change `BANDIT_FRAME_W/H` in
 ## Placeholders and limits
 
 - The bandit sprite is a placeholder until the art team's `bandit.png` is added (see above).
-- All map art is procedurally generated pixel art made for this project; the reference
-  image is only used as a layout guide and is never drawn in the game.
-- Doors are always open doorways; there are no door animations or locked doors.
+- The map art is the reference image, cut into layers. Where furniture was removed,
+  the floor underneath is filled in from nearby floor, so it can look streaky if a
+  piece is ever moved.
+- Doors are drawn closed in the reference, but they're open doorways in the game.
+- No door animations or locked doors.
 - No other characters yet (no homeowners or dog AI), no sound, no minimap, and no win
   screen beyond a message when all nine items are taken.
 - Loot is not saved between sessions.
