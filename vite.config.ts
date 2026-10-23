@@ -6,7 +6,9 @@ export default defineConfig({
   server: {
     host: true,
     proxy: {
-      '/ws': { target: 'ws://localhost:3001', ws: true },
+      // 127.0.0.1, not localhost: on some machines localhost resolves to IPv6 (::1) first,
+      // and the game server listens on IPv4 only.
+      '/ws': { target: 'ws://127.0.0.1:3001', ws: true },
     },
   },
 });
