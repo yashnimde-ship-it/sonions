@@ -65,6 +65,9 @@ export class Bandit {
   private puffs: Puff[] = [];
   /** Frames of dash left (Quickstep), and the dash velocity. */
   private dashFrames = 0;
+  private knockFrames = 0;
+  private knockVx = 0;
+  private knockVy = 0;
   private dashVx = 0;
   private dashVy = 0;
   /** Frames left to leave after-images, and the recent positions they're drawn at. */
@@ -79,6 +82,13 @@ export class Bandit {
   }
 
   update(input: MoveInput, map: Walkable) {
+    if (this.knockFrames > 0) {
+      // Shoved by a trap: carried along whatever the controls say (walls still stop it).
+      this.knockFrames--;
+      this.unstick(map);
+      if (!this.moveAxis(map, this.knockVx, 0)) this.knockVx = 0;
+      if (!this.moveAxis(map, 0, this.knockVy)) this.knockVy = 0;
+    }
     if (this.stunFrames > 0) {
       // Stunned: controls do nothing; any dash in progress is cut short.
       this.stunFrames--;
@@ -144,6 +154,14 @@ export class Bandit {
     this.dashVx = (dx * distance) / frames;
     this.dashVy = (dy * distance) / frames;
     this.showTrail(frames + 8);
+  }
+
+  /** Shoved `distance` art px along (dx, dy) over `frames` frames, even while stunned. */
+  shove(dx: number, dy: number, distance: number, frames: number) {
+    const len = Math.hypot(dx, dy) || 1;
+    this.knockFrames = frames;
+    this.knockVx = (dx / len) * (distance / frames);
+    this.knockVy = (dy / len) * (distance / frames);
   }
 
   /** Knocked silly for `frames` frames. */

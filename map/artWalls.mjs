@@ -10,11 +10,12 @@ const lum = (r, g, b) => 0.3 * r + 0.59 * g + 0.11 * b;
 
 /** 1 where the reference shows wall. Only looks in and right around the house. */
 export function artWallMask(ref, plan, opts = {}) {
+  // opts.region(x, y): where walls may be (art px); defaults to in and around the estate's house.
   const W = ref.w;
   const H = ref.h;
   const maxLum = opts.wallLum ?? 46;
   const r = opts.wallMinHalfWidth ?? 2; // walls must be at least 2r+1 px thick
-  const nearHouse = (x, y) => {
+  const nearHouse = opts.region ?? ((x, y) => {
     const tx = Math.floor(x / TILE);
     const ty = Math.floor(y / TILE);
     for (let dy = -1; dy <= 1; dy++)
@@ -23,7 +24,7 @@ export function artWallMask(ref, plan, opts = {}) {
         if (c && c.kind !== 'out') return true;
       }
     return false;
-  };
+  });
   const dark = new Uint8Array(W * H);
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
@@ -54,7 +55,7 @@ export function artWallMask(ref, plan, opts = {}) {
     }
   dropSmall(wall, W, H, opts.wallMinArea ?? 160);
   // Exterior windows are pale strips in the wall line: keep them solid.
-  for (const [x0, y0, x1, y1] of M.WINDOWS)
+  for (const [x0, y0, x1, y1] of opts.windows ?? M.WINDOWS)
     for (let y = y0 * TILE; y < (y1 + 1) * TILE; y++) for (let x = x0 * TILE; x < (x1 + 1) * TILE; x++) wall[y * W + x] = 1;
   for (const [x0, y0, x1, y1] of opts.extraWalls ?? [])
     for (let y = Math.round(y0 * TILE); y < Math.round(y1 * TILE); y++) for (let x = Math.round(x0 * TILE); x < Math.round(x1 * TILE); x++) wall[y * W + x] = 1;

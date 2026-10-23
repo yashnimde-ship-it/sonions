@@ -2,6 +2,7 @@
 
 import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node server
 import type { AbilityId } from '../data/characters.ts';
+import type { MapId } from '../data/maps.ts';
 import type { Phase } from '../data/round.ts';
 import type { PlacedTrap, TrapKindId } from '../data/trapKinds.ts';
 
@@ -36,6 +37,8 @@ export interface PortalState {
   count: number;
   /** Seconds until the heist starts, or null while not enough players are in. */
   countdown: number | null;
+  /** The map this crew would play (their majority pick), or null while the portal is empty. */
+  map: MapId | null;
 }
 
 /** Game -> server */
@@ -50,6 +53,8 @@ export type ClientMsg =
   /** Saboteur relocates a diamond during setup, in art pixels. */
   | { t: 'diamond'; id: string; x: number; y: number }
   | { t: 'character'; character: CharacterId }
+  /** The map this player wants to play next (the crew's majority decides). */
+  | { t: 'map'; map: MapId }
   // In a match: shared world changes, relayed to everyone in it.
   | { t: 'door'; id: string; open: boolean }
   | { t: 'loot'; id: string }
@@ -85,7 +90,7 @@ export type ServerMsg =
    * A portal filled up: you are in a new match with these players. `role` is only your own:
    * nobody is told who the Saboteur is (except the Saboteur).
    */
-  | { t: 'match'; matchId: string; size: number; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; diamonds?: { id: string; x: number; y: number }[] }
+  | { t: 'match'; matchId: string; size: number; map: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; diamonds?: { id: string; x: number; y: number }[] }
   /** The server rejected an optimistic trap placement. */
   | { t: 'placementRejected'; id: string; reason: string }
   /** Current Saboteur trap energy after a placement or pickup. */

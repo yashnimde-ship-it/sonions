@@ -13,7 +13,8 @@ import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
 import { LIVE_MS, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
-import { JAM_MS, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRAPS, TRIPWIRE_COOLDOWN_MS, trapIsReady } from '../src/data/traps.ts';
+import { isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
+import { JAM_MS, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
 import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Taken } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -22,10 +23,10 @@ const TILE = 16;
 
 const readJson = (rel: string) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
 const lobbyMap = readJson('public/assets/lobby/lobby.json');
-const estate = readJson('public/assets/map/estate.json');
+// Every heist map's data: its spawn point and door ids are all the server needs.
+const mapData = Object.fromEntries(MAP_IDS.map((id) => [id, readJson(`public${MAPS[id].json}`)])) as Record<MapId, { width: number; height: number; spawn: { x: number; y: number }; doors: { id: string }[]; interactables: { id: string; rect: number[]; loot?: number }[] }>;
 const PORTALS: { size: number; x: number; y: number; w: number; h: number }[] = lobbyMap.portals;
 const LOBBY_SPAWN = { x: lobbyMap.spawn.x * TILE, y: lobbyMap.spawn.y * TILE };
-const MATCH_SPAWN = { x: estate.spawn.x * TILE, y: estate.spawn.y * TILE };
 
 interface Client {
   ws: WebSocket;
@@ -36,10 +37,25 @@ interface Client {
   portalSince: Map<number, number>;
   /** Portal chosen from the lobby UI; positional walk-in detection remains supported. */
   portalChoice: number | null;
+  /** The map they picked in the lobby. */
+  mapPref: MapId;
 }
 
 const clients = new Map<string, Client>();
 const matches = new Map<string, Set<string>>();
+/** Which map each heist is on. */
+const matchMaps = new Map<string, MapId>();
+const trapsOf = (matchId: string): TrapSpot[] => MAPS[matchMaps.get(matchId) ?? 'estate'].traps;
+const spotOf = (matchId: string, id: string) => trapsOf(matchId).find((t) => t.id === id);
+const doorsOf = (matchId: string) => mapData[matchMaps.get(matchId) ?? 'estate'].doors;
+/** The crew's map: the most-picked one; a tie goes to whoever got there first (crew is in arrival order). */
+function crewMap(crew: Client[]): MapId {
+  const votes = new Map<MapId, number>();
+  for (const c of crew) votes.set(c.mapPref, (votes.get(c.mapPref) ?? 0) + 1);
+  let best = crew[0]?.mapPref ?? 'estate';
+  for (const c of crew) if ((votes.get(c.mapPref) ?? 0) > (votes.get(best) ?? 0)) best = c.mapPref;
+  return best;
+}
 /** Per match: who the Saboteur is, and each trap plate's state (ms timestamps). */
 const saboteurs = new Map<string, string>();
 const trapState = new Map<string, Map<string, { firedAt: number | null; jammedUntil: number; tripwired: boolean }>>();
@@ -125,6 +141,7 @@ function leaveMatch(c: Client) {
 
 function endMatch(matchId: string) {
   matches.delete(matchId);
+  matchMaps.delete(matchId);
   saboteurs.delete(matchId);
   trapState.delete(matchId);
   overclockWindows.delete(matchId);
@@ -141,13 +158,16 @@ function endMatch(matchId: string) {
 
 function startMatch(size: number, crew: Client[]) {
   const matchId = `heist-${nextMatch++}`;
+  const map = crewMap(crew);
+  const spawn = mapData[map].spawn;
   matches.set(matchId, new Set(crew.map((c) => c.state.id)));
+  matchMaps.set(matchId, map);
   crew.forEach((c, i) => {
     c.room = matchId;
     c.portalSince.clear();
     c.portalChoice = null;
-    c.state.x = MATCH_SPAWN.x + (i - (crew.length - 1) / 2) * 36;
-    c.state.y = MATCH_SPAWN.y;
+    c.state.x = spawn.x * TILE + (i - (crew.length - 1) / 2) * 36;
+    c.state.y = spawn.y * TILE;
     c.state.facing = 'up';
     c.state.moving = false;
     c.state.carrying = false;
@@ -161,9 +181,9 @@ function startMatch(size: number, crew: Client[]) {
   const maxEnergy = saboteurMaxEnergy(sabCharacter);
   saboteurEnergy.set(matchId, { current: maxEnergy, max: maxEnergy });
   placedTraps.set(matchId, new Map());
-  diamondPositions.set(matchId, new Map(estate.interactables.filter((i: { loot?: number }) => i.loot).map((i: { id: string; rect: number[] }) => [i.id, { x: ((i.rect[0] + i.rect[2] + 1) / 2) * TILE, y: ((i.rect[1] + i.rect[3] + 1) / 2) * TILE }])));
+  diamondPositions.set(matchId, new Map(mapData[map].interactables.filter((i: { loot?: number }) => i.loot).map((i: { id: string; rect: number[] }) => [i.id, { x: ((i.rect[0] + i.rect[2] + 1) / 2) * TILE, y: ((i.rect[1] + i.rect[3] + 1) / 2) * TILE }])));
   phases.set(matchId, { phase: 'setup', endsAt: Date.now() + SETUP_MS });
-  trapState.set(matchId, new Map(TRAPS.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
+  trapState.set(matchId, new Map(MAPS[map].traps.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
   overclockReadyAt.set(matchId, 0);
   tripwireReadyAt.set(matchId, 0);
@@ -175,10 +195,12 @@ function startMatch(size: number, crew: Client[]) {
   for (const c of crew) {
     const visiblePlayers = players.filter((p) => p.id !== saboteur || c.state.id === saboteur);
     const isSaboteur = c.state.id === saboteur;
-    send(c, { t: 'match', matchId, size, players: visiblePlayers, role: isSaboteur ? 'saboteur' : 'runner', phase: 'setup', ms: SETUP_MS, ...(isSaboteur ? { energy: maxEnergy, maxEnergy, diamonds: [...(diamondPositions.get(matchId) ?? [])].map(([id, pos]) => ({ id, ...pos })) } : {}) });
+    send(c, { t: 'match', matchId, size, map, players: visiblePlayers, role: isSaboteur ? 'saboteur' : 'runner', phase: 'setup', ms: SETUP_MS, ...(isSaboteur ? { energy: maxEnergy, maxEnergy, diamonds: [...(diamondPositions.get(matchId) ?? [])].map(([id, pos]) => ({ id, ...pos })) } : {}) });
   }
-  console.log(`${matchId}: ${size}-player heist with ${players.map((p) => p.name).join(', ')}`);
+  console.log(`${matchId}: ${size}-player heist on ${MAPS[map].name} with ${players.map((p) => p.name).join(', ')}`);
 }
+
+const sortByArrival = (inside: Client[], size: number) => [...inside].sort((a, b) => a.portalSince.get(size)! - b.portalSince.get(size)!);
 
 /** Who is in which portal, and starts a heist once a portal has been full for a few seconds. */
 function updatePortals(now: number): PortalState[] {
@@ -193,7 +215,7 @@ function updatePortals(now: number): PortalState[] {
     }
     if (inside.length < portal.size) {
       portalEnds.delete(portal.size);
-      return { size: portal.size, count: inside.length, countdown: null };
+      return { size: portal.size, count: inside.length, countdown: null, map: inside.length ? crewMap(sortByArrival(inside, portal.size)) : null };
     }
     if (!portalEnds.has(portal.size)) portalEnds.set(portal.size, now + PORTAL_COUNTDOWN * 1000);
     const left = (portalEnds.get(portal.size)! - now) / 1000;
@@ -202,9 +224,9 @@ function updatePortals(now: number): PortalState[] {
       inside.sort((a, b) => a.portalSince.get(portal.size)! - b.portalSince.get(portal.size)!);
       startMatch(portal.size, inside.slice(0, portal.size));
       portalEnds.delete(portal.size);
-      return { size: portal.size, count: 0, countdown: null };
+      return { size: portal.size, count: 0, countdown: null, map: null };
     }
-    return { size: portal.size, count: inside.length, countdown: Math.ceil(left) };
+    return { size: portal.size, count: inside.length, countdown: Math.ceil(left), map: crewMap(sortByArrival(inside, portal.size).slice(0, portal.size)) };
   });
 }
 
@@ -279,9 +301,10 @@ function handle(c: Client, msg: ClientMsg) {
         const now = Date.now();
         const saboteurId = saboteurs.get(c.room);
         if (saboteurId !== s.id && phases.get(c.room)?.phase === 'live') {
-          for (const plate of TRAPS) {
+          for (const plate of trapsOf(c.room)) {
+            if (plate.kind && plate.kind !== 'plate') continue;
             const state = trapState.get(c.room)?.get(plate.id);
-            if (!state || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null)) continue;
+            if (!state || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(plate))) continue;
             if (Math.hypot(fromX - plate.x, fromY - plate.y) <= TRAP_RADIUS || distanceToSegment(plate.x, plate.y, fromX, fromY, s.x, s.y) > TRAP_RADIUS) continue;
             state.tripwired = false;
             state.firedAt = now;
@@ -306,9 +329,10 @@ function handle(c: Client, msg: ClientMsg) {
             send(c, { t: 'placedTrapHit', kind: trap.kind, ...effect, ...(knockback ? { knockback } : {}) });
           }
         }
-        for (const plate of TRAPS) {
+        for (const plate of trapsOf(c.room)) {
+          if (plate.kind && plate.kind !== 'plate') continue;
           const state = trapState.get(c.room)?.get(plate.id);
-          if (!state?.tripwired || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null)) continue;
+          if (!state?.tripwired || now < state.jammedUntil || !trapIsReady(state.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(plate))) continue;
           if (Math.hypot(fromX - plate.x, fromY - plate.y) <= TRAP_RADIUS) continue;
           if (distanceToSegment(plate.x, plate.y, fromX, fromY, s.x, s.y) > TRAP_RADIUS) continue;
           state.tripwired = false;
@@ -338,7 +362,8 @@ function handle(c: Client, msg: ClientMsg) {
       const positions = diamondPositions.get(matchId);
       const round = phases.get(matchId);
       if (saboteurs.get(matchId) !== s.id || round?.phase !== 'setup' || !positions?.has(msg.id) || !Number.isFinite(msg.x) || !Number.isFinite(msg.y)) break;
-      if (msg.x < 0 || msg.y < 0 || msg.x > estate.width * TILE || msg.y > estate.height * TILE) break;
+      const bounds = mapData[matchMaps.get(matchId) ?? 'estate'];
+      if (msg.x < 0 || msg.y < 0 || msg.x > bounds.width * TILE || msg.y > bounds.height * TILE) break;
       positions.set(msg.id, { x: msg.x, y: msg.y });
       send(c, msg);
       break;
@@ -353,8 +378,9 @@ function handle(c: Client, msg: ClientMsg) {
       // Only this heist's Saboteur fires traps, and only plates that are ready and not jammed.
       if (saboteurs.get(c.room) !== s.id || phases.get(c.room)?.phase !== 'live') break;
       const trap = trapState.get(c.room)?.get(msg.id);
+      const spot = spotOf(c.room, msg.id);
       const now = Date.now();
-      if (!trap || !trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null) || now < trap.jammedUntil) break;
+      if (!trap || !spot || !trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(spot)) || now < trap.jammedUntil) break;
       trap.tripwired = false;
       trap.firedAt = now;
       for (const id of matches.get(c.room) ?? []) {
@@ -368,7 +394,8 @@ function handle(c: Client, msg: ClientMsg) {
       const now = Date.now();
       if (now < (tripwireReadyAt.get(c.room) ?? 0)) break;
       const trap = trapState.get(c.room)?.get(msg.id);
-      if (!trap || trap.tripwired || trap.jammedUntil > now || !trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null)) break;
+      const spot = spotOf(c.room, msg.id);
+      if (!trap || !spot || (spot.kind && spot.kind !== 'plate') || trap.tripwired || trap.jammedUntil > now || !trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(spot))) break;
       trap.tripwired = true;
       tripwireReadyAt.set(c.room, now + TRIPWIRE_COOLDOWN_MS);
       send(c, { t: 'tripwireArmed', id: msg.id });
@@ -378,7 +405,8 @@ function handle(c: Client, msg: ClientMsg) {
       if (saboteurs.get(c.room) !== s.id || CHARACTER_INFO[s.character].saboteur !== 'trapRefresh' || phases.get(c.room)?.phase !== 'live' || trapRefreshUsed.get(c.room)) break;
       const now = Date.now();
       const trap = trapState.get(c.room)?.get(msg.id);
-      if (!trap || trap.jammedUntil > now || trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null)) break;
+      const spot = spotOf(c.room, msg.id);
+      if (!trap || !spot || trap.jammedUntil > now || trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(spot))) break;
       trap.firedAt = null;
       trap.tripwired = false;
       trapRefreshUsed.set(c.room, true);
@@ -389,7 +417,7 @@ function handle(c: Client, msg: ClientMsg) {
       if (saboteurs.get(c.room) !== s.id || CHARACTER_INFO[s.character].saboteur !== 'doorJam' || phases.get(c.room)?.phase !== 'live') break;
       const now = Date.now();
       if (now < (doorJamReadyAt.get(c.room) ?? 0)) break;
-      if (!estate.doors.some((door: { id: string }) => door.id === msg.id)) break;
+      if (!doorsOf(c.room).some((door) => door.id === msg.id)) break;
       const locks = doorLocks.get(c.room);
       if (!locks) break;
       locks.set(msg.id, now + DOOR_JAM_DURATION_MS);
@@ -456,6 +484,9 @@ function handle(c: Client, msg: ClientMsg) {
       }
       break;
     }
+    case 'map':
+      if (isMapId(msg.map)) c.mapPref = msg.map;
+      break;
     case 'character':
       // Refused if someone else has it; either way the player hears what they ended up with.
       if (CHARACTERS.includes(msg.character) && !takenBy(msg.character, c)) s.character = msg.character;
@@ -483,7 +514,7 @@ function handle(c: Client, msg: ClientMsg) {
     }
     case 'door': {
       const match = matches.get(c.room);
-      if (!match || !estate.doors.some((door: { id: string }) => door.id === msg.id)) break;
+      if (!match || !doorsOf(c.room).some((door) => door.id === msg.id)) break;
       const lockUntil = doorLocks.get(c.room)?.get(msg.id) ?? 0;
       if (msg.open && lockUntil > Date.now()) {
         send(c, { t: 'door', id: msg.id, open: false });
@@ -541,6 +572,7 @@ wss.on('connection', (ws) => {
     room: 'lobby',
     portalSince: new Map(),
     portalChoice: null,
+    mapPref: 'estate',
     state: { id, name: '', character: 'maya', x: LOBBY_SPAWN.x, y: LOBBY_SPAWN.y, facing: 'down', moving: false, sprint: false, carrying: false, hp: MAX_HP, stunned: false },
   };
   clients.set(id, c);

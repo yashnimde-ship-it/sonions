@@ -3,14 +3,14 @@
 // Runs with every door open (everything must be reachable, including each door from
 // at least one side), then with every door closed (to show what the doors guard).
 //
-// Usage: node scripts/check-reachability.mjs
+// Usage: node scripts/check-reachability.mjs [map.json]   (default: the estate)
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const map = JSON.parse(fs.readFileSync(path.join(ROOT, 'public/assets/map/estate.json'), 'utf8'));
+const map = JSON.parse(fs.readFileSync(path.resolve(ROOT, process.argv[2] ?? 'public/assets/map/estate.json'), 'utf8'));
 const grid = Buffer.from(map.collision.data, 'base64');
 const { cell, width: CW, height: CH } = map.collision;
 const T = map.tileSize;

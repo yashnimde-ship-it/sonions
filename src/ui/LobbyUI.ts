@@ -1,15 +1,20 @@
 import { CHARACTERS, type CharacterId } from '../config';
 import { abilityFor, CHARACTER_INFO } from '../data/characters';
 import type { Profile } from '../data/profile';
+import type { MapId } from '../data/maps';
 import type { PortalState, Taken } from '../net/protocol';
 import { iconHtml, type IconName } from './pixelIcons';
 import { SETTING_LABELS, type Settings, type SettingsValues } from './Settings';
 
 export type NavId = 'lobby' | 'loadout' | 'map' | 'settings' | 'exit';
 
-/** What the Map Info panel shows about the heist's map (from the estate's data). */
+/** What the map picker shows about a heist map (from its map data). */
 export interface MapInfo {
+  id: MapId;
   name: string;
+  description: string;
+  /** 1 to 3 stars. */
+  difficulty: number;
   width: number;
   height: number;
   rooms: string[];
@@ -78,12 +83,19 @@ export class LobbyUI {
   onStart: () => void = () => {};
   /** Exit was confirmed. */
   onExit: () => void = () => {};
+  /** A map was picked in the map picker. */
+  onMap: (id: MapId) => void = () => {};
   /** Loadout was opened from the menu: the picker needs the current character. */
   onLoadout: () => void = () => {};
 
   private settings: Settings;
 
-  constructor(mapInfo: MapInfo, settings: Settings) {
+  private maps: MapInfo[];
+  private selectedMap: MapId;
+
+  constructor(maps: MapInfo[], settings: Settings) {
+    this.maps = maps;
+    this.selectedMap = maps[0].id;
     this.settings = settings;
     const opts = { signal: this.abort.signal };
     this.nav.innerHTML = NAV.map(
@@ -129,7 +141,17 @@ export class LobbyUI {
       this.pickerCards.append(el);
     });
 
-    this.renderMapInfo(mapInfo);
+    this.renderMaps();
+    $('map-panel-body').addEventListener('click', (e) => {
+      const el = e.target as HTMLElement;
+      const pick = el.closest<HTMLElement>('[data-map]');
+      if (!pick) return;
+      this.setMap(pick.dataset.map as MapId);
+      if (el.closest('[data-play]')) {
+        this.onMap(this.selectedMap);
+        this.navigate('lobby');
+      }
+    }, opts);
     this.renderSettings();
     this.selectNav('lobby');
   }
@@ -181,6 +203,15 @@ export class LobbyUI {
   // ---------- Heist Lobby panel ----------
 
   /** Live portal counts from the server; `mine` is the party size you're standing in. */
+  /** The map I'll vote for; the panel and the Heist Lobby show it. */
+  setMap(id: MapId) {
+    this.selectedMap = id;
+    this.renderMaps();
+    this.lastPortals = '';
+  }
+
+  private mapName = (id: MapId | null) => this.maps.find((m) => m.id === id)?.name ?? '';
+
   setPortals(portals: PortalState[], online: number, mine: number | null) {
     this.online.textContent = String(online);
     const key = JSON.stringify([portals, mine]);
@@ -206,9 +237,10 @@ export class LobbyUI {
     });
     while (this.portalList.children.length > portals.length) this.portalList.lastElementChild!.remove();
     const mineState = portals.find((p) => p.size === mine);
+    const pick = `Your map: <b class="map-pick">${esc(this.mapName(this.selectedMap))}</b>`;
     this.partyStatus.innerHTML = mineState
-      ? `Your party: <b class="c${mineState.size}">${mineState.size} players</b> · ${mineState.count}/${mineState.size} ready`
-      : 'No party yet · pick a portal';
+      ? `Party: <b class="c${mineState.size}">${mineState.size}P</b> · ${mineState.count}/${mineState.size} ready · map <b class="map-pick">${esc(this.mapName(mineState.map))}</b>`
+      : `No party yet · ${pick}`;
   }
 
   /** Who has which character (from the server); `mine` is never shown as taken. */
@@ -284,9 +316,23 @@ export class LobbyUI {
 
   // ---------- Map Info ----------
 
-  private renderMapInfo(m: MapInfo) {
+  /** Map cards to pick from, then the selected map's details. */
+  private renderMaps() {
+    const m = this.maps.find((x) => x.id === this.selectedMap) ?? this.maps[0];
     const total = m.loot.reduce((s, l) => s + l.value, 0);
+    const stars = (n: number) => '\u2605'.repeat(n) + '\u2606'.repeat(3 - n);
+    const cards = this.maps
+      .map(
+        (x) => `<button type="button" class="map-card${x.id === m.id ? ' selected' : ''}" data-map="${x.id}">
+          <img src="${x.preview}" alt="">
+          <span class="map-card-name">${esc(x.name)}</span>
+          <span class="map-card-stars" title="Difficulty">${stars(x.difficulty)}</span>
+        </button>`,
+      )
+      .join('');
     $('map-panel-body').innerHTML = `
+      <div class="map-cards">${cards}</div>
+      <p class="map-desc">${esc(m.description)}</p>
       <div class="map-info">
         <img class="map-preview" src="${m.preview}" alt="Map of ${esc(m.name)}">
         <div class="map-facts">
@@ -296,13 +342,15 @@ export class LobbyUI {
             <dt>Rooms</dt><dd>${m.rooms.length}</dd>
             <dt>Doors</dt><dd>${m.doors}</dd>
             <dt>Loot</dt><dd>${m.loot.length} items · $${total.toLocaleString('en-US')}</dd>
+            <dt>Difficulty</dt><dd>${stars(m.difficulty)}</dd>
             <dt>Crew</dt><dd>2 to 4 players</dd>
           </dl>
         </div>
       </div>
       <p class="map-list"><b>Inside:</b> ${m.rooms.map(esc).join(', ')}</p>
       <p class="map-list"><b>Grounds:</b> ${m.outdoor.map(esc).join(', ')}</p>
-      <p class="map-list"><b>Worth stealing:</b> ${m.loot.map((l) => `${esc(l.name)} ($${l.value})`).join(', ')}</p>`;
+      <p class="map-list"><b>Worth stealing:</b> ${m.loot.map((l) => `${esc(l.name)} ($${l.value})`).join(', ')}</p>
+      <div class="modal-actions"><button type="button" class="btn small primary-play" data-map="${m.id}" data-play>PLAY ${esc(m.name)}</button></div>`;
   }
 
   // ---------- Settings ----------

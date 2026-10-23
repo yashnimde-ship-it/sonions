@@ -161,10 +161,10 @@ export function objectSprites(layers, plan) {
  * beyond (the floor just past the wall, shaded darker toward the top), with the
  * leaves swung back against the posts.
  */
-export function doorSprites(ref, floorLayer) {
+export function doorSprites(ref, floorLayer, slabs = M.DOOR_SLABS) {
   const W = ref.w;
   const LEAF = 4;
-  return M.DOOR_SLABS.map((d) => {
+  return slabs.map((d) => {
     // A roll-up garage door has no frame to speak of and no leaves.
     const POST = d.rolling ? 0 : 3;
     const LINTEL = d.rolling ? 2 : 5;

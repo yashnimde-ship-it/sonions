@@ -829,6 +829,68 @@ kbd {
   color: #6a5f80;
 }
 
+/* Map picker */
+.map-cards {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.map-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--ink);
+  background: #efe4d0;
+  border: 3px solid #b9ab92;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.map-card img {
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  image-rendering: pixelated;
+  border: 2px solid var(--ink);
+}
+
+.map-card:hover,
+.map-card:focus-visible {
+  border-color: var(--purple);
+  outline: none;
+}
+
+.map-card.selected {
+  border-color: var(--magenta);
+  background: var(--paper);
+  box-shadow: 0 4px 0 var(--magenta);
+}
+
+.map-card-stars {
+  color: #c88a1a;
+  letter-spacing: 2px;
+}
+
+.map-desc {
+  margin: 0 0 10px;
+  font-size: 10px;
+  font-style: italic;
+}
+
+.btn.primary-play {
+  background: linear-gradient(180deg, #37d07a, #1c9a52);
+}
+
+.party-status .map-pick {
+  color: #ffc94a;
+}
+
 .map-facts dd {
   margin: 0;
 }

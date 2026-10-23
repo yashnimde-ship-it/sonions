@@ -20,6 +20,8 @@ export interface Door {
   h: number;
   atlas: [number, number]; // closed sprite here; the open one sits right of it
   cells: number[];
+  /** A keypad door (the museum's vault): walking into it won't push it open; E cracks it. */
+  keypad?: boolean;
 }
 
 export interface Light {

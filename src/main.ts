@@ -1,7 +1,9 @@
 import '@fontsource/press-start-2p';
 import { ART_TILE, CHAR_GLOW, CHARACTERS, type CharacterId, characterSheet, HITBOX, ZOOM } from './config';
 import { CHARACTER_INFO } from './data/characters';
-import { JAM_REACH, MAX_HP, TRAP_ACTIVE_MS, TRAP_ARM_MS, TRAP_DAMAGE, TRAP_RADIUS, TRAP_STUN_MS, TRAPS, trapIsReady } from './data/traps';
+import { MAP_IDS, type MapId, MAPS } from './data/maps';
+import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
+import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
 import { type Phase, placementRefusal, SABOTEUR_BASE_ENERGY } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
@@ -40,8 +42,9 @@ const fetchJson = <T,>(src: string) =>
 
 type Scene = 'title' | 'lobby' | 'match';
 
-/** What the Map Info panel says about the estate, straight from its map data. */
-function mapInfo(data: EstateJson): MapInfo {
+/** What the map picker says about a map, straight from its map data. */
+function mapInfo(id: MapId, data: EstateJson): MapInfo {
+  const def = MAPS[id];
   const names = data.areas.names;
   const indoor = new Set<string>();
   // Area 0 is the default (walls and lawn), so it never counts as a room.
@@ -49,14 +52,17 @@ function mapInfo(data: EstateJson): MapInfo {
     if (data.indoor[i] && a !== 0) indoor.add(names[a]);
   });
   return {
-    name: data.name,
+    id,
+    name: def.name,
+    description: def.description,
+    difficulty: def.difficulty,
     width: data.width,
     height: data.height,
     rooms: names.filter((n) => indoor.has(n)),
     outdoor: names.filter((n) => !indoor.has(n)),
     doors: data.doors.length,
     loot: data.interactables.filter((i) => i.loot).map((i) => ({ name: i.name, value: i.loot! })),
-    preview: '/assets/map/preview.png',
+    preview: def.preview,
   };
 }
 
@@ -71,15 +77,17 @@ const CARRY_SLOW = 0.35;
 // Knocked out at 0 HP: down for 4 s, then back up with half health.
 const KO_FRAMES = 240;
 const KO_HP = 50;
-const GETAWAY = { x: 39.5, y: 55.6, w: 12, h: 3.8 };
 const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#ff4fb0' };
 const BANNER_MS = 4000;
 
 async function boot() {
-  const [estateData, tileset, doorAtlas, lobbyData, lobbyImage, ...sheetList] = await Promise.all([
-    fetchJson<EstateJson>('/assets/map/estate.json'),
-    loadImage('/assets/tiles/tileset.png'),
-    loadImage('/assets/map/doors.png'),
+  const loadWorld = async (id: MapId) => {
+    const d = MAPS[id];
+    const [data, tiles, doors] = await Promise.all([fetchJson<EstateJson>(d.json), loadImage(d.tileset), loadImage(d.doors)]);
+    return { data, tiles, doors };
+  };
+  const [worldList, lobbyData, lobbyImage, ...sheetList] = await Promise.all([
+    Promise.all(MAP_IDS.map(loadWorld)),
     fetchJson<LobbyJson>('/assets/lobby/lobby.json'),
     loadImage('/assets/lobby/lobby.png'),
     ...CHARACTERS.map((id) => loadImage(characterSheet(id))),
@@ -87,13 +95,27 @@ async function boot() {
   const sheets = Object.fromEntries(CHARACTERS.map((id, i) => [id, sheetList[i]])) as Record<CharacterId, HTMLImageElement>;
 
   const lobbyMap = new LobbyMap(lobbyData, lobbyImage);
+  const worlds = Object.fromEntries(MAP_IDS.map((id, i) => [id, worldList[i]])) as Record<MapId, (typeof worldList)[number]>;
+  // The heist's map (`estate` is whichever map the crew is playing, the mansion or the
+  // museum). It's rebuilt for every heist, so doors and loot start fresh.
+  let mapId: MapId = 'estate';
+  let estateData = worlds.estate.data;
+  let traps: TrapSpot[] = MAPS.estate.traps;
+  let getaway = MAPS.estate.getaway;
+  /** The map I'd like to play next (the crew's majority decides). */
+  let myMap: MapId = 'estate';
+  try {
+    const saved = localStorage.getItem('bandit-map');
+    if (saved === 'estate' || saved === 'museum') myMap = saved;
+  } catch {
+    // Storage blocked: the estate.
+  }
   const createInteractables = () => estateData.interactables.map((item) => {
     const rect = [...item.rect] as [number, number, number, number];
     const lootPos = item.loot ? { x: ((rect[0] + rect[2] + 1) / 2) * ART_TILE, y: ((rect[1] + rect[3] + 1) / 2) * ART_TILE } : undefined;
     return { ...item, name: item.loot ? 'Diamond' : item.name, text: item.loot ? 'You pocket the hidden diamond.' : item.text, rect, lootPos };
   });
-  // The estate is rebuilt for every heist, so doors and loot start fresh.
-  let estate = new TileMap(estateData, tileset, doorAtlas);
+  let estate = new TileMap(estateData, worlds.estate.tiles, worlds.estate.doors);
   let interactions = new InteractionSystem(createInteractables(), estateData.doors);
   let lighting = new LightingSystem(estate);
 
@@ -102,7 +124,7 @@ async function boot() {
   const title = new TitleUI();
   const settings = new Settings();
   const profile = new Profile();
-  const lobby = new LobbyUI(mapInfo(estateData), settings);
+  const lobby = new LobbyUI(MAP_IDS.map((id) => mapInfo(id, worlds[id].data)), settings);
   const net = new NetClient();
   const abilities = new AbilitySystem();
   let selectedDiamondId: string | null = null;
@@ -287,8 +309,16 @@ async function boot() {
   }
 
   function startMatch(msg: Extract<ServerMsg, { t: 'match' }>) {
-    estate = new TileMap(estateData, tileset, doorAtlas);
+    mapId = msg.map ?? 'estate';
+    const world = worlds[mapId];
+    estateData = world.data;
+    traps = MAPS[mapId].traps;
+    getaway = MAPS[mapId].getaway;
+    abilities.traps = traps;
+    estate = new TileMap(estateData, world.tiles, world.doors);
     interactions = new InteractionSystem(createInteractables(), estateData.doors);
+    spottedUntil.clear();
+    dazzledUntil = 0;
     lighting = new LightingSystem(estate);
     carrying = null;
     banked = 0;
@@ -360,6 +390,9 @@ async function boot() {
         me.facing = 'down';
         title.setBusy(false);
         setScene('lobby');
+        // The server forgets nothing between heists, but tell it again after (re)joining.
+        lobby.setMap(myMap);
+        net.send({ t: 'map', map: myMap });
         break;
       case 'match':
         startMatch(msg);
@@ -467,7 +500,8 @@ async function boot() {
         trapJammedUntil.set(msg.id, now + msg.ms);
         // A plate that was still flashing or live is defused: its shock never lands.
         const firedAt = trapFiredAt.get(msg.id);
-        if (firedAt !== undefined && now < firedAt + TRAP_ARM_MS + TRAP_ACTIVE_MS) trapHits.add(`${msg.id}@${firedAt}`);
+        const spot = spotById(msg.id);
+        if (firedAt !== undefined && spot && now < firedAt + trapRules(spot).armMs + trapRules(spot).activeMs) trapHits.add(`${msg.id}@${firedAt}`);
         tripwireArmed.delete(msg.id);
         break;
       }
@@ -485,6 +519,16 @@ async function boot() {
   lobby.onPick = (id) => net.send({ t: 'character', character: id });
   lobby.onLoadout = () => lobby.openPicker(myCharacter);
   lobby.onPortal = (size) => joinPortal(size);
+  // The map picker: tell the server (it goes with the crew's majority when a portal fills).
+  lobby.onMap = (id) => {
+    myMap = id;
+    try {
+      localStorage.setItem('bandit-map', id);
+    } catch {
+      // Not remembered; still applies now.
+    }
+    net.send({ t: 'map', map: id });
+  };
   lobby.onStart = () => {
     const s = startState();
     if (s.kind === 'none') {
@@ -572,7 +616,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get carrying() { return carrying; }, get banked() { return banked; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions } }); // for playtests
 
   // ---------- Update ----------
 
@@ -592,7 +636,7 @@ async function boot() {
       .map(([id, r]) => ({ id, x: r.bandit.x, y: r.bandit.y, hp: r.state.hp }));
     const targetTrap = trapUnder(mouseX, mouseY);
     const targetDoor = estateData.doors.find((door) => mouseX >= door.x && mouseX <= door.x + door.w && mouseY >= door.y && mouseY <= door.y + door.h);
-    return { me, send: (m: ClientMsg) => net.send(m), hp, setHp: healMe, crew, targetTrapId: targetTrap?.id, targetTrapReady: targetTrap ? trapIsReady(trapFiredAt.get(targetTrap.id), performance.now(), abilities.overclockWindow) : undefined, targetTrapJammed: targetTrap ? trapJammed(targetTrap.id) : undefined, targetDoorId: targetDoor?.id };
+    return { me, send: (m: ClientMsg) => net.send(m), hp, setHp: healMe, crew, targetTrapId: targetTrap?.id, targetTrapReady: targetTrap ? trapIsReady(trapFiredAt.get(targetTrap.id), performance.now(), abilities.overclockWindow, trapRules(targetTrap)) : undefined, targetTrapJammed: targetTrap ? trapJammed(targetTrap.id) : undefined, targetDoorId: targetDoor?.id };
   }
 
   /** Back to full health (First Aid); also gets a knocked-out Runner straight back up. */
@@ -709,9 +753,35 @@ async function boot() {
       });
   }
 
-  const trapUnder = (x: number, y: number) => TRAPS.find((t) => Math.hypot(t.x - x, t.y - y) <= TRAP_RADIUS + 4);
+  const spotById = (id: string) => traps.find((t) => t.id === id);
+  const trapUnder = (x: number, y: number) => traps.find((t) => inTrapArea(t, x, y) || Math.hypot(t.x - x, t.y - y) <= TRAP_RADIUS + 4);
   const trapJammed = (id: string) => performance.now() < (trapJammedUntil.get(id) ?? 0);
-  const trapReady = (id: string) => !trapJammed(id) && trapIsReady(trapFiredAt.get(id), performance.now(), abilities.overclockWindow);
+  const trapReady = (id: string) => {
+    const spot = spotById(id);
+    return !!spot && !trapJammed(id) && trapIsReady(trapFiredAt.get(id), performance.now(), abilities.overclockWindow, trapRules(spot));
+  };
+  const isPlate = (t: TrapSpot) => !t.kind || t.kind === 'plate';
+  /** Spotlight: who's been caught (marked for everyone), and until when; and my own dazzle. */
+  const spottedUntil = new Map<string, number>();
+  let dazzledUntil = 0;
+
+  /** Who a spotlight catches is worked out by every game from the shared positions. */
+  function checkSpotlights(now: number) {
+    for (const t of traps) {
+      if (t.kind !== 'spotlight') continue;
+      const firedAt = trapFiredAt.get(t.id);
+      if (firedAt === undefined || trapJammed(t.id)) continue;
+      const r = trapRules(t);
+      if (now < firedAt + r.armMs || now > firedAt + r.armMs + r.activeMs) continue;
+      for (const [id, rm] of remotes) if (inTrapArea(t, rm.bandit.x, rm.bandit.y)) catchSpotted(id, rm.state.name, now + r.revealMs);
+      if (!match?.saboteur && inTrapArea(t, me.x, me.y)) catchSpotted(myId, myName, now + r.revealMs);
+    }
+  }
+  function catchSpotted(id: string, name: string, until: number) {
+    if ((spottedUntil.get(id) ?? 0) < performance.now() && match?.saboteur) toast(`SPOTTED: ${name}`);
+    spottedUntil.set(id, until);
+    if (id === myId) dazzledUntil = Math.max(dazzledUntil, performance.now() + 2000);
+  }
 
   /** A Runner standing on a plate while it's live gets shocked: damage and a stun. */
   function checkTraps() {
@@ -724,17 +794,26 @@ async function boot() {
       hp = KO_HP;
       hud.setHealth(hp);
     }
-    for (const t of TRAPS) {
+    for (const t of traps) {
       const firedAt = trapFiredAt.get(t.id);
-      if (firedAt === undefined) continue;
+      if (firedAt === undefined || t.kind === 'spotlight') continue;
+      const r = trapRules(t);
       // Live if its window [arm end, arm end + active] overlaps the time since the last check.
-      const liveFrom = firedAt + TRAP_ARM_MS;
-      const live = liveFrom <= now && liveFrom + TRAP_ACTIVE_MS > since;
+      const liveFrom = firedAt + r.armMs;
+      const live = liveFrom <= now && liveFrom + r.activeMs > since;
       const key = `${t.id}@${firedAt}`;
-      if (!live || trapHits.has(key) || Math.hypot(me.x - t.x, me.y - t.y) > TRAP_RADIUS) continue;
+      const progress = (now - liveFrom) / r.activeMs;
+      if (!live || trapHits.has(key) || !inTrapArea(t, me.x, me.y, progress)) continue;
       trapHits.add(key);
-      hp = Math.max(0, hp - TRAP_DAMAGE);
-      me.stun(Math.round((TRAP_STUN_MS / 1000) * 60));
+      hp = Math.max(0, hp - r.damage);
+      if (r.stunMs) me.stun(Math.round((r.stunMs / 1000) * 60));
+      if (r.knock) {
+        // Away from the trap: a painting swings out from its wall; a rolling stand shoves you
+        // off its track; the sarcophagus blasts you back.
+        const [cx, cy] = trapPosition(t, progress);
+        const [dx, dy] = t.kind === 'painting' ? [0, 1] : t.kind === 'rolling' ? [0, me.y >= cy ? 1 : -1] : [me.x - cx || 0.01, me.y - cy || 1];
+        me.shove(dx, dy, r.knock, 10);
+      }
       if (hp === 0) {
         knockedOut = true;
         me.stun(KO_FRAMES);
@@ -805,10 +884,11 @@ async function boot() {
       if (input.action) hud.hideMessage();
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
-      me.carryMult = carrying ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1;
+      me.carryMult = (carrying ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (performance.now() < dazzledUntil ? 0.5 : 1);
       me.update(input, estate);
       checkTraps();
-      if (carrying && LobbyMap.inside(GETAWAY, me.x, me.y)) {
+      checkSpotlights(performance.now());
+      if (carrying && LobbyMap.inside(getaway, me.x, me.y)) {
         banked += carrying.loot ?? 0;
         bankedCount++;
         hud.showMessage(`Banked the ${carrying.name}: +$${carrying.loot}. Total $${banked.toLocaleString()}.`);
@@ -819,7 +899,7 @@ async function boot() {
       }
       const near = interactions.nearby(me);
       // Walking into a closed door pushes it open, so nobody stops dead in a doorway.
-      if (me.bumped && near?.kind === 'door' && !estate.isOpen(near.door)) {
+      if (me.bumped && near?.kind === 'door' && !estate.isOpen(near.door) && !near.door.keypad) {
         estate.setDoor(near.door, true);
         net.send({ t: 'door', id: near.door.id, open: true });
       }
@@ -830,7 +910,10 @@ async function boot() {
         if (near.kind === 'door') {
           const refused = interactions.toggleDoor(near.door, estate, me, HITBOX);
           if (refused) hud.showMessage(refused);
-          else net.send({ t: 'door', id: near.door.id, open: estate.isOpen(near.door) });
+          else {
+            net.send({ t: 'door', id: near.door.id, open: estate.isOpen(near.door) });
+            if (near.door.keypad && estate.isOpen(near.door)) toast(`Keypad cracked: the ${near.door.name} slides open`);
+          }
         } else {
           const fresh = !!near.item.loot && !interactions.looted.has(near.item.id);
           hud.showMessage(interactions.interact(near.item));
@@ -1013,7 +1096,12 @@ async function boot() {
     const sab = !!match?.saboteur;
     if (!sab) return;
     const hover = sab ? trapUnder(mouseX, mouseY) : undefined;
-    for (const t of TRAPS) {
+    const now = performance.now();
+    for (const t of traps) {
+      if (!isPlate(t)) {
+        drawExhibitIdle(ctx, t, camX, camY, { now, firedAt: trapFiredAt.get(t.id), ready: trapReady(t.id), jammed: trapJammed(t.id), saboteur: sab, hover: hover === t });
+        continue;
+      }
       const x = Math.round(t.x - TRAP_RADIUS - camX);
       const y = Math.round(t.y - TRAP_RADIUS - camY);
       const s = TRAP_RADIUS * 2;
@@ -1059,7 +1147,12 @@ async function boot() {
   /** Red warning flash while arming, then crackling sparks while live; drawn over the lighting. */
   function drawTrapEffects(camX: number, camY: number) {
     const now = performance.now();
-    for (const t of TRAPS) {
+    if (match?.saboteur === false || match?.saboteur) checkSpotlights(now); // the Saboteur has no update loop for this
+    for (const t of traps) {
+      if (!isPlate(t)) {
+        drawExhibitEffect(ctx, t, camX, camY, { now, firedAt: trapFiredAt.get(t.id), ready: trapReady(t.id), jammed: trapJammed(t.id), saboteur: !!match?.saboteur, hover: false });
+        continue;
+      }
       // Jammed: a blue lock-out with a wrench and the seconds left.
       if (trapJammed(t.id)) {
         const x = t.x - camX;
@@ -1081,10 +1174,11 @@ async function boot() {
       const x = t.x - camX;
       const y = t.y - camY;
       if (trapHits.has(`${t.id}@${firedAt}`) && trapJammed(t.id)) continue; // defused mid-flash
-      if (phase < TRAP_ARM_MS) {
+      const rules = trapRules(t);
+      if (phase < rules.armMs) {
         ctx.fillStyle = `rgba(255, 60, 60, ${Math.floor(phase / 100) % 2 ? 0.25 : 0.6})`;
         ctx.fillRect(x - TRAP_RADIUS, y - TRAP_RADIUS, TRAP_RADIUS * 2, TRAP_RADIUS * 2);
-      } else if (phase < TRAP_ARM_MS + TRAP_ACTIVE_MS) {
+      } else if (phase < rules.armMs + rules.activeMs) {
         ctx.fillStyle = 'rgba(140, 220, 255, 0.45)';
         ctx.fillRect(x - TRAP_RADIUS, y - TRAP_RADIUS, TRAP_RADIUS * 2, TRAP_RADIUS * 2);
         ctx.strokeStyle = '#e6f8ff';
@@ -1103,10 +1197,10 @@ async function boot() {
 
   /** The zone on the street where loot is banked. */
   function drawGetaway(camX: number, camY: number) {
-    const x = GETAWAY.x * ART_TILE - camX;
-    const y = GETAWAY.y * ART_TILE - camY;
-    const w = GETAWAY.w * ART_TILE;
-    const h = GETAWAY.h * ART_TILE;
+    const x = getaway.x * ART_TILE - camX;
+    const y = getaway.y * ART_TILE - camY;
+    const w = getaway.w * ART_TILE;
+    const h = getaway.h * ART_TILE;
     ctx.save();
     ctx.fillStyle = '#6fe07a';
     ctx.globalAlpha = carrying ? 0.22 + 0.15 * Math.sin(frame / 8) : 0.12;
@@ -1119,8 +1213,8 @@ async function boot() {
   }
 
   function drawGetawayLabel(camX: number, camY: number) {
-    const sx = ((GETAWAY.x + GETAWAY.w / 2) * ART_TILE - camX) * scale;
-    const sy = ((GETAWAY.y + GETAWAY.h / 2) * ART_TILE - camY) * scale;
+    const sx = ((getaway.x + getaway.w / 2) * ART_TILE - camX) * scale;
+    const sy = ((getaway.y + getaway.h / 2) * ART_TILE - camY) * scale;
     ctx.font = `${Math.round(10 * dpr)}px "Press Start 2P"`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -1362,12 +1456,14 @@ async function boot() {
 
   function drawNameTags(camX: number, camY: number) {
     const size = Math.round(8 * dpr);
+    const inMatch = scene === 'match';
     const tag = (b: Bandit, id: string, name: string, character: CharacterId, bag = false, health = MAX_HP) => {
       const color = CHARACTER_INFO[character].color;
       const sx = (b.x - camX) * scale;
       const sy = (b.y - DRAW_H - (bag ? 15 : 3) - camY) * scale;
       // No role on the tag: who the Saboteur is stays a secret (each player sees only their own role).
-      textTag(name, sx, sy, id === myId ? '#ffe39a' : color, size);
+      const spotted = inMatch && performance.now() < (spottedUntil.get(id) ?? 0);
+      textTag(spotted ? `! ${name} !` : name, sx, sy, spotted ? (frame % 20 < 10 ? '#ff4a4a' : '#fff4e6') : id === myId ? '#ffe39a' : color, size);
       // Hurt Runners show a small health bar over the name.
       if (health < MAX_HP) {
         const w = 40 * dpr;
@@ -1384,7 +1480,6 @@ async function boot() {
       ctx.lineTo(sx, sy + 4 * dpr);
       ctx.fill();
     };
-    const inMatch = scene === 'match';
     const hidden = (id: string) => inMatch && (match?.saboteur ? id === myId : false);
     for (const [id, r] of remotes) if (!hidden(id)) tag(r.bandit, id, r.state.name, r.state.character, inMatch && r.state.carrying, inMatch ? r.state.hp : MAX_HP);
     if (!hidden(myId)) tag(me, myId, myName, myCharacter, inMatch && !!carrying, inMatch ? hp : MAX_HP);

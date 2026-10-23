@@ -1,7 +1,7 @@
 import type { CharacterId } from '../config';
 import { type Ability, abilityFor, type Role } from '../data/characters.ts';
 import type { Bandit } from '../entities/Bandit';
-import { HEAL_REACH, JAM_REACH, MAX_HP, OVERCLOCK_MS, TRAPS } from '../data/traps.ts';
+import { HEAL_REACH, JAM_REACH, MAX_HP, OVERCLOCK_MS, TRAPS, type TrapSpot } from '../data/traps.ts';
 import type { ClientMsg } from '../net/protocol';
 
 // Quickstep: a dash of 64 art px (4 tiles, about 3-4 steps) in 14 frames (under a quarter second).
@@ -31,6 +31,8 @@ export interface AbilityContext {
  * ability, its cooldown and uses, and the HUD slot that shows them.
  */
 export class AbilitySystem {
+  /** The current heist map's fixed traps (Trap Jam picks the nearest). */
+  traps: TrapSpot[] = TRAPS;
   private ability: Ability | null = null;
   private readyAt = 0;
   private usesLeft = Infinity;
@@ -121,9 +123,9 @@ export class AbilitySystem {
         return null;
       case 'trapJam': {
         // The nearest plate in reach; the server jams it for everyone.
-        let best: (typeof TRAPS)[number] | null = null;
+        let best: TrapSpot | null = null;
         let bestD = JAM_REACH;
-        for (const t of TRAPS) {
+        for (const t of this.traps) {
           const d = Math.hypot(t.x - ctx.me.x, t.y - ctx.me.y);
           if (d <= bestD) [best, bestD] = [t, d];
         }
