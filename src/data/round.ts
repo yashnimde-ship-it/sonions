@@ -7,7 +7,7 @@ import type { CharacterId } from '../config.ts';
 export type Phase = 'setup' | 'live' | 'over';
 
 export const SETUP_MS = 120_000;
-export const LIVE_MS = 240_000;
+export const LIVE_MS = 180_000;
 
 /** Up to this many players in one heist (one Saboteur, the rest Runners). */
 export const MIN_CREW = 2;

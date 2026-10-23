@@ -54,6 +54,8 @@ for (let i = 0; i < count; i++) {
       const meThere = msg.players.find((p) => p.id === myId);
       if (meThere) spot = { x: meThere.x, y: meThere.y };
       console.log(`Bot ${i + 1} entered ${msg.matchId} as ${saboteur ? 'SABOTEUR' : 'runner'}`);
+      // A Saboteur bot doesn't hide anything itself: it ends setup, and the server hides the diamonds.
+      if (saboteur) setTimeout(() => send({ t: 'ready' }), 3000);
     }
     if (msg.t === 'ability') console.log(`Bot ${i + 1} saw player ${msg.by} use ${msg.ability}`);
     // When a crewmate leaves the heist, head back to the safehouse and queue again.

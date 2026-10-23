@@ -1,7 +1,9 @@
 /** The fixed on-screen HUD (DOM elements over the canvas, so it never scrolls). */
 export class HUD {
-  private lootTotal = document.getElementById('loot-total')!;
-  private lootCount = document.getElementById('loot-count')!;
+  private objTitle = document.getElementById('obj-title')!;
+  private objGems = document.getElementById('obj-gems')!;
+  private objText = document.getElementById('obj-text')!;
+  private lastObjective = '';
   private area = document.getElementById('area')!;
   private prompt = document.getElementById('prompt')!;
   private message = document.getElementById('message')!;
@@ -15,9 +17,14 @@ export class HUD {
   private lastArea = '';
   private lastTimer = '';
 
-  setLoot(total: number, taken: number, available: number) {
-    this.lootTotal.textContent = `$${total.toLocaleString()}`;
-    this.lootCount.textContent = `${taken}/${available}`;
+  /** The heist's goal, always on screen: one gem per diamond (banked, carried, dropped, hidden). */
+  setObjective(title: string, gems: ('banked' | 'carried' | 'mine' | 'floor' | 'hidden')[], text: string) {
+    const key = title + gems.join() + text;
+    if (key === this.lastObjective) return;
+    this.lastObjective = key;
+    this.objTitle.textContent = title;
+    this.objGems.innerHTML = gems.map((g) => `<i class="gem ${g}"></i>`).join('');
+    this.objText.textContent = text;
   }
 
   /** The Runner's health bar; null hides it (the Saboteur has none). */
@@ -36,9 +43,9 @@ export class HUD {
   }
 
   /** A pop-up everyone sees when someone is caught by a trap; it fades out on its own. */
-  alert(html: string) {
+  alert(html: string, kind: 'danger' | 'good' = 'danger') {
     const el = document.createElement('div');
-    el.className = 'trap-alert';
+    el.className = `trap-alert ${kind}`;
     el.innerHTML = html;
     this.alerts.prepend(el);
     while (this.alerts.children.length > 3) this.alerts.lastElementChild!.remove();
@@ -61,6 +68,11 @@ export class HUD {
     if (name === this.lastArea) return;
     this.lastArea = name;
     this.area.textContent = name || 'The Estate';
+  }
+
+  /** What the prompt box says right now. */
+  get promptText() {
+    return this.prompt.hidden ? null : this.prompt.textContent;
   }
 
   setPrompt(text: string | null) {

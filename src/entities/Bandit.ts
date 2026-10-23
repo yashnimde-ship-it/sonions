@@ -56,6 +56,13 @@ export class Bandit {
   carryMult = 1;
   /** Frames left stunned by a trap: no moving, no dashing. */
   stunFrames = 0;
+  /** Frames left caught in a snare: can't walk, but can still use abilities. */
+  rootFrames = 0;
+  /** Frames left on an oil slick: hardly any grip, so speeding up and stopping both slide. */
+  slipFrames = 0;
+  /** A spring's launch: frames of hop left, and how long the hop lasts. */
+  private hopFrames = 0;
+  private hopTotal = 1;
   private sprinting = false;
   private step = 0;
   /** Walk cycle phase, for the sprint hop. */
@@ -95,6 +102,14 @@ export class Bandit {
       this.dashFrames = 0;
       input = { dx: 0, dy: 0, sprint: false };
     }
+    if (this.rootFrames > 0) {
+      this.rootFrames--;
+      this.dashFrames = 0;
+      input = { dx: 0, dy: 0, sprint: false };
+    }
+    if (this.hopFrames > 0) this.hopFrames--;
+    const slipping = this.slipFrames > 0;
+    if (slipping) this.slipFrames--;
     const { dx, dy } = input;
     const pushing = dx !== 0 || dy !== 0;
     if (pushing) {
@@ -118,7 +133,8 @@ export class Bandit {
       }
     } else {
       const len = Math.hypot(dx, dy) || 1;
-      const k = pushing ? ACCEL : FRICTION;
+      // On oil there's almost no grip: you drift into a run and skid to a stop.
+      const k = slipping ? (pushing ? 0.035 : 0.012) : pushing ? ACCEL : FRICTION;
       this.vx += ((dx / len) * speed - this.vx) * k;
       this.vy += ((dy / len) * speed - this.vy) * k;
       if (Math.abs(this.vx) < 0.05) this.vx = 0;
@@ -162,6 +178,17 @@ export class Bandit {
     this.knockFrames = frames;
     this.knockVx = (dx / len) * (distance / frames);
     this.knockVy = (dy / len) * (distance / frames);
+  }
+
+  /** A spring: thrown `distance` art px along (dx, dy) in an arc over `frames` frames. */
+  launch(dx: number, dy: number, distance: number, frames: number) {
+    this.shove(dx, dy, distance, frames);
+    this.hopFrames = this.hopTotal = frames;
+  }
+
+  /** How high off the ground a launch has thrown him right now, art px. */
+  get hop() {
+    return this.hopFrames > 0 ? Math.sin((1 - this.hopFrames / this.hopTotal) * Math.PI) * 18 : 0;
   }
 
   /** Knocked silly for `frames` frames. */
@@ -297,7 +324,7 @@ export class Bandit {
   /** Draws in art pixels relative to the camera; the feet sit at (x, y). */
   draw(ctx: CanvasRenderingContext2D, camX: number, camY: number, shadow = true) {
     // The walk frames bob the body themselves (feet stay planted); sprinting adds a small hop.
-    const bob = this.moving && this.sprinting ? Math.abs(Math.sin(this.phase)) * 1.2 : 0;
+    const bob = (this.moving && this.sprinting ? Math.abs(Math.sin(this.phase)) * 1.2 : 0) + this.hop;
     const px = Math.round(this.x - DRAW_W / 2 - camX);
     const py = Math.round(this.y - DRAW_H + 1 - camY - bob);
     if (shadow) {
@@ -311,7 +338,7 @@ export class Bandit {
       // Soft shadow under the feet; it shrinks a touch as he hops.
       ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
       ctx.beginPath();
-      ctx.ellipse(Math.round(this.x - camX), Math.round(this.y - camY), 9 - bob, 3.5 - bob * 0.3, 0, 0, Math.PI * 2);
+      ctx.ellipse(Math.round(this.x - camX), Math.round(this.y - camY), Math.max(4, 9 - bob * 0.3), Math.max(1.5, 3.5 - bob * 0.1), 0, 0, Math.PI * 2);
       ctx.fill();
     }
     // Quickstep after-images, fading behind him.

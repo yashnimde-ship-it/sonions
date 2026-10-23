@@ -92,6 +92,7 @@
       </div>
     </div>
     <div id="match-banner" class="match-banner" hidden></div>
+    <div id="reconnecting" class="reconnecting" hidden>Connection lost: reconnecting<span class="dots">...</span></div>
     <div id="hud" hidden>
       <div id="health" class="health" hidden><span class="label">HP</span><div class="bar"><div id="health-fill"></div></div><span id="health-text">100</span></div>
       <div id="ability" class="ability-slot">
@@ -102,7 +103,7 @@
           <span id="ability-state" class="ability-state"></span>
         </div>
       </div>
-      <div class="panel loot"><span class="label">BANKED</span> <span id="loot-total">$0</span> <span id="loot-count" class="muted">0/0</span><div id="carrying" class="carrying" hidden></div></div>
+      <div class="panel loot objective"><span class="label" id="obj-title">OBJECTIVE</span><div id="obj-gems" class="obj-gems"></div><span id="obj-text" class="obj-text"></span><div id="carrying" class="carrying" hidden></div></div>
       <div class="panel area" id="area">The Estate</div>
       <div class="panel timer" id="timer" hidden></div>
       <div id="alerts" class="alerts"></div>

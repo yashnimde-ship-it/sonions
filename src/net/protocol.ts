@@ -3,6 +3,7 @@
 import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node server
 import type { AbilityId } from '../data/characters.ts';
 import type { MapId } from '../data/maps.ts';
+import type { Diamond } from '../data/diamonds.ts';
 import type { Phase } from '../data/round.ts';
 import type { PlacedTrap, TrapKindId } from '../data/trapKinds.ts';
 
@@ -23,6 +24,8 @@ export interface PlayerState {
   /** Health, and whether a trap has them stunned (Runners only). */
   hp: number;
   stunned: boolean;
+  /** Their connection dropped: the server is holding their seat while they reconnect. */
+  offline?: boolean;
 }
 
 /** A character someone online is using, and who. */
@@ -43,21 +46,27 @@ export interface PortalState {
 
 /** Game -> server */
 export type ClientMsg =
-  | { t: 'hello'; name: string; character: CharacterId }
+  /** `key` is this tab's secret player key: sending a known one resumes that player. */
+  | { t: 'hello'; name: string; character: CharacterId; key?: string }
   // `room` says where the sender was; a lobby move that arrives after a teleport is dropped.
   | { t: 'move'; room: RoomKind; x: number; y: number; facing: Facing; moving: boolean; sprint: boolean; carrying: boolean; hp: number; stunned: boolean }
   /** Explicit lobby portal selection (also used when the player clicks a portal pad). */
   | { t: 'portal'; size: number | null }
   /** Saboteur confirms setup early. */
   | { t: 'ready' }
-  /** Saboteur relocates a diamond during setup, in art pixels. */
-  | { t: 'diamond'; id: string; x: number; y: number }
+  /** Setup: the Saboteur hides a diamond in a piece of furniture (null takes it back out). */
+  | { t: 'hideDiamond'; id: string; spot: string | null }
+  /** A Runner finished searching a piece of furniture (held E). */
+  | { t: 'search'; spot: string }
+  /** A Runner picks up a dropped diamond. */
+  | { t: 'pickup'; id: string }
+  /** A Runner carrying a diamond is in the getaway. */
+  | { t: 'bank' }
   | { t: 'character'; character: CharacterId }
   /** The map this player wants to play next (the crew's majority decides). */
   | { t: 'map'; map: MapId }
   // In a match: shared world changes, relayed to everyone in it.
   | { t: 'door'; id: string; open: boolean }
-  | { t: 'loot'; id: string }
   /** The Saboteur fires a trap plate. */
   | { t: 'trap'; id: string }
   /** Dev's Tripwire: rig a Shock Plate to fire when a Runner steps on it. */
@@ -81,7 +90,12 @@ export type ClientMsg =
 
 /** Server -> game */
 export type ServerMsg =
-  | { t: 'welcome'; id: string }
+  /** Your player id. `resumed`: the server knew your key and put you back where you were. */
+  | { t: 'welcome'; id: string; resumed?: boolean }
+  /** This player key was picked up by another tab: this one is no longer playing. */
+  | { t: 'replaced' }
+  /** Catch-up after a reconnect: what changed in the heist while you were away. */
+  | { t: 'resync'; doors: { id: string; open: boolean }[]; placed: PlacedTrap[] }
   /** You are in the lobby now, standing at (x, y) in its art pixels. */
   | { t: 'lobby'; x: number; y: number; character: CharacterId }
   /** Your character, as the server decided it (picks can be refused: one of each per server). */
@@ -92,21 +106,33 @@ export type ServerMsg =
    * A portal filled up: you are in a new match with these players. `role` is only your own:
    * nobody is told who the Saboteur is (except the Saboteur).
    */
-  | { t: 'match'; matchId: string; size: number; map: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; diamonds?: { id: string; x: number; y: number }[] }
+  | { t: 'match'; matchId: string; size: number; map: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean }
   /** The server rejected an optimistic trap placement. */
   | { t: 'placementRejected'; id: string; reason: string }
   /** Current Saboteur trap energy after a placement or pickup. */
   | { t: 'energy'; current: number; max: number }
-  /** Server acknowledgement of a Saboteur's diamond move. */
-  | { t: 'diamond'; id: string; x: number; y: number }
+  /**
+   * Where the diamonds are. The Saboteur sees every hiding spot; Runners only see what's been
+   * found, dropped or banked, and which furniture has already been searched and was empty.
+   */
+  | { t: 'diamonds'; items: Diamond[]; searched: string[]; banked: number; need: number; total: number }
+  /** Hiding spots near you that hold a diamond (Runners): they glint. */
+  | { t: 'glints'; spots: string[] }
+  /** Your search finished: the diamond you found, or null if the furniture was empty. */
+  | { t: 'searchResult'; spot: string; found: string | null }
+  /** Someone found, banked or dropped a diamond: a pop-up for everyone. */
+  | { t: 'diamondEvent'; kind: 'found' | 'banked' | 'dropped'; id: string; name: string; area: string }
+  /** The heist is over: who won, and where every diamond and trap really was. */
+  | { t: 'result'; winner: 'runners' | 'saboteur'; banked: number; need: number; total: number; diamonds: Diamond[]; placed: PlacedTrap[] }
   /** The round moved on (setup -> live -> over); `ms` is how long this phase lasts. */
-  | { t: 'phase'; phase: Phase; ms: number; diamonds?: { id: string; x: number; y: number }[] }
+  | { t: 'phase'; phase: Phase; ms: number }
   | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
   | { t: 'door'; id: string; open: boolean }
-  | { t: 'loot'; id: string; by: string }
   | { t: 'ability'; ability: AbilityId; by: string }
   /** A trap plate fired just now: it arms, then shocks whoever is standing on it. */
   | { t: 'trap'; id: string }
+  /** A placed trap went off (everyone sees it): which one, where, and who set it off. */
+  | { t: 'trapFired'; id: string; kind: TrapKindId; x: number; y: number; victim: string }
   /** A hidden Saboteur trap auto-triggered on contact. */
   | { t: 'placedTrapHit'; kind: TrapKindId; damage: number; stunMs: number; knockback?: { x: number; y: number } }
   /** The Saboteur's Tripwire was accepted; private to that Saboteur. */

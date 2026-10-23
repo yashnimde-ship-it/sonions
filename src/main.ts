@@ -5,12 +5,13 @@ import { isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
 import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
+import { type Diamond, distToSpot, type HidingSpot, PICKUP_REACH, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { CUSTOM_MIN, CUSTOM_PAD, type Phase, placementRefusal, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
-import { type EstateJson, type Interactable, TileMap } from './map/TileMap';
+import { type EstateJson, TileMap } from './map/TileMap';
 import { NetClient } from './net/NetClient';
 import { type ClientMsg, NET_HZ, type PlayerState, type PortalState, type ServerMsg } from './net/protocol';
 import { CameraSystem } from './systems/CameraSystem';
@@ -18,11 +19,13 @@ import { InteractionSystem } from './systems/InteractionSystem';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { drawTrap } from './systems/TrapArt';
+import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
 import { HUD } from './ui/HUD';
 import { LobbyUI, type MapInfo, type StartState } from './ui/LobbyUI';
 import { Settings } from './ui/Settings';
 import { TrapBar } from './ui/TrapBar';
-import { DiamondBar } from './ui/DiamondBar';
+import { ResultScreen } from './ui/ResultScreen';
+import { SetupPanel } from './ui/SetupPanel';
 import { TitleUI } from './ui/TitleUI';
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -78,6 +81,38 @@ const CARRY_SLOW = 0.35;
 const KO_FRAMES = 240;
 const KO_HP = 50;
 const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#ff4fb0' };
+// ---------- This tab's player, across reloads and dropped connections ----------
+// The key is per tab (sessionStorage): it survives a reload, and two tabs on one laptop are two
+// players. Sent with hello, it lets the server give a dropped player their seat back.
+const session = {
+  get(name: string) {
+    try {
+      return sessionStorage.getItem(`bandit-${name}`);
+    } catch {
+      return null;
+    }
+  },
+  set(name: string, value: string | null) {
+    try {
+      if (value === null) sessionStorage.removeItem(`bandit-${name}`);
+      else sessionStorage.setItem(`bandit-${name}`, value);
+    } catch {
+      // Storage blocked: a reload starts fresh.
+    }
+  },
+};
+function playerKey() {
+  let key = session.get('key');
+  if (!key || !/^[\w-]{16,64}$/.test(key)) {
+    // getRandomValues, not randomUUID: LAN pages (http://10.x...) aren't a secure context.
+    key = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+    session.set('key', key);
+  }
+  return key;
+}
+/** How long the game keeps trying to reconnect (the server holds the seat about as long). */
+const RECONNECT_FOR_MS = 30_000;
+
 /** Escapes player-typed text before it goes into HTML. */
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const BANNER_MS = 4000;
@@ -112,11 +147,7 @@ async function boot() {
   } catch {
     // Storage blocked: the estate.
   }
-  const createInteractables = () => estateData.interactables.map((item) => {
-    const rect = [...item.rect] as [number, number, number, number];
-    const lootPos = item.loot ? { x: ((rect[0] + rect[2] + 1) / 2) * ART_TILE, y: ((rect[1] + rect[3] + 1) / 2) * ART_TILE } : undefined;
-    return { ...item, name: item.loot ? 'Diamond' : item.name, text: item.loot ? 'You pocket the hidden diamond.' : item.text, rect, lootPos };
-  });
+  const createInteractables = () => estateData.interactables;
   let estate = new TileMap(estateData, worlds.estate.tiles, worlds.estate.doors);
   let interactions = new InteractionSystem(createInteractables(), estateData.doors);
   let lighting = new LightingSystem(estate);
@@ -129,9 +160,9 @@ async function boot() {
   const lobby = new LobbyUI(MAP_IDS.map((id) => mapInfo(id, worlds[id].data)), settings);
   const net = new NetClient();
   const abilities = new AbilitySystem();
-  let selectedDiamondId: string | null = null;
   const trapBar = new TrapBar((kind) => selectTrap(selectedTrap?.id === kind.id ? null : kind));
-  const diamondBar = new DiamondBar(createInteractables().filter((item) => item.loot), estateData.areas.names, (id) => selectDiamond(selectedDiamondId === id ? null : id), hideDiamondInRoom, () => net.send({ t: 'ready' }));
+  const setupPanel = new SetupPanel(() => net.send({ t: 'ready' }));
+  const resultScreen = new ResultScreen(() => net.send({ t: 'leave' }));
 
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   const ctx = canvas.getContext('2d')!;
@@ -145,18 +176,23 @@ async function boot() {
     if (scene !== 'match' || !match?.saboteur) return;
     const [x, y] = toWorld(e);
     if (phase === 'setup' && e.button === 2) {
-      if (selectedDiamondId) return selectDiamond(null);
       if (selectedTrap) return selectTrap(null);
       const hit = placedUnder(x, y);
       if (hit) {
         placed.delete(hit.id);
         net.send({ t: 'unplace', id: hit.id });
         updateTrapBar();
+        return;
       }
+      // Right-click a hiding spot: take its diamond back out.
+      const spot = spotUnder(x, y);
+      const d = spot && diamondIn(spot.id);
+      if (d) net.send({ t: 'hideDiamond', id: d.id, spot: null });
       return;
     }
     if (phase === 'setup') {
-      return selectedTrap && placeTrap(selectedTrap, x, y);
+      if (selectedTrap) return placeTrap(selectedTrap, x, y);
+      return hideAt(x, y);
     }
     if (phase !== 'live') return;
     const trap = trapUnder(x, y);
@@ -173,6 +209,9 @@ async function boot() {
     { passive: false },
   );
   const banner = document.getElementById('match-banner')!;
+  const reconnectEl = document.getElementById('reconnecting')!;
+  /** Another tab took over this player: don't fight it by reconnecting. */
+  let replaced = false;
   let dpr = 1;
   let scale = ZOOM;
   let scene: Scene = 'title';
@@ -195,10 +234,33 @@ async function boot() {
   let match: { id: string; size: number; saboteur: boolean } | null = null;
   let bannerUntil = 0;
   let serverFull = false;
-  /** Loot in my hands, and what I've banked this heist. */
-  let carrying: Interactable | null = null;
-  let banked = 0;
-  let bankedCount = 0;
+  /** The diamonds as the server tells us (the Saboteur sees where each is hidden). */
+  let spots: HidingSpot[] = [];
+  let diamonds: Diamond[] = [];
+  const searched = new Set<string>();
+  let glints = new Set<string>();
+  let bankedN = 0;
+  let needN = 0;
+  let totalN = 0;
+  /** The furniture I'm searching (holding E), and since when. */
+  let searching: { spot: string; since: number } | null = null;
+  /** Little animations: a diamond dropping into furniture, popping out, an empty search. */
+  const fx: { kind: 'hide' | 'found' | 'empty'; x: number; y: number; at: number }[] = [];
+  let lastBank = 0;
+  /** Placed traps going off right now (everyone draws them), and the ones Runners now know about. */
+  const firing: Fired[] = [];
+  const revealed = new Set<string>();
+  /** What traps are doing to me: until when (performance.now ms). */
+  let slowUntil = 0;
+  let reverseUntil = 0;
+  let blackoutUntil = 0;
+  /** A crusher I set off: if I'm still under it when it slams, it hurts. */
+  const crushers: { x: number; y: number; at: number }[] = [];
+  /** The end of the heist, once the server says who won. */
+  let result: Extract<ServerMsg, { t: 'result' }> | null = null;
+  /** The diamond in my hands, if any. */
+  const myDiamond = () => diamonds.find((d) => d.place.at === 'carried' && d.place.by === myId);
+  const diamondIn = (spotId: string) => diamonds.find((d) => d.place.at === 'spot' && d.place.spot === spotId);
   let trapEnergy = 0;
   let maxTrapEnergy = 0;
   /** My health (Runners only), and when each trap plate last fired (performance.now ms). */
@@ -246,7 +308,11 @@ async function boot() {
     // looks round the whole house with a free camera; waiting Runners see all of it.
     let [tx, ty] = [me.x, me.y - DRAW_H / 2];
     if (scene !== 'match') scale = Math.max(1.5 * dpr, Math.min(canvas.width / w, canvas.height / h));
-    else if (match?.saboteur) {
+    else if (phase === 'over' && result) {
+      // The reveal: everyone sees the whole map, with every diamond's spot marked.
+      scale = fitScale();
+      [tx, ty] = [w / 2, h / 2];
+    } else if (match?.saboteur) {
       sabScale = sabScale && Math.min(ZOOM * dpr, Math.max(fitScale(), sabScale));
       scale = sabScale || fitScale();
       [tx, ty] = [freeX, freeY];
@@ -302,9 +368,37 @@ async function boot() {
       title.setBusy(false, (err as Error).message);
       return;
     }
-    myName = title.name || 'Bandit';
+    myName = session.get('name') ?? (title.name || 'Bandit');
+    session.set('name', myName);
+    session.set('playing', '1');
     setCharacter(myCharacter);
-    net.send({ t: 'hello', name: myName, character: myCharacter });
+    sayHello();
+  }
+
+  function sayHello() {
+    net.send({ t: 'hello', name: myName, character: myCharacter, key: playerKey() });
+  }
+
+  /** The connection dropped by accident: keep trying for a while, the server is holding our seat. */
+  let reconnecting = false;
+  async function reconnect() {
+    if (reconnecting) return;
+    reconnecting = true;
+    reconnectEl.hidden = false;
+    const giveUp = performance.now() + RECONNECT_FOR_MS;
+    while (performance.now() < giveUp && scene !== 'title') {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        await net.connect();
+        sayHello();
+        break;
+      } catch {
+        // Not back yet; try again.
+      }
+    }
+    reconnecting = false;
+    reconnectEl.hidden = true;
+    if (!net.connected && scene !== 'title') lobby.showDisconnected();
   }
 
   function addRemote(p: PlayerState) {
@@ -320,12 +414,23 @@ async function boot() {
     abilities.traps = traps;
     estate = new TileMap(estateData, world.tiles, world.doors);
     interactions = new InteractionSystem(createInteractables(), estateData.doors);
+    spots = estateData.interactables;
+    diamonds = [];
+    searched.clear();
+    glints = new Set();
+    bankedN = needN = totalN = 0;
+    searching = null;
+    fx.length = 0;
+    firing.length = 0;
+    revealed.clear();
+    crushers.length = 0;
+    slowUntil = reverseUntil = blackoutUntil = 0;
+    me.rootFrames = me.slipFrames = 0;
+    result = null;
+    resultScreen.hide();
     spottedUntil.clear();
     dazzledUntil = 0;
     lighting = new LightingSystem(estate);
-    carrying = null;
-    banked = 0;
-    bankedCount = 0;
     hp = MAX_HP;
     knockedOut = false;
     me.stunFrames = 0;
@@ -339,18 +444,15 @@ async function boot() {
     trapEnergy = msg.energy ?? maxTrapEnergy;
     placed.clear();
     selectTrap(null);
-    selectDiamond(null);
-    if (msg.diamonds) applyDiamonds(msg.diamonds);
     phase = msg.phase;
     phaseEndsAt = performance.now() + msg.ms;
     trapBar.show(msg.role === 'saboteur' && phase === 'setup');
-    diamondBar.show(msg.role === 'saboteur' && phase === 'setup');
+    setupPanel.show(msg.role === 'saboteur' && phase === 'setup');
     trapBar.setEnergy(trapEnergy, maxTrapEnergy);
     updateTrapBar();
     sabScale = 0;
     lastTrapCheck = 0;
     hud.setHealth(msg.role === 'saboteur' ? null : hp);
-    hud.setLoot(0, 0, interactions.lootables.length);
     hud.setCarrying(null);
     hud.hideMessage();
     profile.recordHeist();
@@ -366,6 +468,8 @@ async function boot() {
       me.facing = p.facing;
       freeX = p.x;
       freeY = p.y;
+      // The server's word on who I'm playing (after a reload this tab hasn't heard it yet).
+      if (p.character !== myCharacter) setCharacter(p.character);
     }
     abilities.setRound(myCharacter, msg.role);
     const role = msg.role === 'saboteur' ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
@@ -384,9 +488,28 @@ async function boot() {
       case 'welcome':
         myId = msg.id;
         break;
+      case 'replaced':
+        // The same player opened in another tab; that one plays now.
+        replaced = true;
+        break;
+      case 'resync':
+        // What changed while we were away.
+        for (const d of msg.doors) {
+          const door = estate.data.doors.find((x) => x.id === d.id);
+          if (door) estate.setDoor(door, d.open);
+        }
+        for (const t of msg.placed) {
+          placed.set(t.id, t);
+          // A Runner is only told about traps that have gone off (and Fake Loot).
+          if (!match?.saboteur) revealed.add(t.id);
+        }
+        updateTrapBar();
+        break;
       case 'lobby':
         match = null;
         sentPortal = null;
+        result = null;
+        resultScreen.hide();
         remotes.clear();
         setCharacter(msg.character);
         me.x = msg.x;
@@ -399,7 +522,24 @@ async function boot() {
         net.send({ t: 'map', map: myMap });
         break;
       case 'match':
+        if (msg.resume && match?.id === msg.matchId) {
+          // Back after a short drop with the game still open: just catch up on the clock.
+          phase = msg.phase;
+          phaseEndsAt = performance.now() + msg.ms;
+          if (msg.energy !== undefined) trapEnergy = msg.energy;
+          trapBar.setEnergy(trapEnergy, maxTrapEnergy);
+          break;
+        }
         startMatch(msg);
+        if (msg.resume) {
+          // After a reload: our health is what the server last heard; the rest is in this tab.
+          const mine = msg.players.find((p) => p.id === myId);
+          if (mine && !match?.saboteur) {
+            hp = mine.hp;
+            hud.setHealth(hp);
+          }
+          banner.hidden = true;
+        }
         break;
       case 'character':
         setCharacter(msg.character);
@@ -435,10 +575,6 @@ async function boot() {
       case 'doorLocked':
         doorJammedUntil.set(msg.id, performance.now() + msg.ms);
         break;
-      case 'loot':
-        // Someone else picked it up: it's gone from the house for everyone.
-        interactions.looted.add(msg.id);
-        break;
       case 'ability': {
         // Show other players' abilities; the effect itself arrives through their positions.
         const r = remotes.get(msg.by);
@@ -448,23 +584,60 @@ async function boot() {
       case 'place':
         placed.set(msg.trap.id, msg.trap);
         break;
-      case 'diamond':
-        applyDiamonds([msg]);
+      case 'diamonds': {
+        // Diamonds that just went into furniture get a little drop-in animation.
+        const before = new Map(diamonds.map((d) => [d.id, d.place.at === 'spot' ? d.place.spot : null]));
+        diamonds = msg.items;
+        for (const d of diamonds) {
+          if (d.place.at !== 'spot' || before.get(d.id) === d.place.spot) continue;
+          const spot = spots.find((x) => x.id === (d.place as { spot: string }).spot);
+          if (spot && scene === 'match') fx.push({ kind: 'hide', ...spotCenter(spot), at: performance.now() });
+        }
+        searched.clear();
+        for (const id of msg.searched) searched.add(id);
+        bankedN = msg.banked;
+        needN = msg.need;
+        totalN = msg.total;
+        if (!myDiamond()) hud.setCarrying(null);
         break;
+      }
+      case 'glints':
+        glints = new Set(msg.spots);
+        break;
+      case 'searchResult': {
+        const spot = spots.find((x) => x.id === msg.spot);
+        if (spot) fx.push({ kind: msg.found ? 'found' : 'empty', ...spotCenter(spot), at: performance.now() });
+        if (msg.found) hud.setCarrying('CARRYING A DIAMOND · TAKE IT TO THE GETAWAY');
+        else toast(`Nothing in the ${spot?.name ?? 'furniture'}`);
+        break;
+      }
+      case 'diamondEvent': {
+        const who = msg.id === myId ? 'You' : esc(msg.name);
+        const what = msg.kind === 'found' ? 'found a diamond' : msg.kind === 'banked' ? `banked a diamond · ${bankedN}/${needN}` : 'dropped a diamond';
+        hud.alert(`<span class="who">${who}</span> <b>${what}</b><span class="where">${esc(msg.area)}</span>`, msg.kind === 'dropped' ? 'danger' : 'good');
+        break;
+      }
+      case 'result': {
+        result = msg;
+        diamonds = msg.diamonds;
+        for (const t of msg.placed) placed.set(t.id, t);
+        const won = (msg.winner === 'saboteur') === !!match?.saboteur;
+        resultScreen.show({ won, saboteur: !!match?.saboteur, winner: msg.winner, banked: msg.banked, need: msg.need, total: msg.total });
+        frameCamera(true);
+        break;
+      }
       case 'phase':
-        if (msg.diamonds) applyDiamonds(msg.diamonds);
         phase = msg.phase;
         phaseEndsAt = performance.now() + msg.ms;
         selectTrap(null);
-        selectDiamond(null);
         trapBar.show(false);
-        diamondBar.show(false);
-        banner.innerHTML =
-          phase === 'live'
-            ? `<span class="kicker">SETUP OVER</span><span>THE HEIST IS ON</span><span class="crew-list">${match?.saboteur ? 'Watch them. Your traps are set.' : 'Get in, grab the loot, get out.'}</span>`
-            : `<span class="kicker">TIME'S UP</span><span>ROUND OVER</span><span class="crew-list">Results are coming soon. Esc for the safehouse.</span>`;
-        banner.hidden = false;
-        bannerUntil = performance.now() + BANNER_MS;
+        setupPanel.show(false);
+        searching = null;
+        if (phase === 'live') {
+          banner.innerHTML = `<span class="kicker">SETUP OVER</span><span>THE HEIST IS ON</span><span class="crew-list">${match?.saboteur ? 'Watch them. Your traps guard the diamonds.' : `Search the furniture (hold E), find the diamonds, bank ${needN || 'them'} at the GETAWAY.`}</span>`;
+          banner.hidden = false;
+          bannerUntil = performance.now() + BANNER_MS;
+        }
         break;
       case 'unplace':
         placed.delete(msg.id);
@@ -490,6 +663,9 @@ async function boot() {
       }
       case 'placedTrapHit':
         applyPlacedTrapHit(msg.kind, msg.damage, msg.stunMs, msg.knockback);
+        break;
+      case 'trapFired':
+        trapFired(msg);
         break;
       case 'tripwireArmed':
         tripwireArmed.add(msg.id);
@@ -520,10 +696,14 @@ async function boot() {
     }
   };
   net.onClose = () => {
-    if (scene !== 'title' && !serverFull) lobby.showDisconnected();
+    if (scene === 'title' || serverFull) return;
+    if (replaced) lobby.showDisconnected('You opened this player in another tab, so this one stopped. Reconnect to play here instead.');
+    else void reconnect();
   };
 
   title.onPlay = play;
+  // A reload while playing goes straight back in: the server still holds this tab's seat.
+  if (session.get('playing')) void play();
   // The server confirms (or refuses) the pick with a 'character' message.
   lobby.onPick = (id) => net.send({ t: 'character', character: id });
   lobby.onLoadout = () => lobby.openPicker(myCharacter);
@@ -555,6 +735,7 @@ async function boot() {
   };
   // Exit: leave the server on purpose and go back to the title screen.
   lobby.onExit = () => {
+    session.set('playing', null);
     setScene('title');
     net.disconnect();
     remotes.clear();
@@ -633,7 +814,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get carrying() { return carrying; }, get banked() { return banked; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions } }); // for playtests
 
   // ---------- Update ----------
 
@@ -643,7 +824,8 @@ async function boot() {
   function sendPosition() {
     if (++sendTimer < 60 / NET_HZ) return;
     sendTimer = 0;
-    net.send({ t: 'move', room: scene === 'match' ? 'match' : 'lobby', x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, facing: me.facing, moving: me.moving, sprint: lastSprint, carrying: !!carrying, hp, stunned: me.stunned });
+
+    net.send({ t: 'move', room: scene === 'match' ? 'match' : 'lobby', x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, facing: me.facing, moving: me.moving, sprint: lastSprint, carrying: !!myDiamond(), hp, stunned: me.stunned });
   }
 
   /** Everything an ability may need, gathered fresh when Q is pressed. */
@@ -671,50 +853,37 @@ async function boot() {
   function selectTrap(kind: TrapKind | null) {
     selectedTrap = kind;
     trapBar.select(kind?.id ?? null);
-    if (kind) selectDiamond(null);
   }
 
-  function selectDiamond(id: string | null) {
-    selectedDiamondId = id;
-    diamondBar.select(id);
-    if (id) {
-      selectedTrap = null;
-      trapBar.select(null);
-      diamondBar.message('Choose a room, then press HIDE HERE to tuck it into a reachable spot.');
-    } else {
-      diamondBar.message('Select a diamond and room, then press HIDE HERE.');
-    }
+  // ---------- Diamonds ----------
+
+  /** The hiding spot under (x, y) (a little padding so small furniture is easy to click). */
+  function spotUnder(x: number, y: number) {
+    return spots.find((sp) => distToSpot(sp, x, y) <= 3);
   }
 
-  function applyDiamonds(positions: { id: string; x: number; y: number }[]) {
-    for (const position of positions) {
-      const item = interactions.items.find((candidate) => candidate.id === position.id && candidate.loot);
-      if (item) item.lootPos = { x: position.x, y: position.y };
-    }
+  const roomOf = (sp: HidingSpot) => spotRoom(sp, estateData.areas, estateData.width);
+  const hiddenInRoom = (room: string) => diamonds.filter((d) => d.place.at === 'spot' && roomOf(spots.find((x) => x.id === (d.place as { spot: string }).spot)!) === room).length;
+
+  /** Setup: click furniture to hide the next diamond in it. */
+  function hideAt(x: number, y: number) {
+    const spot = spotUnder(x, y);
+    if (!spot) return toast('Click a piece of furniture (gold outline) to hide a diamond in it');
+    if (diamondIn(spot.id)) return toast(`The ${spot.name} already holds a diamond. Right-click to take it out.`);
+    const next = diamonds.find((d) => d.place.at === 'tray');
+    if (!next) return toast('All diamonds are hidden. Right-click one to move it.');
+    if (hiddenInRoom(roomOf(spot)) >= 2) return toast(`${roomOf(spot)} already has 2 diamonds. Spread them out.`);
+    net.send({ t: 'hideDiamond', id: next.id, spot: spot.id });
   }
 
-  function hideDiamondInRoom(room: string) {
-    if (!selectedDiamondId) return diamondBar.message('Select a diamond first.');
-    const alreadyInRoom = interactions.items.filter((item) => item.loot && item.id !== selectedDiamondId && item.lootPos && estate.areaAt(item.lootPos.x, item.lootPos.y) === room).length;
-    if (alreadyInRoom >= 2) return diamondBar.message(`${room} already has its limit of 2 diamonds.`);
-    const { width, height } = estateData;
-    const candidates: { x: number; y: number }[] = [];
-    for (let ty = 0; ty < height; ty++) for (let tx = 0; tx < width; tx++) {
-      const x = tx * ART_TILE + ART_TILE / 2;
-      const y = ty * ART_TILE + ART_TILE / 2;
-      if (estate.areaAt(x, y) !== room || estate.boxBlocked(x - 7, y - 7, x + 7, y + 7)) continue;
-      const crowded = interactions.items.some((item) => item.loot && item.id !== selectedDiamondId && item.lootPos && Math.hypot(item.lootPos.x - x, item.lootPos.y - y) < 40);
-      if (!crowded) candidates.push({ x, y });
-    }
-    if (!candidates.length) return diamondBar.message(`No clear hiding spots left in ${room}. Choose another room.`);
-    const { x, y } = candidates[Math.floor(Math.random() * candidates.length)];
-    const item = interactions.items.find((candidate) => candidate.id === selectedDiamondId && candidate.loot);
-    if (!item) return selectDiamond(null);
-    item.lootPos = { x, y };
-    net.send({ t: 'diamond', id: selectedDiamondId, x, y });
-    selectDiamond(null);
-    toast(`Diamond tucked away in ${room}`);
-  }
+  /** Fake Loot chests, as Runners see them: one more thing to search. */
+  const decoys = (): HidingSpot[] =>
+    [...placed.values()]
+      .filter((t) => t.kind === 'fakeLoot')
+      .map((t) => ({ id: t.id, name: 'treasure chest', rect: [Math.floor((t.x - 12) / ART_TILE), Math.floor((t.y - 10) / ART_TILE), Math.floor((t.x + 11) / ART_TILE), Math.floor((t.y + 9) / ART_TILE)] as [number, number, number, number] }));
+
+  /** A trap close enough to a hidden diamond guards it. */
+  const guarded = (spot: HidingSpot) => [...placed.values()].some((t) => distToSpot(spot, t.x, t.y) <= 40);
 
   const placedKinds = () => [...placed.values()].map((t) => t.kind);
 
@@ -731,23 +900,89 @@ async function boot() {
     net.send({ t: 'trapHit', trap, area: estate.areaAt(me.x, me.y - 4) || 'the house' });
   }
 
-  function applyPlacedTrapHit(kind: PlacedTrap['kind'], damage: number, stunMs: number, knockback?: { x: number; y: number }) {
-    if (!match || match.saboteur) return;
+  /** Damage and a stun; at 0 HP you're knocked out (and the server takes your diamond). */
+  function hurt(damage: number, stunMs: number) {
     hp = Math.max(0, hp - damage);
     if (stunMs > 0) me.stun(Math.round((stunMs / 1000) * 60));
-    if (knockback && !estate.boxBlocked(knockback.x + HITBOX.left, knockback.y + HITBOX.top, knockback.x + HITBOX.right, knockback.y + HITBOX.bottom)) {
-      me.x = knockback.x;
-      me.y = knockback.y;
-    }
     if (hp === 0) {
       knockedOut = true;
       me.stun(KO_FRAMES);
     }
     hud.setHealth(hp);
+  }
+
+  /** I set off a placed trap: what it does to me, by kind. */
+  function applyPlacedTrapHit(kind: PlacedTrap['kind'], damage: number, stunMs: number, knockback?: { x: number; y: number }) {
+    if (!match || match.saboteur) return;
+    const now = performance.now();
+    hurt(damage, stunMs);
+    let effect = '';
+    switch (kind) {
+      case 'spring':
+        // Thrown through the air, 4 tiles on.
+        if (knockback) me.launch(knockback.x - me.x, knockback.y - me.y, Math.hypot(knockback.x - me.x, knockback.y - me.y), 26);
+        effect = 'launched!';
+        break;
+      case 'boulder':
+        if (knockback) me.shove(knockback.x - me.x, knockback.y - me.y, Math.hypot(knockback.x - me.x, knockback.y - me.y), 14);
+        break;
+      case 'snare':
+        me.rootFrames = 150;
+        effect = "caught: can't move for 2.5s";
+        break;
+      case 'glue':
+        slowUntil = now + 5000;
+        effect = 'stuck: 40% speed for 5s';
+        break;
+      case 'oil':
+        me.slipFrames = 300;
+        effect = 'slipping: no grip for 5s';
+        break;
+      case 'crusher':
+        effect = 'GET OUT FROM UNDER IT!';
+        break;
+    }
     const name = trapKind(kind)?.name ?? 'Trap';
     reportHit(name);
-    trapNotice = `${name} triggered${damage ? ` · ${damage} damage` : ''}${stunMs ? ` · ${stunMs / 1000}s stun` : ''}`;
-    trapNoticeUntil = performance.now() + 2000;
+    trapNotice = `${name}${damage ? ` · ${damage} damage` : ''}${stunMs >= 1000 ? ` · ${stunMs / 1000}s stun` : ''}${effect ? ` · ${effect}` : ''}`;
+    trapNoticeUntil = now + 2500;
+  }
+
+  /** A placed trap went off somewhere: everyone sees it, and some catch everyone nearby. */
+  function trapFired(msg: Extract<ServerMsg, { t: 'trapFired' }>) {
+    const now = performance.now();
+    firing.push({ id: msg.id, kind: msg.kind, x: msg.x, y: msg.y, at: now });
+    revealed.add(msg.id);
+    // Runners didn't know it was there; now they do.
+    if (!placed.has(msg.id)) placed.set(msg.id, { id: msg.id, kind: msg.kind, x: msg.x, y: msg.y });
+    if (!match || match.saboteur || phase !== 'live') return;
+    const d = Math.hypot(me.x - msg.x, me.y - msg.y);
+    if (msg.kind === 'crusher' && msg.victim === myId) crushers.push({ x: msg.x, y: msg.y, at: now + CRUSHER_WARN_MS });
+    if (msg.kind === 'magnet' && d <= 64 && d > 6) me.shove(msg.x - me.x, msg.y - me.y, d - 6, 60);
+    if (msg.kind === 'gas' && d <= 44) {
+      reverseUntil = now + 4000;
+      trapNotice = 'Confusion Gas · your controls are reversed for 4s';
+      trapNoticeUntil = now + 2500;
+    }
+    if (msg.kind === 'blackout' && estate.areaAt(msg.x, msg.y) === estate.areaAt(me.x, me.y - 4)) {
+      blackoutUntil = now + 6000;
+      trapNotice = 'Blackout · the lights are out in here';
+      trapNoticeUntil = now + 2500;
+    }
+  }
+
+  /** The crusher slams: still under it means 50 damage and a 3s stun. */
+  function checkCrushers(now: number) {
+    for (let i = crushers.length - 1; i >= 0; i--) {
+      const c = crushers[i];
+      if (now < c.at) continue;
+      crushers.splice(i, 1);
+      if (Math.abs(me.x - c.x) <= 16 && Math.abs(me.y - c.y) <= 16) {
+        hurt(50, 3000);
+        trapNotice = 'Crusher · 50 damage · 3s stun';
+        trapNoticeUntil = now + 2500;
+      }
+    }
   }
 
   /** A short note for the Saboteur in the prompt box. */
@@ -914,6 +1149,7 @@ async function boot() {
     if (performance.now() > bannerUntil) banner.hidden = true;
     const left = Math.max(0, phaseEndsAt - performance.now());
     hud.setTimer(phase === 'over' ? null : phase === 'setup' ? 'SETUP' : 'HEIST', left);
+    updateObjective();
     const sab = !!match?.saboteur;
     if (input.ability && !hud.messageOpen && phase === 'live') abilities.use(abilityContext());
     abilities.render();
@@ -935,52 +1171,101 @@ async function boot() {
       if (input.action) hud.hideMessage();
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
-      me.carryMult = (carrying ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (performance.now() < dazzledUntil ? 0.5 : 1);
-      me.update(input, estate);
+      const now = performance.now();
+      me.carryMult = (myDiamond() ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1);
+      // Confusion Gas: left is right and up is down.
+      me.update(now < reverseUntil ? { ...input, dx: -input.dx, dy: -input.dy } : input, estate);
+      checkCrushers(now);
       checkTraps();
       checkSpotlights(performance.now());
-      if (carrying && LobbyMap.inside(getaway, me.x, me.y)) {
-        banked += carrying.loot ?? 0;
-        bankedCount++;
-        hud.showMessage(`Banked the ${carrying.name}: +$${carrying.loot}. Total $${banked.toLocaleString()}.`);
-        carrying = null;
-        me.carryMult = 1;
-        hud.setCarrying(null);
-        hud.setLoot(banked, bankedCount, interactions.lootables.length);
-      }
-      const near = interactions.nearby(me);
-      // Walking into a closed door pushes it open, so nobody stops dead in a doorway.
-      if (me.bumped && near?.kind === 'door' && !estate.isOpen(near.door) && !near.door.keypad) {
-        estate.setDoor(near.door, true);
-        net.send({ t: 'door', id: near.door.id, open: true });
-      }
-      const handsFull = !!carrying && near?.kind === 'item' && !!near.item.loot && !interactions.looted.has(near.item.id);
-      const doorLockLeft = near?.kind === 'door' ? Math.max(0, (doorJammedUntil.get(near.door.id) ?? 0) - performance.now()) : 0;
-      hud.setPrompt(performance.now() < trapNoticeUntil ? trapNotice : near ? (doorLockLeft ? `LOCKED ${Math.ceil(doorLockLeft / 1000)}s` : handsFull ? 'Hands full: bank your loot at the GETAWAY first' : interactions.promptFor(near, estate)) : null);
-      if (near && input.action && !handsFull) {
-        if (near.kind === 'door') {
-          const refused = interactions.toggleDoor(near.door, estate, me, HITBOX);
-          if (refused) hud.showMessage(refused);
-          else {
-            net.send({ t: 'door', id: near.door.id, open: estate.isOpen(near.door) });
-            if (near.door.keypad && estate.isOpen(near.door)) toast(`Keypad cracked: the ${near.door.name} slides open`);
-          }
-        } else {
-          const fresh = !!near.item.loot && !interactions.looted.has(near.item.id);
-          hud.showMessage(interactions.interact(near.item));
-          hud.setPrompt(null);
-          if (fresh) {
-            // It's in your hands now; it only counts once it reaches the GETAWAY.
-            carrying = near.item;
-            hud.setCarrying(`CARRYING ${near.item.name.toUpperCase()} $${near.item.loot}`);
-            net.send({ t: 'loot', id: near.item.id });
-          }
-        }
-      }
+      runnerDiamonds(input);
     }
     hud.setArea(estate.areaAt(me.x, me.y - 4));
     sendPosition();
     frameCamera(false);
+  }
+
+  /** The objective panel, top left: one gem per diamond, and what this side has to do. */
+  function updateObjective() {
+    const mine = myDiamond();
+    const order = { banked: 0, mine: 1, carried: 2, floor: 3, hidden: 4 } as const;
+    const gems = diamonds
+      .map((d) => (d.place.at === 'banked' ? 'banked' : d.place.at === 'carried' ? (d === mine ? 'mine' : 'carried') : d.place.at === 'floor' ? 'floor' : 'hidden') as keyof typeof order)
+      .sort((a, b) => order[a] - order[b]);
+    const sab = !!match?.saboteur;
+    const text =
+      phase === 'setup'
+        ? sab
+          ? `Hide all ${totalN}, then guard them with traps`
+          : `The Saboteur is hiding ${totalN} diamonds...`
+        : sab
+          ? `Stop them banking ${needN} · ${bankedN}/${needN} banked`
+          : `Bank ${needN} of ${totalN} at the GETAWAY · ${bankedN}/${needN}`;
+    hud.setObjective(sab ? 'GUARD THE DIAMONDS' : 'FIND THE DIAMONDS', gems, text);
+  }
+
+  /** Runners: open doors, search furniture (hold E), pick up dropped diamonds, bank at the getaway. */
+  function runnerDiamonds(input: { action: boolean; actionHeld: boolean }) {
+    const now = performance.now();
+    const holding = myDiamond();
+    if (holding && LobbyMap.inside(getaway, me.x, me.y) && now - lastBank > 500) {
+      lastBank = now;
+      net.send({ t: 'bank' });
+    }
+    const near = interactions.nearby(me);
+    let door = near?.kind === 'door' ? near.door : null;
+    // Walking into a closed door pushes it open, so nobody stops dead in a doorway.
+    if (me.bumped && door && !estate.isOpen(door) && !door.keypad) {
+      estate.setDoor(door, true);
+      net.send({ t: 'door', id: door.id, open: true });
+    }
+    // A dropped diamond on the floor nearby: press E to grab it.
+    const dropped = holding ? undefined : diamonds.find((d) => d.place.at === 'floor' && Math.hypot(d.place.x - me.x, d.place.y - me.y) <= PICKUP_REACH);
+    // The nearest piece of furniture in reach (a Fake Loot chest looks just like one).
+    let spot: HidingSpot | null = null;
+    let best = SEARCH_REACH;
+    for (const sp of [...spots, ...decoys()]) {
+      const d = distToSpot(sp, me.x, me.y - 4);
+      if (d <= best) [spot, best] = [sp, d];
+    }
+    // Furniture right beside a door: E goes to whichever is closer.
+    if (door && spot) {
+      const dd = Math.hypot(Math.max(door.x - me.x, 0, me.x - (door.x + door.w)), Math.max(door.y - me.y, 0, me.y - (door.y + door.h)));
+      if (best < dd) door = null;
+    }
+    let prompt: string | null = null;
+    if (door) {
+      const lockLeft = Math.max(0, (doorJammedUntil.get(door.id) ?? 0) - now);
+      prompt = lockLeft ? `LOCKED ${Math.ceil(lockLeft / 1000)}s` : interactions.promptFor(near!, estate);
+      if (input.action && !lockLeft) {
+        const refused = interactions.toggleDoor(door, estate, me, HITBOX);
+        if (refused) hud.showMessage(refused);
+        else {
+          net.send({ t: 'door', id: door.id, open: estate.isOpen(door) });
+          if (door.keypad && estate.isOpen(door)) toast(`Keypad cracked: the ${door.name} slides open`);
+        }
+      }
+    } else if (dropped) {
+      prompt = 'E  Grab the dropped diamond';
+      if (input.action) net.send({ t: 'pickup', id: dropped.id });
+    } else if (spot) {
+      if (holding) prompt = 'Hands full: bank your diamond at the GETAWAY';
+      else if (searched.has(spot.id)) prompt = `${spot.name}: already searched, empty`;
+      else {
+        prompt = `Hold E  Search the ${spot.name}`;
+        // Holding E on the same furniture, standing still, for SEARCH_MS searches it.
+        if (input.actionHeld && !me.stunned) {
+          if (searching?.spot !== spot.id) searching = { spot: spot.id, since: now };
+          else if (now - searching.since >= SEARCH_MS) {
+            net.send({ t: 'search', spot: spot.id });
+            searching = null;
+          }
+          prompt = `Searching the ${spot.name}...`;
+        }
+      }
+    }
+    if (!input.actionHeld || me.moving || !spot || searching?.spot !== spot.id) searching = null;
+    hud.setPrompt(now < trapNoticeUntil ? trapNotice : now < toastUntil ? hud.promptText : prompt);
   }
 
   /** The Saboteur isn't in the house: they fly a camera round it and pick traps. */
@@ -995,6 +1280,10 @@ async function boot() {
     freeY = Math.min(estate.heightPx, Math.max(0, freeY + input.dy * speed * 2));
     hud.setArea(estate.areaAt(freeX, freeY));
     if (performance.now() > toastUntil) hud.setPrompt(null);
+    if (phase === 'setup') {
+      const hiddenSpots = spots.filter((sp) => diamondIn(sp.id));
+      setupPanel.update({ hidden: hiddenSpots.length, total: totalN, traps: placed.size, slots: trapSlots(match?.size ?? 2), guarded: hiddenSpots.filter(guarded).length, selected: null });
+    }
   }
 
   // ---------- Draw ----------
@@ -1064,7 +1353,6 @@ async function boot() {
     blit(estate.below, estate.widthPx, estate.heightPx);
     ctx.save();
     ctx.scale(scale, scale);
-    drawTwinkles(camX, camY);
     drawGetaway(camX, camY);
     drawPlacedTraps(camX, camY);
     drawTrapPlates(camX, camY);
@@ -1079,13 +1367,45 @@ async function boot() {
     actors.forEach((b) => b.draw(ctx, camX, camY, false));
     ctx.globalAlpha = 1;
     drawTrapEffects(camX, camY);
-    if (carrying) lootBag(me, camX, camY);
-    for (const r of remotes.values()) if (r.state.carrying) lootBag(r.bandit, camX, camY);
+    drawFiring(camX, camY);
+    drawSpots(camX, camY);
+    drawFloorDiamonds(camX, camY);
+    drawDiamondFx(camX, camY);
+    if (myDiamond()) carriedGem(me, camX, camY);
+    for (const r of remotes.values()) if (r.state.carrying) carriedGem(r.bandit, camX, camY);
     ctx.restore();
     drawGetawayLabel(camX, camY);
-    if (settings.values.nameTags) drawNameTags(camX, camY);
+    if (settings.values.nameTags && !result) drawNameTags(camX, camY);
     if (phase === 'setup' && !match?.saboteur) drawBlueprint(camX, camY);
-    if (match?.saboteur) drawTrapMarkers(camX, camY);
+    if (match?.saboteur && !result) drawTrapMarkers(camX, camY);
+    if (match?.saboteur && phase === 'setup') drawSpotLabel(camX, camY);
+    if (performance.now() < blackoutUntil && !match?.saboteur) drawBlackout(camX, camY);
+    if (result) drawReveal(camX, camY);
+  }
+
+  /** Placed traps going off: each kind has its own animation, seen by everyone. */
+  function drawFiring(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = firing.length - 1; i >= 0; i--) {
+      const f = firing[i];
+      if (now - f.at > FX_MS[f.kind]) firing.splice(i, 1);
+      else drawFired(ctx, f, camX, camY, now);
+    }
+  }
+
+  /** Blackout: the room goes dark; you only see a small circle around yourself. */
+  function drawBlackout(camX: number, camY: number) {
+    const left = blackoutUntil - performance.now();
+    const sx = (me.x - camX) * scale;
+    const sy = (me.y - 18 - camY) * scale;
+    const r = 34 * scale;
+    ctx.save();
+    const grad = ctx.createRadialGradient(sx, sy, r * 0.4, sx, sy, r);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, `rgba(4,2,10,${Math.min(0.96, left / 400)})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
   }
 
   /** The Saboteur's own traps, outlined in their card colour so they're easy to find zoomed out. */
@@ -1117,13 +1437,17 @@ async function boot() {
   /** Traps the Saboteur placed: Runners see the disguised ones as harmless; the Saboteur sees them all. */
   function drawPlacedTraps(camX: number, camY: number) {
     const sab = !!match?.saboteur;
-    if (!sab) return;
-    const view = 'saboteur';
     const now = performance.now();
     ctx.imageSmoothingEnabled = false;
+    // Runners only see a trap once it has gone off (and Fake Loot, which is meant to be seen).
+    const visible = (t: PlacedTrap) => sab || !!result || (phase !== 'setup' && (revealed.has(t.id) || t.kind === 'fakeLoot'));
     for (const t of [...placed.values()].sort((a, b) => a.y - b.y)) {
       const kind = trapKind(t.kind);
-      if (kind) drawTrap(ctx, kind, view, t.x - camX, t.y - camY, now);
+      if (!kind || !visible(t)) continue;
+      ctx.save();
+      if (!sab && !result && t.kind !== 'fakeLoot') ctx.globalAlpha = 0.85;
+      drawTrap(ctx, kind, sab || result ? 'saboteur' : 'runner', t.x - camX, t.y - camY, now);
+      ctx.restore();
     }
     if (sab && selectedTrap && phase === 'setup') {
       // A ghost under the cursor: green where it fits, red where it doesn't.
@@ -1254,7 +1578,7 @@ async function boot() {
     const h = getaway.h * ART_TILE;
     ctx.save();
     ctx.fillStyle = '#6fe07a';
-    ctx.globalAlpha = carrying ? 0.22 + 0.15 * Math.sin(frame / 8) : 0.12;
+    ctx.globalAlpha = myDiamond() ? 0.22 + 0.15 * Math.sin(frame / 8) : 0.12;
     ctx.fillRect(x, y, w, h);
     ctx.globalAlpha = 0.9;
     ctx.strokeStyle = '#6fe07a';
@@ -1275,50 +1599,267 @@ async function boot() {
     ctx.fillText('GETAWAY', sx, sy);
   }
 
-  /** A sack of loot held over a bandit's head, in art pixels. */
-  function lootBag(b: Bandit, camX: number, camY: number) {
-    const x = Math.round(b.x - camX);
-    const y = Math.round(b.y - DRAW_H - 4 - camY + Math.sin(frame / 10));
-    ctx.fillStyle = '#16121c';
-    ctx.fillRect(x - 6, y - 7, 12, 10);
-    ctx.fillStyle = '#9a6236';
-    ctx.fillRect(x - 5, y - 6, 10, 8);
-    ctx.fillStyle = '#b97c46';
-    ctx.fillRect(x - 4, y - 6, 4, 3);
-    ctx.fillStyle = '#5a3420';
-    ctx.fillRect(x - 2, y - 9, 4, 3);
-    ctx.fillStyle = '#ffe39a';
-    ctx.fillRect(x - 1, y - 4, 2, 5);
-    ctx.fillRect(x - 2, y - 3, 4, 1);
-    ctx.fillRect(x - 2, y - 1, 4, 1);
+  /** A pixel diamond centred on (x, y), art px; `r` is its half-height. */
+  function gem(x: number, y: number, r: number, body = '#7ceaff', alpha = 1) {
+    x = Math.round(x);
+    y = Math.round(y);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#0e1630';
+    ctx.beginPath();
+    ctx.moveTo(x, y - r - 1);
+    ctx.lineTo(x + r + 1, y - r * 0.2);
+    ctx.lineTo(x, y + r + 1);
+    ctx.lineTo(x - r - 1, y - r * 0.2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = body;
+    ctx.beginPath();
+    ctx.moveTo(x, y - r);
+    ctx.lineTo(x + r, y - r * 0.2);
+    ctx.lineTo(x, y + r);
+    ctx.lineTo(x - r, y - r * 0.2);
+    ctx.closePath();
+    ctx.fill();
+    // Facets: a light crown, a white glint.
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.beginPath();
+    ctx.moveTo(x, y - r);
+    ctx.lineTo(x + r, y - r * 0.2);
+    ctx.lineTo(x - r, y - r * 0.2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(x - Math.ceil(r / 3), y - Math.ceil(r * 0.7), Math.max(1, Math.round(r / 3)), Math.max(1, Math.round(r / 3)));
+    ctx.restore();
   }
 
-  function drawTwinkles(camX: number, camY: number) {
+  /** A four-point twinkle. */
+  function twinkle(x: number, y: number, size: number, color = '#edfcff', alpha = 1) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(x - size), Math.round(y), Math.round(size * 2 + 1), 1);
+    ctx.fillRect(Math.round(x), Math.round(y - size), 1, Math.round(size * 2 + 1));
+    ctx.restore();
+  }
+
+  /** The diamond a bandit carries, held up over their head. */
+  function carriedGem(b: Bandit, camX: number, camY: number) {
+    const x = b.x - camX;
+    const y = b.y - DRAW_H - 6 - camY + Math.sin(frame / 10) * 1.5;
+    gem(x, y, 5);
+    if (frame % 40 < 10) twinkle(x + 4, y - 4, 2);
+  }
+
+  /** Hiding spots: outlined for the Saboteur in setup, with their diamonds; glints and searched marks for Runners. */
+  function drawSpots(camX: number, camY: number) {
+    if (result) return;
     const sab = !!match?.saboteur;
-    if (!sab && phase !== 'live') return;
-    for (const item of interactions.lootables) {
-      if (interactions.looted.has(item.id)) continue;
-      const pos = item.lootPos ?? { x: ((item.rect[0] + item.rect[2] + 1) / 2) * ART_TILE, y: ((item.rect[1] + item.rect[3] + 1) / 2) * ART_TILE };
-      if (!sab && Math.hypot(me.x - pos.x, me.y - pos.y) > ART_TILE * 3) continue;
-      const cx = pos.x - camX;
-      const cy = pos.y - camY;
-      const phase = (frame + item.id.length * 13) % 90;
-      if (phase > 30) continue;
-      const s = phase < 15 ? phase / 15 : (30 - phase) / 15;
+    const now = performance.now();
+    const hover = sab && phase === 'setup' && !selectedTrap ? spotUnder(mouseX, mouseY) : undefined;
+    for (const sp of spots) {
+      const b = spotBox(sp);
+      const x = b.x0 - camX;
+      const y = b.y0 - camY;
+      const w = b.x1 - b.x0;
+      const h = b.y1 - b.y0;
+      const c = spotCenter(sp);
+      const d = diamondIn(sp.id);
       ctx.save();
-      ctx.globalAlpha = 0.55 + 0.45 * s;
-      ctx.fillStyle = '#7ceaff';
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - 6);
-      ctx.lineTo(cx + 5, cy);
-      ctx.lineTo(cx, cy + 6);
-      ctx.lineTo(cx - 5, cy);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = '#edfcff';
-      ctx.fillRect(Math.round(cx) - 1, Math.round(cy) - 3, 2, 3);
+      if (sab) {
+        if (phase === 'setup') {
+          const full = !d && hiddenInRoom(roomOf(sp)) >= 2;
+          ctx.strokeStyle = d ? '#7ceaff' : full ? '#ff6a6a' : '#ffc94a';
+          ctx.globalAlpha = sp === hover ? 1 : d ? 0.9 : full ? 0.4 : 0.65 + 0.25 * Math.sin(frame / 12);
+          ctx.lineWidth = sp === hover ? 2.5 : 1.5;
+          ctx.setLineDash(d ? [] : [3, 2]);
+          ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+          if (sp === hover && !d && !full) {
+            ctx.globalAlpha = 0.18;
+            ctx.fillStyle = '#ffc94a';
+            ctx.fillRect(x, y, w, h);
+          }
+        }
+        if (d) {
+          // The Saboteur sees each hidden diamond, and a shield when a trap guards it.
+          gem(c.x - camX, c.y - camY + Math.sin(frame / 14 + c.x) * 1, 4, '#7ceaff', phase === 'setup' ? 1 : 0.8);
+          if (guarded(sp)) shield(c.x - camX + 7, c.y - camY - 7);
+        }
+      } else if (phase === 'live') {
+        if (searched.has(sp.id)) {
+          // Searched and empty, for the whole crew: a grey cross.
+          ctx.strokeStyle = 'rgba(200,200,210,0.6)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(c.x - camX - 4, c.y - camY - 4);
+          ctx.lineTo(c.x - camX + 4, c.y - camY + 4);
+          ctx.moveTo(c.x - camX + 4, c.y - camY - 4);
+          ctx.lineTo(c.x - camX - 4, c.y - camY + 4);
+          ctx.stroke();
+        } else if (glints.has(sp.id)) {
+          // Something in there catches the light.
+          const t = (now / 900 + c.x * 0.013) % 1;
+          if (t < 0.35) twinkle(c.x - camX + Math.sin(c.y) * w * 0.25, c.y - camY - 3, 1 + Math.sin((t / 0.35) * Math.PI) * 2.5, '#bff6ff', 0.9);
+        }
+        if (searching?.spot === sp.id) {
+          // Rummaging: the furniture's outline shakes.
+          const jx = Math.sin(now / 30) * 1;
+          ctx.strokeStyle = '#ffe39a';
+          ctx.globalAlpha = 0.8;
+          ctx.strokeRect(x + 0.5 + jx, y + 0.5, w - 1, h - 1);
+        }
+      }
       ctx.restore();
     }
+  }
+
+  /** A small blue shield: this diamond has a trap next to it. */
+  function shield(x: number, y: number) {
+    x = Math.round(x);
+    y = Math.round(y);
+    ctx.fillStyle = '#0e1630';
+    ctx.fillRect(x - 4, y - 4, 9, 8);
+    ctx.fillRect(x - 3, y + 4, 7, 2);
+    ctx.fillStyle = '#5cc8ff';
+    ctx.fillRect(x - 3, y - 3, 7, 6);
+    ctx.fillRect(x - 2, y + 3, 5, 1);
+    ctx.fillRect(x - 1, y + 4, 3, 1);
+    ctx.fillStyle = '#d8f4ff';
+    ctx.fillRect(x - 2, y - 2, 2, 3);
+  }
+
+  /** Diamonds dropped on the floor: anyone can grab them. */
+  function drawFloorDiamonds(camX: number, camY: number) {
+    for (const d of diamonds) {
+      if (d.place.at !== 'floor') continue;
+      const x = d.place.x - camX;
+      const y = d.place.y - camY;
+      ctx.save();
+      ctx.globalAlpha = 0.35 + 0.15 * Math.sin(frame / 8);
+      ctx.fillStyle = '#7ceaff';
+      ctx.beginPath();
+      ctx.ellipse(x, y + 2, 9, 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      gem(x, y - 3 - Math.abs(Math.sin(frame / 12)) * 2, 4);
+    }
+  }
+
+  /** Hide: a diamond drops into the furniture. Found: it pops out. Empty: a puff of dust. And the search ring. */
+  function drawDiamondFx(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = fx.length - 1; i >= 0; i--) {
+      const f = fx[i];
+      const t = (now - f.at) / 700;
+      if (t >= 1) {
+        fx.splice(i, 1);
+        continue;
+      }
+      const x = f.x - camX;
+      const y = f.y - camY;
+      if (f.kind === 'hide') {
+        // Falls in from above, then a burst of sparkles as it disappears inside.
+        const fall = Math.min(1, t / 0.55);
+        if (t < 0.55) gem(x, y - 30 * (1 - fall * fall), 5);
+        else for (let k = 0; k < 6; k++) {
+          const a = (k / 6) * Math.PI * 2;
+          const r = 4 + (t - 0.55) * 40;
+          twinkle(x + Math.cos(a) * r, y + Math.sin(a) * r * 0.6, 2, '#bff6ff', 1 - (t - 0.55) / 0.45);
+        }
+      } else if (f.kind === 'found') {
+        // Pops out of the furniture in an arc, sparkling.
+        const up = Math.sin(t * Math.PI) * 26;
+        gem(x + t * 6, y - up, 5 + Math.sin(t * Math.PI) * 2);
+        for (let k = 0; k < 4; k++) twinkle(x + Math.cos(k * 1.6 + t * 6) * 12, y - up + Math.sin(k * 1.6 + t * 6) * 8, 2, '#ffffff', 1 - t);
+      } else {
+        // Nothing: a grey puff of dust.
+        ctx.save();
+        for (let k = 0; k < 5; k++) {
+          ctx.globalAlpha = 0.5 * (1 - t);
+          ctx.fillStyle = '#b8b0a4';
+          ctx.beginPath();
+          ctx.arc(x + Math.cos(k * 1.3) * t * 14, y - t * 10 + Math.sin(k * 1.3) * t * 6, 2 + t * 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+    if (searching) {
+      // The search ring over my head fills as E is held.
+      const p = Math.min(1, (now - searching.since) / SEARCH_MS);
+      const x = me.x - camX;
+      const y = me.y - DRAW_H - 8 - camY;
+      ctx.save();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(14,10,26,0.8)';
+      ctx.beginPath();
+      ctx.arc(x, y, 7, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffc94a';
+      ctx.beginPath();
+      ctx.arc(x, y, 7, -Math.PI / 2, -Math.PI / 2 + p * Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#ffe39a';
+      ctx.font = '7px "Press Start 2P"';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('?', x + 0.5, y + 1);
+      ctx.restore();
+    }
+  }
+
+  /** Setup: the name of the furniture under the Saboteur's cursor. */
+  function drawSpotLabel(camX: number, camY: number) {
+    if (selectedTrap) return;
+    const sp = spotUnder(mouseX, mouseY);
+    if (!sp) return;
+    const b = spotBox(sp);
+    const d = diamondIn(sp.id);
+    const full = !d && hiddenInRoom(roomOf(sp)) >= 2;
+    const text = d ? `${sp.name.toUpperCase()} · HIDDEN (right-click to take out)` : full ? `${roomOf(sp).toUpperCase()} IS FULL (2 max)` : `HIDE IN ${sp.name.toUpperCase()}`;
+    // Kept on screen even for furniture at the edge of the map.
+    const size = Math.round(8 * dpr);
+    ctx.font = `${size}px "Press Start 2P"`;
+    const half = ctx.measureText(text).width / 2 + 8 * dpr;
+    const sx = Math.min(canvas.width - half, Math.max(half, ((b.x0 + b.x1) / 2 - camX) * scale));
+    textTag(text, sx, Math.max(size * 2, (b.y0 - 4 - camY) * scale), d ? '#7ceaff' : full ? '#ff6a6a' : '#ffc94a', size);
+  }
+
+  /** The end of the heist: every diamond's real spot, marked over the whole map. */
+  function drawReveal(camX: number, camY: number) {
+    if (!result) return;
+    ctx.save();
+    for (const d of result.diamonds) {
+      let pos: { x: number; y: number } | null = null;
+      let color = '#7ceaff';
+      let label = '';
+      if (d.place.at === 'spot') {
+        const sp = spots.find((x) => x.id === (d.place as { spot: string }).spot);
+        if (sp) pos = spotCenter(sp);
+        color = '#ff8a94';
+        label = 'NEVER FOUND';
+      } else if (d.place.at === 'floor') {
+        pos = { x: d.place.x, y: d.place.y };
+        color = '#ffb02e';
+        label = 'DROPPED';
+      }
+      if (!pos) continue;
+      const sx = (pos.x - camX) * scale;
+      const sy = (pos.y - camY) * scale;
+      const pulse = 1 + 0.25 * Math.sin(frame / 8);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 14 * dpr * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.save();
+      ctx.scale(scale, scale);
+      gem(pos.x - camX, pos.y - camY, Math.max(4, 6 / scale * dpr), color === '#ff8a94' ? '#7ceaff' : '#ffd27a');
+      ctx.restore();
+      textTag(label, sx, sy - 20 * dpr, color, Math.round(7 * dpr));
+    }
+    ctx.restore();
   }
 
   /** The "E  CUSTOMIZE" plate over the wardrobe; it lights up when you're close enough. */
@@ -1539,8 +2080,8 @@ async function boot() {
       ctx.fill();
     };
     const hidden = (id: string) => inMatch && (match?.saboteur ? id === myId : false);
-    for (const [id, r] of remotes) if (!hidden(id)) tag(r.bandit, id, r.state.name, r.state.character, inMatch && r.state.carrying, inMatch ? r.state.hp : MAX_HP);
-    if (!hidden(myId)) tag(me, myId, myName, myCharacter, inMatch && !!carrying, inMatch ? hp : MAX_HP);
+    for (const [id, r] of remotes) if (!hidden(id)) tag(r.bandit, id, r.state.offline ? `${r.state.name} (reconnecting)` : r.state.name, r.state.character, inMatch && r.state.carrying, inMatch ? r.state.hp : MAX_HP);
+    if (!hidden(myId)) tag(me, myId, myName, myCharacter, inMatch && !!myDiamond(), inMatch ? hp : MAX_HP);
   }
 
   // Fixed 60 updates per second; draw once per animation frame.

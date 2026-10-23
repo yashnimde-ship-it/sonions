@@ -10,6 +10,8 @@ export interface ControlState {
   action: boolean;
   /** Ability was pressed this frame (Q, or X on a gamepad). */
   ability: boolean;
+  /** Action is being held down (searching furniture takes a long press). */
+  actionHeld: boolean;
 }
 
 const MOVE: Record<string, [number, number]> = {
@@ -84,5 +86,5 @@ export function readControls(): ControlState {
     dy = (gp.buttons[13]?.pressed ? 1 : 0) - (gp.buttons[12]?.pressed ? 1 : 0) || dead(gp.axes[1] ?? 0);
     sprint ||= !!(gp.buttons[7]?.pressed || gp.buttons[5]?.pressed);
   }
-  return { dx, dy, sprint, action: [...pressed].some((c) => ACTION.has(c)) || padAction, ability: pressed.has(ABILITY) || padAbility };
+  return { dx, dy, sprint, action: [...pressed].some((c) => ACTION.has(c)) || padAction, ability: pressed.has(ABILITY) || padAbility, actionHeld: [...held].some((c) => ACTION.has(c)) || padActionWasDown };
 }

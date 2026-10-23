@@ -187,9 +187,10 @@ export class LobbyUI {
     if (!visible) this.navigate('lobby');
   }
 
-  showDisconnected() {
+  showDisconnected(reason = 'Lost the connection to the game server.') {
     this.root.hidden = false;
     this.disconnected.hidden = false;
+    this.disconnected.querySelector('p')!.textContent = reason;
   }
 
   /** Is any panel open over the lobby (so the player shouldn't move)? */

@@ -10,14 +10,17 @@ export class TrapBar {
   private cards = new Map<string, HTMLElement>();
   private slots = document.createElement('div');
   private energy = document.createElement('span');
+  private slotCount = document.createElement('span');
 
   constructor(onPick: (kind: TrapKind) => void) {
     this.el.id = 'trapbar';
     this.el.hidden = true;
     this.slots.className = 'trap-slots';
     this.energy.className = 'trap-energy';
+    this.slotCount.className = 'trap-slot-count';
     this.energy.textContent = 'ENERGY 0/200';
-    this.slots.append(this.energy);
+    // The count gets its own element: rewriting the whole box would wipe the energy readout.
+    this.slots.append(this.slotCount, this.energy);
     this.el.append(this.slots);
     for (const kind of TRAP_KINDS) {
       const card = document.createElement('button');
@@ -68,7 +71,7 @@ export class TrapBar {
   /** How many of each are down, against the round's limits. */
   setCounts(placed: TrapKindId[], crew: number) {
     const slots = trapSlots(crew);
-    this.slots.innerHTML = `TRAPS<b>${placed.length}/${slots}</b>`;
+    this.slotCount.innerHTML = `TRAPS<b>${placed.length}/${slots}</b>`;
     for (const kind of TRAP_KINDS) {
       const n = placed.filter((k) => k === kind.id).length;
       const card = this.cards.get(kind.id)!;
