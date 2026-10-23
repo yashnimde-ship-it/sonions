@@ -69,17 +69,17 @@ export type ClientMsg =
   | { t: 'door'; id: string; open: boolean }
   /** The Saboteur fires a trap plate. */
   | { t: 'trap'; id: string }
-  /** Dev's Tripwire: rig a Shock Plate to fire when a Runner steps on it. */
-  | { t: 'tripwire'; id: string }
-  /** Rex's once-per-round Trap Refresh, aimed at a cooling Shock Plate. */
+  /** Dev's Tripwire: lay a hidden trip line (a free snare) on open floor, mid-heist. */
+  | { t: 'tripwire'; x: number; y: number }
+  /** Rex's Trap Refresh, aimed at a trap that's cooling down (placed or part of the map). */
   | { t: 'trapRefresh'; id: string }
   /** Iris's Saboteur ability: slam a targeted door shut and lock it briefly. */
   | { t: 'doorJam'; id: string }
   /** The Saboteur puts a trap down, or picks one up. */
   | { t: 'place'; trap: PlacedTrap }
   | { t: 'unplace'; id: string }
-  /** A Runner jams a trap plate (Trap Jam). */
-  | { t: 'jam'; id: string }
+  /** A Runner jams every trap in reach (Trap Jam). */
+  | { t: 'jam'; x: number; y: number }
   /** I (a Runner) just got caught by a trap, and where; the server tells the whole crew. */
   | { t: 'trapHit'; trap: string; area: string }
   /** Latch heals another Runner (First Aid). */
@@ -166,7 +166,7 @@ export type ServerMsg =
   | { t: 'place'; trap: PlacedTrap }
   | { t: 'unplace'; id: string }
   /** A trap plate is jammed for `ms`: it can't fire, and a pending shock is cancelled. */
-  | { t: 'jam'; id: string; ms: number }
+  | { t: 'jam'; id: string; ms: number; trap?: PlacedTrap }
   /** Someone in the heist got caught by a trap: shown to everyone as a pop-up. */
   | { t: 'trapAlert'; id: string; name: string; trap: string; area: string }
   /** Another Runner healed you to full (First Aid). */

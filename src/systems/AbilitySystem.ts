@@ -1,7 +1,7 @@
 import type { CharacterId } from '../config';
 import { type Ability, abilityFor, type Role } from '../data/characters.ts';
 import type { Bandit } from '../entities/Bandit';
-import { HEAL_REACH, JAM_REACH, MAX_HP, OVERCLOCK_MS, TRAPS, type TrapSpot } from '../data/traps.ts';
+import { HEAL_REACH, MAX_HP, OVERCLOCK_MS, TRAPS, type TrapSpot } from '../data/traps.ts';
 import type { ClientMsg } from '../net/protocol';
 
 // Quickstep: a dash of 64 art px (4 tiles, about 3-4 steps) in 14 frames (under a quarter second).
@@ -24,6 +24,8 @@ export interface AbilityContext {
   targetTrapJammed?: boolean;
   /** Door under the Saboteur's cursor, for Door Jam. */
   targetDoorId?: string;
+  /** Where the Saboteur's cursor is (art px), and whether a trip line fits there (Tripwire). */
+  targetPoint?: { x: number; y: number; open: boolean };
 }
 
 /**
@@ -37,6 +39,7 @@ export class AbilitySystem {
   private readyAt = 0;
   private usesLeft = Infinity;
   private noteUntil = 0;
+  private waitingForServer = false;
   private overclock: { startsAt: number; endsAt: number } | null = null;
   private root = document.getElementById('ability')!;
   private roleEl = document.getElementById('ability-role')!;
@@ -49,6 +52,7 @@ export class AbilitySystem {
     this.ability = abilityFor(character, role);
     this.readyAt = 0;
     this.usesLeft = this.ability.perRound ?? Infinity;
+    this.waitingForServer = false;
     this.overclock = null;
     this.root.dataset.role = role;
     this.roleEl.textContent = role === 'runner' ? 'RUNNER' : 'SABOTEUR';
@@ -71,14 +75,29 @@ export class AbilitySystem {
     const now = performance.now();
     if (a.needs) return this.note(`Needs ${NEEDS_LABEL[a.needs]} (coming)`);
     if (a.passive) return this.note('Always on');
-    if (now < this.readyAt || this.usesLeft <= 0) return;
+    if (this.waitingForServer || now < this.readyAt || this.usesLeft <= 0) return;
     // Stunned bandits can't use abilities, except the one that breaks the stun.
     if (ctx.me.stunned && a.id !== 'shakeItOff') return this.note('Stunned!');
     const fail = this.apply(a, ctx);
     if (fail) return this.note(fail);
+    // Trap Jam's target is hidden from the client. Wait for the server to confirm it found a
+    // trap before spending a use or starting cooldown; a failed attempt can then be retried.
+    if (a.id === 'trapJam') {
+      this.waitingForServer = true;
+      return;
+    }
     this.readyAt = now + a.cooldown * 1000;
     this.usesLeft--;
     if (a.id !== 'tripwire' && a.id !== 'trapRefresh' && a.id !== 'doorJam') ctx.send({ t: 'ability', ability: a.id });
+  }
+
+  /** Resolve a server-validated Trap Jam attempt. */
+  resolveTrapJam(success: boolean) {
+    if (!this.waitingForServer || this.ability?.id !== 'trapJam') return;
+    this.waitingForServer = false;
+    if (!success) return;
+    this.readyAt = performance.now() + this.ability.cooldown * 1000;
+    this.usesLeft = Math.max(0, this.usesLeft - 1);
   }
 
   /** Runs the effect; returns why it couldn't, if it couldn't. */
@@ -88,11 +107,11 @@ export class AbilitySystem {
         this.overclock = { startsAt: performance.now(), endsAt: performance.now() + OVERCLOCK_MS };
         return null;
       case 'tripwire':
-        if (!ctx.targetTrapId || ctx.targetTrapReady !== true || ctx.targetTrapJammed) return 'Aim at a ready Shock Plate';
-        ctx.send({ t: 'tripwire', id: ctx.targetTrapId });
+        if (!ctx.targetPoint?.open) return 'Aim at open floor';
+        ctx.send({ t: 'tripwire', x: ctx.targetPoint.x, y: ctx.targetPoint.y });
         return null;
       case 'trapRefresh':
-        if (!ctx.targetTrapId || ctx.targetTrapReady !== false || ctx.targetTrapJammed) return 'Aim at a cooling Shock Plate';
+        if (!ctx.targetTrapId || ctx.targetTrapReady !== false || ctx.targetTrapJammed) return 'Aim at a trap that is cooling down';
         ctx.send({ t: 'trapRefresh', id: ctx.targetTrapId });
         return null;
       case 'doorJam':
@@ -121,18 +140,10 @@ export class AbilitySystem {
         if (!ctx.me.stunned) return 'Not stunned';
         ctx.me.stunFrames = 0;
         return null;
-      case 'trapJam': {
-        // The nearest plate in reach; the server jams it for everyone.
-        let best: TrapSpot | null = null;
-        let bestD = JAM_REACH;
-        for (const t of this.traps) {
-          const d = Math.hypot(t.x - ctx.me.x, t.y - ctx.me.y);
-          if (d <= bestD) [best, bestD] = [t, d];
-        }
-        if (!best) return 'No trap in reach';
-        ctx.send({ t: 'jam', id: best.id });
+      case 'trapJam':
+        // Every trap in reach, seen or not; the server works out which (and shows them to you).
+        ctx.send({ t: 'jam', x: ctx.me.x, y: ctx.me.y });
         return null;
-      }
       default:
         return 'Not ready yet';
     }

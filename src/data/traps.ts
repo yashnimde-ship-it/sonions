@@ -125,8 +125,9 @@ export const TRAP_STUN_MS = 2000;
 /** Runners' health. */
 export const MAX_HP = 100;
 /** Patch's Trap Jam: how close a plate must be, and how long it stays jammed. */
-export const JAM_REACH = 40;
-export const JAM_MS = 3000;
+/** Trap Jam reaches every trap this close (art px), map traps and placed ones alike. */
+export const JAM_REACH = 56;
+export const JAM_MS = 5000;
 /** Latch's First Aid: how close a hurt Runner must be to patch up. */
 export const HEAL_REACH = 48;
 

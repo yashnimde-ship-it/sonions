@@ -12,10 +12,11 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondsToWin, distToSpot, type HidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom } from '../src/data/diamonds.ts';
+import { cleanName } from '../src/data/names.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
-import { JAM_MS, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
+import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
 import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Standing, type Taken } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -28,7 +29,8 @@ const TILE = 16;
 const readJson = (rel: string) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
 const lobbyMap = readJson('public/assets/lobby/lobby.json');
 // Every heist map's data: its spawn point and door ids are all the server needs.
-const mapData = Object.fromEntries(MAP_IDS.map((id) => [id, readJson(`public${MAPS[id].json}`)])) as Record<MapId, { width: number; height: number; spawn: { x: number; y: number }; doors: { id: string }[]; interactables: HidingSpot[]; areas: { names: string[]; data: number[] } }>;
+const mapData = Object.fromEntries(MAP_IDS.map((id) => [id, readJson(`public${MAPS[id].json}`)])) as Record<MapId, { width: number; height: number; spawn: { x: number; y: number }; doors: { id: string }[]; interactables: HidingSpot[]; areas: { names: string[]; data: number[] }; collision: { cell: number; width: number; height: number; data: string } }>;
+const mapCollision = Object.fromEntries(MAP_IDS.map((id) => [id, Uint8Array.from(Buffer.from(mapData[id].collision.data, 'base64'))])) as Record<MapId, Uint8Array>;
 const PADS: { size: number; x: number; y: number; w: number; h: number }[] = lobbyMap.portals;
 // A party per size from 2 to MAX_CREW. Sizes 2 and 3 have their own pads; 4 and up all
 // gather on the CUSTOM pad, each player in the size they picked.
@@ -68,6 +70,24 @@ const matchSizes = new Map<string, number>();
 const doorStates = new Map<string, Map<string, boolean>>();
 const trapsOf = (matchId: string): TrapSpot[] => MAPS[matchMaps.get(matchId) ?? 'estate'].traps;
 const spotOf = (matchId: string, id: string) => trapsOf(matchId).find((t) => t.id === id);
+/** Match the client floor check: the full trap footprint must land inside open collision cells. */
+function openFloor(map: MapId, x: number, y: number, halfW = 10, halfH = 8) {
+  const { cell, width, height } = mapData[map].collision;
+  const x0 = x - halfW;
+  const y0 = y - halfH;
+  const x1 = x + halfW;
+  const y1 = y + halfH;
+  const minX = Math.floor(x0 / cell);
+  const minY = Math.floor(y0 / cell);
+  const maxX = Math.ceil(x1 / cell) - 1;
+  const maxY = Math.ceil(y1 / cell) - 1;
+  if (minX < 0 || minY < 0 || maxX >= width || maxY >= height) return false;
+  const collision = mapCollision[map];
+  for (let cy = minY; cy <= maxY; cy++) for (let cx = minX; cx <= maxX; cx++) {
+    if (collision[cy * width + cx] !== 0) return false;
+  }
+  return true;
+}
 const doorsOf = (matchId: string) => mapData[matchMaps.get(matchId) ?? 'estate'].doors;
 /** The crew's map: the most-picked one; a tie goes to whoever got there first (crew is in arrival order). */
 function crewMap(crew: Client[]): MapId {
@@ -520,7 +540,8 @@ function handle(c: Client, msg: ClientMsg) {
       // taken (big parties of up to 9), characters repeat: the least-used one is shared.
       const uses = (id: CharacterId) => joined().filter((o) => o.state.character === id).length;
       const free = [msg.character, ...CHARACTERS].find((id) => CHARACTERS.includes(id) && !takenBy(id)) ?? [...CHARACTERS].sort((a, b) => uses(a) - uses(b))[0];
-      s.name = String(msg.name).slice(0, 14) || `Bandit ${s.id}`;
+      // Nothing offensive in the lobby: a blocked name becomes a plain one.
+      s.name = cleanName(msg.name, `Bandit ${s.id}`);
       s.character = free;
       toLobby(c);
       console.log(`${s.name} joined as ${s.character} (${clients.size} connected)`);
@@ -679,27 +700,31 @@ function handle(c: Client, msg: ClientMsg) {
       break;
     }
     case 'tripwire': {
+      // Dev's Saboteur ability: a hidden trip line laid mid-heist, on top of the setup traps.
       if (saboteurs.get(c.room) !== s.id || CHARACTER_INFO[s.character].saboteur !== 'tripwire' || phases.get(c.room)?.phase !== 'live') break;
       const now = Date.now();
-      if (now < (tripwireReadyAt.get(c.room) ?? 0)) break;
-      const trap = trapState.get(c.room)?.get(msg.id);
-      const spot = spotOf(c.room, msg.id);
-      if (!trap || !spot || (spot.kind && spot.kind !== 'plate') || trap.tripwired || trap.jammedUntil > now || !trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(spot))) break;
+      const map = matchMaps.get(c.room) ?? 'estate';
+      if (now < (tripwireReadyAt.get(c.room) ?? 0) || !Number.isFinite(msg.x) || !Number.isFinite(msg.y) || msg.x < 0 || msg.y < 0 || msg.x > mapData[map].width * TILE || msg.y > mapData[map].height * TILE || !openFloor(map, msg.x, msg.y)) break;
       if (!spendUse(c, 'tripwire')) break;
-      trap.tripwired = true;
+      const trap: PlacedTrap = { id: `tw-${s.id}-${now}`, kind: 'snare', x: Math.round(msg.x), y: Math.round(msg.y) };
+      placedTraps.get(c.room)?.set(trap.id, trap);
+      trapState.get(c.room)?.set(trap.id, { firedAt: null, jammedUntil: 0, tripwired: false });
       tripwireReadyAt.set(c.room, now + TRIPWIRE_COOLDOWN_MS);
-      send(c, { t: 'tripwireArmed', id: msg.id });
+      send(c, { t: 'place', trap });
+      send(c, { t: 'tripwireArmed', id: trap.id });
       break;
     }
     case 'trapRefresh': {
-      if (saboteurs.get(c.room) !== s.id || CHARACTER_INFO[s.character].saboteur !== 'trapRefresh' || phases.get(c.room)?.phase !== 'live' || trapRefreshUsed.get(c.room)) break;
+      // Rex's Saboteur ability: a trap that's cooling down is ready again (placed or map).
+      if (saboteurs.get(c.room) !== s.id || CHARACTER_INFO[s.character].saboteur !== 'trapRefresh' || phases.get(c.room)?.phase !== 'live') break;
       const now = Date.now();
       const trap = trapState.get(c.room)?.get(msg.id);
       const spot = spotOf(c.room, msg.id);
-      if (!trap || !spot || trap.jammedUntil > now || trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null, trapRules(spot))) break;
+      const rules = spot ? trapRules(spot) : undefined;
+      if (!trap || trap.firedAt == null || trap.jammedUntil > now || trapIsReady(trap.firedAt, now, overclockWindows.get(c.room) ?? null, rules)) break;
+      if (!spendUse(c, 'trapRefresh')) break;
       trap.firedAt = null;
       trap.tripwired = false;
-      trapRefreshUsed.set(c.room, true);
       send(c, { t: 'trapRefreshed', id: msg.id });
       break;
     }
@@ -778,15 +803,31 @@ function handle(c: Client, msg: ClientMsg) {
       break;
     }
     case 'jam': {
-      // Runners only (not the Saboteur). The game checks reach and the ability's cooldown.
-      if (!saboteurs.has(c.room) || saboteurs.get(c.room) === s.id) break;
-      const trap = trapState.get(c.room)?.get(msg.id);
-      if (!trap || !spendUse(c, 'trapJam')) break;
-      trap.jammedUntil = Date.now() + JAM_MS;
-      trap.tripwired = false;
+      // Patch's Runner ability: every trap in reach stops working for a while. Placed traps
+      // the Runner couldn't see are shown to them (so it doubles as a trap detector).
+      if (!saboteurs.has(c.room) || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live') break;
+      const now = Date.now();
+      const states = trapState.get(c.room);
+      // Where the Runner pressed it (their last move may still be on its way), if that's close.
+      const near = Number.isFinite(msg.x) && Number.isFinite(msg.y) && Math.hypot(msg.x - s.x, msg.y - s.y) <= 48;
+      const [jx, jy] = near ? [msg.x, msg.y] : [s.x, s.y];
+      const placed = [...(placedTraps.get(c.room)?.values() ?? [])].filter((t) => Math.hypot(t.x - jx, t.y - jy) <= JAM_REACH);
+      const fixed = trapsOf(c.room).filter((t) => Math.hypot(t.x - jx, t.y - jy) <= JAM_REACH);
+      if (!states || (!placed.length && !fixed.length) || !spendUse(c, 'trapJam')) {
+        send(c, { t: 'jam', id: '', ms: 0 });
+        break;
+      }
+      for (const t of [...placed, ...fixed]) {
+        const st = states.get(t.id);
+        if (!st) continue;
+        st.jammedUntil = now + JAM_MS;
+        st.tripwired = false;
+      }
       for (const id of matches.get(c.room) ?? []) {
         const member = clients.get(id);
-        if (member) send(member, { t: 'jam', id: msg.id, ms: JAM_MS });
+        if (!member) continue;
+        for (const t of fixed) send(member, { t: 'jam', id: t.id, ms: JAM_MS });
+        for (const t of placed) send(member, { t: 'jam', id: t.id, ms: JAM_MS, ...(member === c || id === saboteurs.get(c.room) ? { trap: t } : {}) });
       }
       break;
     }

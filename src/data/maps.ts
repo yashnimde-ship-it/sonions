@@ -1,6 +1,6 @@
 // The heist maps. Shared by the game and the server, which picks each heist's map.
 
-import { CRUISE_B1_TRAPS, MUSEUM_TRAPS, TRAPS, type TrapSpot } from './traps.ts'; // .ts: also loaded by the Node server
+import { CRUISE_B1_TRAPS, MUSEUM_TRAPS, type TrapSpot } from './traps.ts'; // .ts: also loaded by the Node server
 
 // Each cruise deck is its own map ('cruise-b1' now; 'cruise-f1' and 'cruise-f2' later), and
 // stairwells in a deck's map data name the deck they lead to.
@@ -34,7 +34,8 @@ export const MAPS: Record<MapId, MapDef> = {
     doors: '/assets/map/doors.png',
     preview: '/assets/map/preview.png',
     getaway: { x: 39.5, y: 55.6, w: 12, h: 3.8 },
-    traps: TRAPS,
+    // The Estate's traps are all the Saboteur's own now (the early placeholder plates are gone).
+    traps: [],
   },
   museum: {
     id: 'museum',

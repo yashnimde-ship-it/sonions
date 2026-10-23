@@ -6,6 +6,7 @@ import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, 
 import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
 import { type Diamond, distToSpot, type HidingSpot, PICKUP_REACH, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
+import { cleanName } from './data/names';
 import { CUSTOM_MIN, CUSTOM_PAD, type Phase, placementRefusal, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H } from './entities/Bandit';
@@ -371,7 +372,7 @@ async function boot() {
       title.setBusy(false, (err as Error).message);
       return;
     }
-    myName = session.get('name') ?? (title.name || 'Bandit');
+    myName = cleanName(session.get('name') ?? title.name, `Bandit${Math.floor(100 + Math.random() * 900)}`);
     session.set('name', myName);
     session.set('playing', '1');
     setCharacter(myCharacter);
@@ -689,6 +690,17 @@ async function boot() {
         break;
       case 'jam': {
         const now = performance.now();
+        if (!msg.id) {
+          abilities.resolveTrapJam(false);
+          toast('No traps in reach');
+          break;
+        }
+        abilities.resolveTrapJam(true);
+        if (msg.trap) {
+          // Trap Jam found a trap we couldn't see.
+          placed.set(msg.trap.id, msg.trap);
+          revealed.add(msg.trap.id);
+        }
         trapJammedUntil.set(msg.id, now + msg.ms);
         // A plate that was still flashing or live is defused: its shock never lands.
         const firedAt = trapFiredAt.get(msg.id);
@@ -840,9 +852,24 @@ async function boot() {
     // Everyone else; the Saboteur (whoever it is) never loses HP, so First Aid never picks them.
     const crew = [...remotes.entries()]
       .map(([id, r]) => ({ id, x: r.bandit.x, y: r.bandit.y, hp: r.state.hp }));
+    // A placed trap under the cursor counts as a target too (Trap Refresh).
+    const placedTarget = placedUnder(mouseX, mouseY);
     const targetTrap = trapUnder(mouseX, mouseY);
+    const tripOpen = !estate.boxBlocked(mouseX - 10, mouseY - 8, mouseX + 10, mouseY + 8);
     const targetDoor = estateData.doors.find((door) => mouseX >= door.x && mouseX <= door.x + door.w && mouseY >= door.y && mouseY <= door.y + door.h);
-    return { me, send: (m: ClientMsg) => net.send(m), hp, setHp: healMe, crew, targetTrapId: targetTrap?.id, targetTrapReady: targetTrap ? trapIsReady(trapFiredAt.get(targetTrap.id), performance.now(), abilities.overclockWindow, trapRules(targetTrap)) : undefined, targetTrapJammed: targetTrap ? trapJammed(targetTrap.id) : undefined, targetDoorId: targetDoor?.id };
+    const placedReady = placedTarget ? trapIsReady(trapFiredAt.get(placedTarget.id), performance.now(), abilities.overclockWindow) : undefined;
+    return {
+      me,
+      send: (m: ClientMsg) => net.send(m),
+      hp,
+      setHp: healMe,
+      crew,
+      targetTrapId: placedTarget?.id ?? targetTrap?.id,
+      targetTrapReady: placedTarget ? placedReady : targetTrap ? trapIsReady(trapFiredAt.get(targetTrap.id), performance.now(), abilities.overclockWindow, trapRules(targetTrap)) : undefined,
+      targetTrapJammed: placedTarget ? trapJammed(placedTarget.id) : targetTrap ? trapJammed(targetTrap.id) : undefined,
+      targetDoorId: targetDoor?.id,
+      targetPoint: { x: Math.round(mouseX), y: Math.round(mouseY), open: tripOpen },
+    };
   }
 
   /** Back to full health (First Aid); also gets a knocked-out Runner straight back up. */
@@ -959,6 +986,7 @@ async function boot() {
   function trapFired(msg: Extract<ServerMsg, { t: 'trapFired' }>) {
     const now = performance.now();
     firing.push({ id: msg.id, kind: msg.kind, x: msg.x, y: msg.y, at: now });
+    trapFiredAt.set(msg.id, now);
     revealed.add(msg.id);
     // Runners didn't know it was there; now they do.
     if (!placed.has(msg.id)) placed.set(msg.id, { id: msg.id, kind: msg.kind, x: msg.x, y: msg.y });
@@ -1455,6 +1483,15 @@ async function boot() {
       ctx.save();
       if (!sab && !result && t.kind !== 'fakeLoot') ctx.globalAlpha = 0.85;
       drawTrap(ctx, kind, sab || result ? 'saboteur' : 'runner', t.x - camX, t.y - camY, now);
+      if (trapJammed(t.id)) {
+        // Jammed (Trap Jam): a blue lock-out over it.
+        ctx.globalAlpha = 0.45 + 0.15 * Math.sin(frame / 6);
+        ctx.fillStyle = '#5098ff';
+        ctx.fillRect(Math.round(t.x - kind.w / 2 - camX), Math.round(t.y - kind.h / 2 - camY), kind.w, kind.h);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#9fd0ff';
+        ctx.strokeRect(Math.round(t.x - kind.w / 2 - camX) + 0.5, Math.round(t.y - kind.h / 2 - camY) + 0.5, kind.w - 1, kind.h - 1);
+      }
       ctx.restore();
     }
     if (sab && selectedTrap && phase === 'setup') {
