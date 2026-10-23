@@ -40,6 +40,8 @@ export class AbilitySystem {
   private usesLeft = Infinity;
   private noteUntil = 0;
   private waitingForServer = false;
+  /** When Trap Jam started waiting for the server; after a while it stops waiting. */
+  private waitingSince = 0;
   private overclock: { startsAt: number; endsAt: number } | null = null;
   private root = document.getElementById('ability')!;
   private roleEl = document.getElementById('ability-role')!;
@@ -75,6 +77,8 @@ export class AbilitySystem {
     const now = performance.now();
     if (a.needs) return this.note(`Needs ${NEEDS_LABEL[a.needs]} (coming)`);
     if (a.passive) return this.note('Always on');
+    // No answer from the server in 2s (the round ended, the connection blipped): try again.
+    if (this.waitingForServer && now - this.waitingSince > 2000) this.waitingForServer = false;
     if (this.waitingForServer || now < this.readyAt || this.usesLeft <= 0) return;
     // Stunned bandits can't use abilities, except the one that breaks the stun.
     if (ctx.me.stunned && a.id !== 'shakeItOff') return this.note('Stunned!');
@@ -84,6 +88,7 @@ export class AbilitySystem {
     // trap before spending a use or starting cooldown; a failed attempt can then be retried.
     if (a.id === 'trapJam') {
       this.waitingForServer = true;
+      this.waitingSince = now;
       return;
     }
     this.readyAt = now + a.cooldown * 1000;

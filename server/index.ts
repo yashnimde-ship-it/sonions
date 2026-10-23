@@ -124,7 +124,6 @@ const trapState = new Map<string, Map<string, TrapRuntime>>();
 const overclockWindows = new Map<string, { startsAt: number; endsAt: number }>();
 const overclockReadyAt = new Map<string, number>();
 const tripwireReadyAt = new Map<string, number>();
-const trapRefreshUsed = new Map<string, boolean>();
 const doorJamReadyAt = new Map<string, number>();
 const doorLocks = new Map<string, Map<string, number>>();
 const saboteurEnergy = new Map<string, { current: number; max: number }>();
@@ -264,6 +263,18 @@ function firePlaced(matchId: string, trap: PlacedTrap, victim: Client, fromX: nu
   }
 }
 
+/** The laser's beams run post to post across its whole footprint, so it catches anyone in that
+ *  box (not just near its middle). Feet within the box, art px around the trap's centre. */
+const LASER_BOX = { x0: -21, x1: 21, y0: -8, y1: 10 };
+const inLaser = (trap: PlacedTrap, x: number, y: number) => x >= trap.x + LASER_BOX.x0 && x <= trap.x + LASER_BOX.x1 && y >= trap.y + LASER_BOX.y0 && y <= trap.y + LASER_BOX.y1;
+/** Did a move from (x0, y0) to (x1, y1) cross into the laser box? Sampled along the way. */
+function enteredLaser(trap: PlacedTrap, x0: number, y0: number, x1: number, y1: number) {
+  if (inLaser(trap, x0, y0)) return false;
+  const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 4));
+  for (let i = 1; i <= steps; i++) if (inLaser(trap, x0 + ((x1 - x0) * i) / steps, y0 + ((y1 - y0) * i) / steps)) return true;
+  return false;
+}
+
 /** Every live beam crossing hurts and drops carried loot back on the runner's approach side. */
 function laserHit(matchId: string, trap: PlacedTrap, victim: Client, fromX: number, fromY: number) {
   const s = victim.state;
@@ -318,7 +329,6 @@ function endMatch(matchId: string) {
   overclockWindows.delete(matchId);
   overclockReadyAt.delete(matchId);
   tripwireReadyAt.delete(matchId);
-  trapRefreshUsed.delete(matchId);
   doorJamReadyAt.delete(matchId);
   doorLocks.delete(matchId);
   saboteurEnergy.delete(matchId);
@@ -398,7 +408,6 @@ function startRound(matchId: string) {
   overclockWindows.delete(matchId);
   overclockReadyAt.set(matchId, 0);
   tripwireReadyAt.set(matchId, 0);
-  trapRefreshUsed.set(matchId, false);
   doorJamReadyAt.set(matchId, 0);
   doorLocks.set(matchId, new Map());
   abilityUses.set(matchId, new Map());
@@ -552,9 +561,8 @@ function tick() {
       if (!state || !pending || now < pending.hitAt) continue;
       state.pendingLaser = undefined;
       const victim = clients.get(pending.playerId);
-      const radius = Math.max(12, Math.min(trapKind(trap.kind)!.w, trapKind(trap.kind)!.h) / 2);
       if (victim?.room !== matchId || now >= (state.activeUntil ?? 0) || now < state.jammedUntil) continue;
-      if (Math.hypot(victim.state.x - trap.x, victim.state.y - trap.y) <= radius) laserHit(matchId, trap, victim, pending.fromX, pending.fromY);
+      if (inLaser(trap, victim.state.x, victim.state.y)) laserHit(matchId, trap, victim, pending.fromX, pending.fromY);
     }
     // The round's clock: setup, then the heist, then time's up.
     const p = phases.get(matchId);
@@ -638,7 +646,7 @@ function handle(c: Client, msg: ClientMsg) {
             const state = trapState.get(c.room)?.get(trap.id);
             const radius = Math.max(12, Math.min(trapKind(trap.kind)!.w, trapKind(trap.kind)!.h) / 2);
             if (!state || now < state.jammedUntil) continue;
-            const entered = Math.hypot(fromX - trap.x, fromY - trap.y) > radius && distanceToSegment(trap.x, trap.y, fromX, fromY, s.x, s.y) <= radius;
+            const entered = trap.kind === 'laser' ? enteredLaser(trap, fromX, fromY, s.x, s.y) : Math.hypot(fromX - trap.x, fromY - trap.y) > radius && distanceToSegment(trap.x, trap.y, fromX, fromY, s.x, s.y) <= radius;
             if (trap.kind === 'laser' && state.activeUntil !== undefined) {
               if (now < state.activeUntil) {
                 if (now >= (state.activeFrom ?? 0) && entered) laserHit(c.room, trap, c, fromX, fromY);
