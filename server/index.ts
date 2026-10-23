@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
-import { LIVE_MS, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
+import { CUSTOM_MIN, CUSTOM_PAD, LIVE_MS, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
 import { JAM_MS, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
@@ -26,10 +26,11 @@ const lobbyMap = readJson('public/assets/lobby/lobby.json');
 // Every heist map's data: its spawn point and door ids are all the server needs.
 const mapData = Object.fromEntries(MAP_IDS.map((id) => [id, readJson(`public${MAPS[id].json}`)])) as Record<MapId, { width: number; height: number; spawn: { x: number; y: number }; doors: { id: string }[]; interactables: { id: string; rect: number[]; loot?: number }[] }>;
 const PADS: { size: number; x: number; y: number; w: number; h: number }[] = lobbyMap.portals;
-// The lobby's pads (2, 3, 4 players) plus custom parties of any other size up to MAX_CREW,
-// joined from the Heist Lobby panel. A custom party has no pad: you stay where you are.
+// A party per size from 2 to MAX_CREW. Sizes 2 and 3 have their own pads; 4 and up all
+// gather on the CUSTOM pad, each player in the size they picked.
+const padFor = (size: number) => PADS.find((p) => p.size === (size >= CUSTOM_MIN ? CUSTOM_PAD : size)) ?? null;
 interface Portal { size: number; pad: (typeof PADS)[number] | null }
-const PORTALS: Portal[] = Array.from({ length: MAX_CREW - MIN_CREW + 1 }, (_, i) => MIN_CREW + i).map((size) => ({ size, pad: PADS.find((p) => p.size === size) ?? null }));
+const PORTALS: Portal[] = Array.from({ length: MAX_CREW - MIN_CREW + 1 }, (_, i) => MIN_CREW + i).map((size) => ({ size, pad: padFor(size) }));
 const LOBBY_SPAWN = { x: lobbyMap.spawn.x * TILE, y: lobbyMap.spawn.y * TILE };
 
 interface Client {
@@ -110,8 +111,11 @@ function portalAt(s: PlayerState) {
 }
 
 function chosenPortal(c: Client) {
+  // On a fixed pad, its size; on the CUSTOM pad, the size you picked (4 until you pick).
   const pad = portalAt(c.state);
-  return PORTALS.find((p) => p.size === (pad?.size ?? c.portalChoice));
+  if (!pad) return undefined;
+  const size = pad.size !== CUSTOM_PAD ? pad.size : c.portalChoice !== null && c.portalChoice >= CUSTOM_MIN ? c.portalChoice : CUSTOM_PAD;
+  return PORTALS.find((p) => p.size === size);
 }
 
 function distanceToSegment(x: number, y: number, ax: number, ay: number, bx: number, by: number) {
@@ -313,9 +317,7 @@ function handle(c: Client, msg: ClientMsg) {
       s.x = msg.x;
       s.y = msg.y;
       // Once a selected-party player walks off the chosen pad, leave that party.
-      // A custom party (no pad) is kept until the player leaves it or steps onto a pad.
-      const choicePad = PORTALS.find((p) => p.size === c.portalChoice)?.pad;
-      if (c.room === 'lobby' && c.portalChoice !== null && (choicePad ? portalAt(s)?.size !== c.portalChoice : !!portalAt(s))) c.portalChoice = null;
+      if (c.room === 'lobby' && c.portalChoice !== null && padFor(c.portalChoice) !== portalAt(s)) c.portalChoice = null;
       s.facing = msg.facing;
       s.moving = msg.moving;
       s.sprint = msg.sprint;

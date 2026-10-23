@@ -1,11 +1,11 @@
 // Test bots for the lobby: they join the server, wander, then walk into a portal.
-// Handy for trying a 3- or 4-player portal alone. Sizes without a pad (5-9) join a custom
-// party from where they stand, like the Heist Lobby panel's CUSTOM row.
+// Handy for trying a party alone. Sizes 4-9 stand on the CUSTOM pad and pick that size.
 //
 // Usage: npm run bots -- [count=1] [portal size=2] [server=ws://localhost:3001/ws]
 
 import fs from 'node:fs';
 import { CHARACTERS } from '../src/config.ts';
+import { CUSTOM_MIN, CUSTOM_PAD } from '../src/data/round.ts';
 import { TRAPS } from '../src/data/traps.ts';
 import type { ClientMsg, ServerMsg } from '../src/net/protocol.ts';
 
@@ -15,8 +15,8 @@ const url = process.argv[4] ?? 'ws://localhost:3001/ws';
 const TILE = 16;
 
 const lobby = JSON.parse(fs.readFileSync(new URL('../public/assets/lobby/lobby.json', import.meta.url), 'utf8'));
-const portal = lobby.portals.find((p: { size: number }) => p.size === portalSize);
-if (!portal && !(portalSize >= 2 && portalSize <= 9)) throw new Error(`No ${portalSize}-player party`);
+const portal = lobby.portals.find((p: { size: number }) => p.size === (portalSize >= CUSTOM_MIN ? CUSTOM_PAD : portalSize));
+if (!portal || portalSize > 9) throw new Error(`No ${portalSize}-player party`);
 
 for (let i = 0; i < count; i++) {
   const ws = new WebSocket(url);
@@ -33,8 +33,9 @@ for (let i = 0; i < count; i++) {
   let lastCarriers = '';
   let lastHurt = '';
   // Each bot heads to its own spot inside the portal.
-  let tx = portal ? (portal.x + 1 + (i % 3) * 1.4) * TILE : 0;
-  let ty = portal ? (portal.y + 1.5 + Math.floor(i / 3) * 1.4) * TILE : 0;
+  const tx = (portal.x + 1 + (i % 3) * 1.4) * TILE;
+  const ty = (portal.y + 1.5 + Math.floor(i / 3) * 1.4) * TILE;
+  let picked = false;
 
   ws.onopen = () => send({ t: 'hello', name: `Bot ${i + 1}`, character: CHARACTERS[(i + 1) % CHARACTERS.length] });
   ws.onmessage = (e) => {
@@ -44,10 +45,7 @@ for (let i = 0; i < count; i++) {
       x = msg.x;
       y = msg.y;
       inMatch = false;
-      if (!portal) {
-        [tx, ty] = [x, y];
-        send({ t: 'portal', size: portalSize });
-      }
+      picked = false;
     }
     if (msg.t === 'match') {
       inMatch = true;
@@ -117,6 +115,11 @@ for (let i = 0; i < count; i++) {
       }
       const facing = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : dy < 0 ? 'up' : 'down';
       send({ t: 'move', room: 'lobby', x, y, facing, moving, sprint: false, carrying: false, hp: 100, stunned: false });
+      // On the pad: pick the party size (the CUSTOM pad needs it; the others ignore it).
+      if (!moving && !picked) {
+        picked = true;
+        send({ t: 'portal', size: portalSize });
+      }
     }, 50);
   }, 1500 + i * 700);
 }

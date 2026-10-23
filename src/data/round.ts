@@ -12,6 +12,10 @@ export const LIVE_MS = 240_000;
 /** Up to this many players in one heist (one Saboteur, the rest Runners). */
 export const MIN_CREW = 2;
 export const MAX_CREW = 9;
+/** The lobby's biggest pad (drawn as 4 players in the map) is the CUSTOM pad: its party size is
+ *  whatever the player picks, from CUSTOM_MIN to MAX_CREW. The 2 and 3 pads are fixed. */
+export const CUSTOM_PAD = 4;
+export const CUSTOM_MIN = 4;
 
 // The Saboteur's kit grows with the crew: more Runners, more traps to stop them with.
 // 2 players: 8 slots, 3: 10, 4: 12 ... 9: 22.

@@ -1,7 +1,7 @@
 import { CHARACTERS, type CharacterId } from '../config';
 import { abilityFor, CHARACTER_INFO } from '../data/characters';
 import type { Profile } from '../data/profile';
-import { MAX_CREW, MIN_CREW } from '../data/round';
+import { CUSTOM_MIN, MAX_CREW } from '../data/round';
 import type { MapId } from '../data/maps';
 import type { PortalState, Taken } from '../net/protocol';
 import { iconHtml, type IconName } from './pixelIcons';
@@ -67,7 +67,9 @@ export class LobbyUI {
   private lastPortals = '';
   /** Party sizes that have a pad in the safehouse; other sizes are custom parties. */
   private padSizes = new Set<number>();
-  private customSize = 5;
+  private size = CUSTOM_MIN;
+  /** Set once the player presses - or +: from then on the CUSTOM pad keeps their size. */
+  customPicked = false;
   private custom = document.createElement('div');
   private lastCard = '';
   private lastStart = '';
@@ -116,7 +118,7 @@ export class LobbyUI {
       if (row) this.onPortal(Number(row.dataset.size));
       row?.blur();
     }, opts);
-    // Custom party: any size from MIN_CREW to MAX_CREW, joined from here (no pad needed).
+    // The CUSTOM pad's party size, CUSTOM_MIN to MAX_CREW; JOIN walks you onto the pad.
     this.custom.className = 'custom-party';
     this.custom.innerHTML = `<span class="label">CUSTOM</span><button type="button" data-step="-1" aria-label="Fewer players">-</button><b class="n"></b><button type="button" data-step="1" aria-label="More players">+</button><button type="button" class="join">JOIN</button>`;
     this.portalList.after(this.custom);
@@ -125,9 +127,9 @@ export class LobbyUI {
       const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
       if (!btn) return;
       if (btn.dataset.step) {
-        this.customSize = Math.min(MAX_CREW, Math.max(MIN_CREW, this.customSize + Number(btn.dataset.step)));
-        this.renderCustom();
-      } else this.onPortal(this.customSize);
+        this.customPicked = true;
+        this.customSize = this.size + Number(btn.dataset.step);
+      } else this.onPortal(this.size);
       btn.blur();
     }, opts);
     this.startBtn.addEventListener('click', () => {
@@ -237,8 +239,21 @@ export class LobbyUI {
     this.lastPortals = '';
   }
 
+  /** The size picked for the CUSTOM pad. */
+  get customSize() {
+    return this.size;
+  }
+
+  set customSize(n: number) {
+    const next = Math.min(MAX_CREW, Math.max(CUSTOM_MIN, n));
+    if (next === this.size) return;
+    this.size = next;
+    this.renderCustom();
+    this.lastPortals = '';
+  }
+
   private renderCustom() {
-    this.custom.querySelector('.n')!.textContent = `${this.customSize}P`;
+    this.custom.querySelector('.n')!.textContent = `${this.size}P`;
   }
 
   setPortals(all: PortalState[], online: number, mine: number | null) {

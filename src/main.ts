@@ -5,7 +5,7 @@ import { MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
 import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
-import { type Phase, placementRefusal, saboteurMaxEnergy, trapSlots } from './data/round';
+import { CUSTOM_MIN, CUSTOM_PAD, type Phase, placementRefusal, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
@@ -186,8 +186,8 @@ async function boot() {
   let online = 0;
   /** The portal under the mouse, and until when START HEIST's "pick a portal" flash runs. */
   let hoverPortal: number | null = null;
-  /** A custom party size (no pad) joined from the Heist Lobby panel. */
-  let customParty: number | null = null;
+  /** The party size last told to the server, so it hears when we step on or off a pad. */
+  let sentPortal: number | null = null;
   let flashUntil = 0;
   let viewX = 0;
   let viewY = 0;
@@ -386,7 +386,7 @@ async function boot() {
         break;
       case 'lobby':
         match = null;
-        customParty = null;
+        sentPortal = null;
         remotes.clear();
         setCharacter(msg.character);
         me.x = msg.x;
@@ -527,7 +527,7 @@ async function boot() {
   // The server confirms (or refuses) the pick with a 'character' message.
   lobby.onPick = (id) => net.send({ t: 'character', character: id });
   lobby.onLoadout = () => lobby.openPicker(myCharacter);
-  lobby.setPadSizes(lobbyData.portals.map((p) => p.size));
+  lobby.setPadSizes(lobbyData.portals.map((p) => p.size).filter((size) => size !== CUSTOM_PAD));
   lobby.onPortal = (size) => joinPortal(size);
   // The map picker: tell the server (it goes with the crew's majority when a portal fills).
   lobby.onMap = (id) => {
@@ -566,12 +566,13 @@ async function boot() {
 
   /** The party size you're standing in, if any. */
   function myPortal(): number | null {
-    // Standing on a pad puts you in that party (the server does the same); otherwise you're
-    // in the custom party you joined from the Heist Lobby panel, if any.
-    const pad = lobbyData.portals.find((p) => LobbyMap.inside(p, me.x, me.y))?.size ?? null;
-    if (pad !== null) customParty = null;
-    return pad ?? customParty;
+    const pad = lobbyData.portals.find((p) => LobbyMap.inside(p, me.x, me.y));
+    return pad ? padSize(pad) : null;
   }
+
+  /** The CUSTOM pad (the map's 4-player pad) is whatever size you picked; the others are fixed. */
+  const padSize = (p: { size: number }) => (p.size === CUSTOM_PAD ? lobby.customSize : p.size);
+  const padFor = (size: number) => lobbyData.portals.find((q) => q.size === (size >= CUSTOM_MIN ? CUSTOM_PAD : size));
 
   /**
    * Picking a portal (click, or a row in the Heist Lobby panel): step into its next free
@@ -580,26 +581,15 @@ async function boot() {
    */
   function joinPortal(size: number) {
     if (scene !== 'lobby' || lobby.panelOpen) return;
-    const p = lobbyData.portals.find((q) => q.size === size);
-    if (!p) {
-      // A custom size has no pad: step off any pad you're on, then join (or leave) it.
-      const on = lobbyData.portals.find((q) => LobbyMap.inside(q, me.x, me.y));
-      if (on) {
-        me.x = (on.x + on.w / 2) * ART_TILE;
-        me.y = (on.y - 0.9) * ART_TILE;
-        me.facing = 'up';
-      }
-      customParty = customParty === size ? null : size;
-      net.send({ t: 'portal', size: customParty });
-      frameCamera(true);
-      return;
-    }
+    const p = padFor(size);
+    if (!p) return;
     if (myPortal() === size) {
       me.x = (p.x + p.w / 2) * ART_TILE;
       me.y = (p.y - 0.9) * ART_TILE;
       me.facing = 'up';
       net.send({ t: 'portal', size: null });
     } else {
+      if (size >= CUSTOM_MIN) lobby.customSize = size;
       const seat = Math.min(portals.find((s) => s.size === size)?.count ?? 0, size - 1);
       me.x = (p.x + 1.2 + (seat % 3) * ((p.w - 2.4) / 2)) * ART_TILE;
       me.y = (p.y + 2.4 + Math.floor(seat / 3) * 1.3) * ART_TILE;
@@ -623,7 +613,8 @@ async function boot() {
     const wx = viewX + (clientX * dpr) / scale;
     const wy = viewY + (clientY * dpr) / scale;
     // The pad and its sign above it.
-    return lobbyData.portals.find((p) => LobbyMap.inside({ x: p.x, y: p.y - 1.1, w: p.w, h: p.h + 1.1 }, wx, wy))?.size ?? null;
+    const p = lobbyData.portals.find((q) => LobbyMap.inside({ x: q.x, y: q.y - 1.1, w: q.w, h: q.h + 1.1 }, wx, wy));
+    return p ? padSize(p) : null;
   };
   canvas.addEventListener('mousemove', (e) => {
     hoverPortal = scene === 'lobby' && !lobby.panelOpen ? portalAtScreen(e.clientX, e.clientY) : null;
@@ -895,7 +886,20 @@ async function boot() {
         me.update(input, lobbyMap);
         if (input.action && nearWardrobe()) lobby.openPicker(myCharacter);
       }
-      lobby.setPortals(portals, online, myPortal());
+      // Until you pick a size yourself, the CUSTOM pad shows the busiest custom party waiting,
+      // so walking in joins them.
+      const onCustom = lobbyData.portals.some((p) => p.size === CUSTOM_PAD && LobbyMap.inside(p, me.x, me.y));
+      if (!onCustom && !lobby.customPicked) {
+        const busiest = portals.filter((p) => p.size >= CUSTOM_MIN && p.count > 0).sort((a, b) => b.count - a.count)[0];
+        if (busiest) lobby.customSize = busiest.size;
+      }
+      // Tell the server which party we're standing in (the CUSTOM pad's size is ours to pick).
+      const mine = myPortal();
+      if (mine !== sentPortal) {
+        sentPortal = mine;
+        net.send({ t: 'portal', size: mine });
+      }
+      lobby.setPortals(portals, online, mine);
       lobby.setStart(startState());
       sendPosition();
       frameCamera(false);
@@ -1333,17 +1337,21 @@ async function boot() {
   }
 
   /** The tinted pad under the players. */
+  /** The CUSTOM pad glows purple; the fixed pads keep their colours. */
+  const portalColor = (p: { size: number }) => (p.size === CUSTOM_PAD ? '#9b6cff' : PORTAL_COLORS[p.size] ?? '#ffffff');
+
   function drawPortalFloors(camX: number, camY: number) {
     const mine = myPortal();
     const flashing = performance.now() < flashUntil;
     for (const p of lobbyData.portals) {
-      const state = portals.find((s) => s.size === p.size);
+      const size = padSize(p);
+      const state = portals.find((s) => s.size === size);
       const counting = state?.countdown != null;
       ctx.save();
-      ctx.fillStyle = PORTAL_COLORS[p.size] ?? '#ffffff';
+      ctx.fillStyle = portalColor(p);
       let alpha = 0.26;
-      if (p.size === mine) alpha = 0.38 + 0.08 * Math.sin(frame / 10);
-      else if (p.size === hoverPortal) alpha = 0.34;
+      if (size === mine) alpha = 0.38 + 0.08 * Math.sin(frame / 10);
+      else if (size === hoverPortal) alpha = 0.34;
       if (flashing) alpha = 0.3 + 0.3 * Math.abs(Math.sin(frame / 5));
       ctx.globalAlpha = counting ? 0.35 + 0.3 * Math.abs(Math.sin(frame / 6)) : alpha;
       ctx.fillRect(p.x * ART_TILE - camX, p.y * ART_TILE - camY, p.w * ART_TILE, p.h * ART_TILE);
@@ -1356,10 +1364,11 @@ async function boot() {
     const pulse = 0.65 + 0.35 * Math.sin(frame / 15);
     const mine = myPortal();
     for (const p of lobbyData.portals) {
-      const state = portals.find((s) => s.size === p.size);
-      const color = PORTAL_COLORS[p.size] ?? '#ffffff';
-      const selected = p.size === mine;
-      const hovered = p.size === hoverPortal;
+      const size = padSize(p);
+      const state = portals.find((s) => s.size === size);
+      const color = portalColor(p);
+      const selected = size === mine;
+      const hovered = size === hoverPortal;
       const x = Math.round(p.x * ART_TILE - camX);
       const y = Math.round(p.y * ART_TILE - camY) - (hovered && !selected ? 1 : 0);
       const w = p.w * ART_TILE;
@@ -1396,9 +1405,10 @@ async function boot() {
       }
       // One little person per seat: lit when taken.
       const count = state?.count ?? 0;
-      const gap = 13;
-      const left = x + w / 2 - ((p.size - 1) * gap) / 2;
-      for (let i = 0; i < p.size; i++) person(left + i * gap, y + h * 0.38, i < count ? color : 'rgba(255,244,230,0.3)');
+      // Up to 9 seats on the CUSTOM pad, so they squeeze together to fit.
+      const gap = Math.min(13, (w - 20) / Math.max(1, size - 1));
+      const left = x + w / 2 - ((size - 1) * gap) / 2;
+      for (let i = 0; i < size; i++) person(left + i * gap, y + h * 0.38, i < count ? color : 'rgba(255,244,230,0.3)');
       // The sign plate above the pad, hung on two posts.
       ctx.fillStyle = '#6b4529';
       ctx.fillRect(x + 10, y - 4, 2, 4);
@@ -1428,14 +1438,15 @@ async function boot() {
 
   function drawPortalLabels(camX: number, camY: number) {
     for (const p of lobbyData.portals) {
-      const state = portals.find((s) => s.size === p.size);
-      const color = PORTAL_COLORS[p.size] ?? '#ffffff';
+      const size = padSize(p);
+      const state = portals.find((s) => s.size === size);
+      const color = portalColor(p);
       const cx = ((p.x + p.w / 2) * ART_TILE - camX) * scale;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.font = `${Math.round(8 * dpr)}px "Press Start 2P"`;
       ctx.fillStyle = color;
-      ctx.fillText(`${p.size} PLAYERS`, cx, (p.y * ART_TILE - 9 - camY) * scale);
+      ctx.fillText(p.size === CUSTOM_PAD ? `CUSTOM ${size}P` : `${size} PLAYERS`, cx, (p.y * ART_TILE - 9 - camY) * scale);
       const countY = ((p.y + p.h * 0.75) * ART_TILE - camY) * scale;
       if (state?.countdown != null) {
         const midY = ((p.y + p.h / 2) * ART_TILE - camY) * scale;
@@ -1447,13 +1458,13 @@ async function boot() {
       } else {
         ctx.font = `${Math.round(13 * dpr)}px "Press Start 2P"`;
         ctx.fillStyle = '#0e0a1a';
-        ctx.fillText(`${state?.count ?? 0}/${p.size}`, cx + 2 * dpr, countY + 2 * dpr);
+        ctx.fillText(`${state?.count ?? 0}/${size}`, cx + 2 * dpr, countY + 2 * dpr);
         ctx.fillStyle = '#fff4e6';
-        ctx.fillText(`${state?.count ?? 0}/${p.size}`, cx, countY);
+        ctx.fillText(`${state?.count ?? 0}/${size}`, cx, countY);
       }
       // Under the count: your party, or what a click will do.
-      const mine = myPortal() === p.size;
-      const note = mine ? (hoverPortal === p.size ? 'CLICK TO LEAVE' : 'YOUR PARTY') : hoverPortal === p.size ? 'CLICK TO JOIN' : '';
+      const mine = myPortal() === size;
+      const note = mine ? (hoverPortal === size ? 'CLICK TO LEAVE' : 'YOUR PARTY') : hoverPortal === size ? 'CLICK TO JOIN' : '';
       if (note) {
         ctx.font = `${Math.round(7 * dpr)}px "Press Start 2P"`;
         ctx.fillStyle = '#0e0a1a';
