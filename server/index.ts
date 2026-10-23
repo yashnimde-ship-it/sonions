@@ -865,7 +865,10 @@ function handle(c: Client, msg: ClientMsg) {
       lastTrapHit.set(s.id, now);
       const vault = vaults.get(c.room);
       if (vault) vault.hits++;
-      const alert: ServerMsg = { t: 'trapAlert', id: s.id, name: s.name, trap: String(msg.trap).slice(0, 24), area: String(msg.area).slice(0, 32) };
+      // Where it happened: where the Runner says, if that's close to where we last saw them.
+      const close = Number.isFinite(msg.x) && Number.isFinite(msg.y) && Math.hypot(msg.x! - s.x, msg.y! - s.y) <= 48;
+      const [ax, ay] = close ? [Math.round(msg.x!), Math.round(msg.y!)] : [Math.round(s.x), Math.round(s.y)];
+      const alert: ServerMsg = { t: 'trapAlert', id: s.id, name: s.name, trap: String(msg.trap).slice(0, 24), area: String(msg.area).slice(0, 32), x: ax, y: ay, deck: deckOf(c) };
       for (const id of matches.get(c.room) ?? []) {
         const member = clients.get(id);
         if (member) send(member, alert);

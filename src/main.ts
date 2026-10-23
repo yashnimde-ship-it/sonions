@@ -289,6 +289,12 @@ async function boot() {
   let respawnAt = 0;
   const trapFiredAt = new Map<string, number>();
   const trapHits = new Set<string>();
+  /**
+   * The minimap flash: when anyone is caught, a small round map of where it happened shows at
+   * the top left for MINIMAP_MS, then goes. Nothing stays marked, so Runners have to remember.
+   */
+  let trapFlash: { x: number; y: number; deck: MapId; trap: string; area: string; at: number } | null = null;
+  const MINIMAP_MS = 4000;
   /** Plates jammed by Trap Jam, until when (performance.now ms). */
   const trapJammedUntil = new Map<string, number>();
   const tripwireArmed = new Set<string>();
@@ -732,7 +738,9 @@ async function boot() {
         break;
       case 'trapAlert': {
         const who = msg.id === myId ? 'You' : esc(msg.name);
-        hud.alert(`<span class="who">${who}</span> got caught by a <b>${esc(msg.trap)}</b><span class="where">${esc(msg.area)}</span>`);
+        const deckNote = multiDeck() && msg.deck !== deckId ? ` \u00b7 ${deckShort(msg.deck)}` : '';
+        hud.alert(`<span class="who">${who}</span> got caught by a <b>${esc(msg.trap)}</b><span class="where">${esc(msg.area)}${deckNote}</span>`);
+        trapFlash = { x: msg.x, y: msg.y, deck: msg.deck, trap: msg.trap, area: msg.area, at: performance.now() };
         break;
       }
       case 'placedTrapHit':
@@ -1019,7 +1027,7 @@ async function boot() {
 
   /** Tell the crew I got caught: the server turns it into a pop-up for everyone. */
   function reportHit(trap: string) {
-    net.send({ t: 'trapHit', trap, area: estate.areaAt(me.x, me.y - 4) || 'the house' });
+    net.send({ t: 'trapHit', trap, area: estate.areaAt(me.x, me.y - 4) || 'the house', x: Math.round(me.x), y: Math.round(me.y) });
   }
 
   /** Damage and a stun; at 0 HP you're knocked out (and the server takes your diamond). */
@@ -1593,6 +1601,7 @@ async function boot() {
     ctx.restore();
     drawGetawayLabel(camX, camY);
     if (settings.values.nameTags && !result) drawNameTags(camX, camY);
+    drawTrapMinimap();
     if (phase === 'setup' && !match?.saboteur) drawBlueprint(camX, camY);
     if (match?.saboteur && !result) drawTrapMarkers(camX, camY);
     if (match?.saboteur && phase === 'setup') drawSpotLabel(camX, camY);
@@ -2290,6 +2299,120 @@ async function boot() {
     ctx.fillRect(sx - w / 2, sy - size * 1.7, w, size * 1.7);
     ctx.fillStyle = color;
     ctx.fillText(text, sx, sy - size * 0.35);
+  }
+
+  /** The round minimap at the top left, centred on the trap that just caught someone. */
+  function drawTrapMinimap() {
+    if (!trapFlash || scene !== 'match' || result) return;
+    const t = performance.now() - trapFlash.at;
+    if (t >= MINIMAP_MS) {
+      trapFlash = null;
+      return;
+    }
+    const map = deckMaps.get(trapFlash.deck) ?? (trapFlash.deck === deckId ? estate : null);
+    if (!map) return;
+    // Under the objective panel, on the left.
+    const panel = document.querySelector('.objective')?.getBoundingClientRect();
+    const R = 74 * dpr; // radius, screen px
+    const cx = (16 + 74 + 4) * dpr;
+    const cy = ((panel && panel.height ? panel.bottom : 16) + 18 + 74) * dpr;
+    const SPAN = 20 * ART_TILE; // world px from the centre to the rim
+    const k = R / SPAN;
+    // Fade in and out at the ends.
+    const alpha = Math.min(1, t / 180, (MINIMAP_MS - t) / 350);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // Frame and shadow.
+    ctx.fillStyle = 'rgba(8, 6, 16, 0.85)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, R + 7 * dpr, 0, Math.PI * 2);
+    ctx.fill();
+    // The map round the trap, clipped to the circle (only the part inside the world is drawn).
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = '#0e1014';
+    ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
+    const sx0 = Math.max(0, trapFlash.x - SPAN);
+    const sy0 = Math.max(0, trapFlash.y - SPAN);
+    const sx1 = Math.min(map.widthPx, trapFlash.x + SPAN);
+    const sy1 = Math.min(map.heightPx, trapFlash.y + SPAN);
+    if (sx1 > sx0 && sy1 > sy0) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(map.below, sx0, sy0, sx1 - sx0, sy1 - sy0, cx + (sx0 - trapFlash.x) * k, cy + (sy0 - trapFlash.y) * k, (sx1 - sx0) * k, (sy1 - sy0) * k);
+    }
+    ctx.fillStyle = 'rgba(10, 8, 24, 0.25)';
+    ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
+    // Where I am, if I'm on that deck: a dot, or an arrow on the rim pointing my way.
+    if (trapFlash.deck === deckId && !match?.saboteur) {
+      const dx = (me.x - trapFlash.x) * k;
+      const dy = (me.y - trapFlash.y) * k;
+      const d = Math.hypot(dx, dy);
+      if (d < R - 6 * dpr) {
+        ctx.fillStyle = '#0e0a1a';
+        ctx.beginPath();
+        ctx.arc(cx + dx, cy + dy, 5 * dpr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#6fe0ff';
+        ctx.beginPath();
+        ctx.arc(cx + dx, cy + dy, 3.5 * dpr, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const a = Math.atan2(dy, dx);
+        const rx = cx + Math.cos(a) * (R - 8 * dpr);
+        const ry = cy + Math.sin(a) * (R - 8 * dpr);
+        ctx.fillStyle = '#6fe0ff';
+        ctx.beginPath();
+        ctx.moveTo(rx + Math.cos(a) * 7 * dpr, ry + Math.sin(a) * 7 * dpr);
+        ctx.lineTo(rx + Math.cos(a + 2.4) * 6 * dpr, ry + Math.sin(a + 2.4) * 6 * dpr);
+        ctx.lineTo(rx + Math.cos(a - 2.4) * 6 * dpr, ry + Math.sin(a - 2.4) * 6 * dpr);
+        ctx.fill();
+      }
+    }
+    // The trap: a pulsing red ping with a cross in the middle.
+    const p = (t % 900) / 900;
+    ctx.strokeStyle = `rgba(255, 70, 70, ${1 - p})`;
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath();
+    ctx.arc(cx, cy, (6 + p * 22) * dpr, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#ff3b4a';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 6 * dpr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fff4e6';
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(cx - 3 * dpr, cy - 3 * dpr);
+    ctx.lineTo(cx + 3 * dpr, cy + 3 * dpr);
+    ctx.moveTo(cx + 3 * dpr, cy - 3 * dpr);
+    ctx.lineTo(cx - 3 * dpr, cy + 3 * dpr);
+    ctx.stroke();
+    ctx.restore();
+    // The rim, and the time left draining round it.
+    ctx.strokeStyle = '#ffc94a';
+    ctx.lineWidth = 3 * dpr;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R + 1.5 * dpr, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = '#ff3b4a';
+    ctx.lineWidth = 3 * dpr;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R + 5 * dpr, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - t / MINIMAP_MS));
+    ctx.stroke();
+    // What and where, under the circle.
+    const label = `${trapFlash.trap.toUpperCase()} \u00b7 ${trapFlash.area.toUpperCase()}${multiDeck() ? ` \u00b7 ${deckShort(trapFlash.deck)}` : ''}`;
+    const size = Math.round(7 * dpr);
+    ctx.font = `${size}px "Press Start 2P"`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const w = ctx.measureText(label).width + size * 1.6;
+    ctx.fillStyle = 'rgba(8, 6, 16, 0.85)';
+    ctx.fillRect(cx - w / 2, cy + R + 11 * dpr, w, size * 2.2);
+    ctx.fillStyle = '#ff8a8a';
+    ctx.fillText(label, cx, cy + R + 11 * dpr + size * 0.6);
+    ctx.restore();
   }
 
   function drawNameTags(camX: number, camY: number) {

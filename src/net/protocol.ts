@@ -85,7 +85,7 @@ export type ClientMsg =
   /** A Runner jams every trap in reach (Trap Jam). */
   | { t: 'jam'; x: number; y: number }
   /** I (a Runner) just got caught by a trap, and where; the server tells the whole crew. */
-  | { t: 'trapHit'; trap: string; area: string }
+  | { t: 'trapHit'; trap: string; area: string; x?: number; y?: number }
   /** Latch heals another Runner (First Aid). */
   | { t: 'heal'; target: string }
   /** An ability was used (for effects others should see). */
@@ -174,7 +174,8 @@ export type ServerMsg =
   /** A trap plate is jammed for `ms`: it can't fire, and a pending shock is cancelled. */
   | { t: 'jam'; id: string; ms: number; trap?: PlacedTrap }
   /** Someone in the heist got caught by a trap: shown to everyone as a pop-up. */
-  | { t: 'trapAlert'; id: string; name: string; trap: string; area: string }
+  /** Someone was caught; (x, y) on `deck` is where (for the 4-second minimap flash). */
+  | { t: 'trapAlert'; id: string; name: string; trap: string; area: string; x: number; y: number; deck: MapId }
   /** Another Runner healed you to full (First Aid). */
   | { t: 'healed'; by: string }
   /** Someone in your match left. */
