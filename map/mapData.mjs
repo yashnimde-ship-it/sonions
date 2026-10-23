@@ -52,25 +52,157 @@ export const DOORS = [
 ];
 
 /**
- * The wooden doors drawn in the reference: [x0, y0, x1, y1] in tiles (x1/y1 exclusive),
- * the door's whole slab including its frame. They start closed and block the way;
- * press E to open them. (The pale strips on vertical walls are doorways seen edge-on
- * and are always open.)
+ * Every door in the reference, traced from the art: [x0, y0, x1, y1] in tiles (x1/y1
+ * exclusive). Front-facing doors are the wooden slabs, frame included. Side doors
+ * (`side: true`) are the gaps in vertical walls where the reference draws the door
+ * swung open as a pale strip; closed, a wooden leaf fills the gap. All doors start
+ * closed and block the way; press E to open them.
  */
 export const DOOR_SLABS = [
-  { id: 'door-bath', name: 'bathroom door', box: [44.2, 16.4, 47.5, 19.7] },
-  { id: 'door-kitchen', name: 'kitchen door', box: [35.0, 18.8, 38.5, 22.1] },
-  { id: 'door-master', name: 'bedroom door', box: [52.0, 18.6, 55.2, 22.1] },
-  { id: 'door-closet', name: 'closet door', box: [35.0, 25.2, 38.0, 28.8] },
-  { id: 'door-dining', name: 'dining room door', box: [54.1, 25.2, 58.0, 28.5] },
-  { id: 'door-front', name: 'front door', box: [43.4, 39.4, 47.9, 43.9] },
-  { id: 'door-patio', name: 'patio door', box: [54.1, 39.9, 58.2, 42.9] },
-  { id: 'door-storage', name: 'storage door', box: [20.9, 13.1, 23.0, 15.9] },
-  { id: 'door-study', name: 'study door', box: [28.6, 35.7, 30.8, 38.5] },
-  { id: 'door-yard', name: 'back door', box: [70.2, 19.6, 73.8, 23.0] },
-  { id: 'door-blue', name: 'bedroom door', box: [64.9, 29.9, 67.9, 33.4] },
-  { id: 'door-purple', name: 'bedroom door', box: [64.9, 35.0, 67.9, 38.7] },
+  { id: 'door-bath', name: 'bathroom door', box: [44.1, 16.3, 47.6, 19.8] },
+  { id: 'door-kitchen', name: 'kitchen door', box: [34.95, 18.8, 38.5, 22.2] },
+  { id: 'door-master', name: 'bedroom door', box: [52.0, 18.6, 55.3, 22.1] },
+  { id: 'door-closet', name: 'closet door', box: [34.95, 25.25, 38.0, 28.8] },
+  { id: 'door-dining', name: 'dining room door', box: [54.0, 25.25, 57.95, 28.45] },
+  { id: 'door-front', name: 'front door', box: [43.4, 39.4, 47.95, 43.9] },
+  { id: 'door-patio', name: 'patio door', box: [54.0, 39.9, 58.6, 43.0] },
+  { id: 'door-storage', name: 'storage door', box: [20.9, 13.1, 23.0, 16.1] },
+  { id: 'door-study', name: 'study door', box: [27.4, 35.6, 30.3, 38.7] },
+  { id: 'door-yard', name: 'back door', box: [70.2, 19.6, 73.8, 23.1] },
+  { id: 'door-blue', name: 'bedroom door', box: [64.9, 29.95, 67.9, 33.35] },
+  { id: 'door-purple', name: 'bedroom door', box: [64.9, 35.0, 67.9, 38.75] },
   { id: 'door-garage', name: 'garage door', box: [10.2, 19.6, 18.2, 20.8], rolling: true },
+  // Side doors (pale strips in the reference)
+  { id: 'side-living', name: 'living room door', box: [33.55, 22.0, 34.45, 25.1], side: true },
+  { id: 'side-closet', name: 'closet door', box: [41.2, 30.4, 42.0, 33.1], side: true },
+  { id: 'side-dining', name: 'dining room door', box: [49.8, 29.3, 51.0, 32.1], side: true },
+  { id: 'side-blue', name: 'bedroom door', box: [61.4, 22.9, 62.1, 25.3], side: true },
+  { id: 'side-bath2', name: 'bathroom door', box: [69.9, 32.3, 70.6, 34.5], side: true },
+  { id: 'side-kitchen', name: 'kitchen door', box: [24.5, 13.4, 25.5, 15.95], side: true },
+  { id: 'side-powder', name: 'powder room door', box: [38.8, 36.4, 39.5, 38.5], side: true },
+  { id: 'side-powder-top', name: 'powder room door', box: [34.5, 35.5, 37.6, 36.3], side: true },
+];
+
+/**
+ * Collision boxes for furniture and props, traced from the reference: [x0, y0, x1, y1]
+ * in tiles (end exclusive), covering each piece as drawn so the bandit can't step onto
+ * it. Used with the reference art; the procedural art uses OBJECTS footprints.
+ */
+export const SOLIDS = [
+  // Garage
+  [12.55, 9.65, 16.95, 19.05], // car
+  [10.0, 8.0, 11.95, 9.8], // workbench
+  [18.6, 8.5, 20.0, 10.2], // crate
+  [9.4, 11.4, 10.6, 16.6], // tool shelves, west
+  [19.3, 11.4, 20.3, 19.5], // tool shelves, east
+  // Storage
+  [21.45, 7.6, 23.9, 10.4], // dresser
+  [23.95, 7.6, 24.5, 9.0], // plant
+  [21.4, 17.7, 24.0, 18.7], // low shelf
+  // Kitchen
+  [25.5, 7.8, 28.0, 12.7], // fridge
+  [28.0, 7.9, 41.0, 10.7], // counter, sink, stove
+  [40.2, 9.0, 41.3, 12.1], // cabinet
+  [29.0, 10.0, 30.6, 11.8], // little table
+  [33.1, 12.3, 39.25, 17.25], // dining table and chairs
+  [40.0, 13.4, 41.2, 16.0], // plant
+  [39.9, 16.6, 41.3, 18.5], // plant
+  [25.6, 17.0, 27.4, 18.6], // plant
+  // Bathroom
+  [47.1, 10.4, 48.7, 13.1], // sink unit
+  [42.5, 13.6, 44.5, 15.8], // toilet
+  [47.95, 13.5, 49.0, 16.0], // sink
+  // Master bedroom
+  [50.0, 8.0, 51.9, 13.5], // wardrobe
+  [50.0, 14.5, 51.9, 18.4], // dresser
+  [52.0, 8.2, 53.8, 10.9], // side table
+  [54.3, 8.4, 56.3, 11.6], // nightstand
+  [56.55, 8.0, 62.6, 17.2], // bed
+  [63.0, 8.4, 64.9, 11.6], // nightstand
+  [66.0, 8.0, 68.0, 11.6], // plant on cabinet
+  [66.5, 11.5, 68.0, 17.0], // bookshelf
+  // Living room
+  [23.5, 20.0, 28.45, 23.8], // bookshelf
+  [28.85, 20.5, 30.95, 23.4], // cabinet
+  [31.25, 21.9, 32.6, 23.4], // side table
+  [21.2, 22.8, 22.8, 26.4], // floor lamp
+  [20.5, 25.4, 22.3, 31.7], // TV cabinet
+  [20.4, 32.6, 22.6, 35.2], // big plant
+  [25.4, 24.75, 33.1, 28.5], // sofa
+  [23.95, 29.2, 26.8, 34.0], // armchair
+  [27.5, 29.0, 32.1, 33.3], // coffee table
+  // Hallway and closet
+  [39.3, 20.3, 41.4, 23.6], // big plant
+  [49.6, 20.9, 51.2, 22.1], // small plant
+  [55.9, 20.4, 61.0, 23.1], // console table
+  [44.4, 26.4, 47.1, 31.9], // table with plant
+  [39.5, 26.4, 41.05, 31.0], // closet dresser
+  [40.2, 34.0, 41.0, 35.5], // small plant
+  [48.3, 36.0, 49.6, 39.5], // shelf and plant
+  [40.0, 36.8, 42.1, 39.5], // plants
+  // Dining room
+  [51.0, 27.1, 52.45, 34.0], // sideboard
+  [54.0, 29.9, 59.2, 37.3], // table and chairs
+  [59.8, 26.5, 61.3, 29.0], // plant
+  [51.0, 36.8, 52.9, 39.6], // plant
+  // Blue bedroom
+  [63.45, 21.4, 67.4, 28.5], // bed
+  [62.4, 21.3, 63.8, 24.5], // nightstand
+  [67.4, 20.8, 70.0, 23.9], // bookshelf
+  [73.35, 23.9, 75.3, 28.5], // desk
+  [74.1, 20.8, 75.3, 23.6], // tall cabinet
+  [72.1, 28.7, 75.3, 30.0], // dog bed and box
+  [62.5, 28.4, 64.3, 30.0], // plant
+  [61.6, 31.0, 64.8, 33.2], // hall cabinet
+  // Bathroom 2
+  [74.1, 31.9, 76.0, 35.8], // bathtub
+  [71.5, 35.0, 73.6, 36.0], // sink
+  // Purple bedroom
+  [68.55, 37.4, 74.3, 45.5], // bed
+  [74.4, 37.7, 75.95, 40.7], // nightstand
+  [74.9, 41.0, 75.95, 45.6], // cabinet
+  [62.5, 36.5, 64.3, 45.5], // plant and shelves
+  [64.5, 43.1, 66.2, 45.4], // chair
+  // Study
+  [24.0, 35.9, 27.1, 38.8], // bookshelf
+  [20.6, 37.1, 23.5, 39.4], // low bookshelf
+  [20.4, 39.6, 22.1, 45.0], // cabinet and plant
+  [26.25, 40.4, 30.9, 45.3], // desk and chair
+  [31.95, 37.4, 32.95, 39.3], // plant
+  // Powder room
+  [36.7, 37.2, 38.5, 39.5], // sink
+  [34.5, 40.0, 35.8, 42.1], // toilet
+  // Pool deck and back deck
+  [78.6, 13.9, 87.1, 21.9], // pool water
+  [89.3, 20.8, 90.1, 21.9], // umbrella pole
+  [88.6, 22.5, 92.4, 24.3], // cafe table and chair
+  [82.1, 23.0, 84.0, 26.9], // lounger
+  [84.9, 23.0, 86.9, 26.9], // lounger
+  [78.9, 23.2, 81.2, 25.8], // flower pot
+  [78.0, 5.0, 84.0, 7.3], // planter boxes
+  [89.5, 8.8, 90.2, 10.0], // deck lamp
+  [74.1, 14.0, 76.3, 19.4], // potted plant and planter
+  [69.1, 7.0, 70.7, 9.6], // plant
+  // Backyard
+  [86.2, 32.4, 92.7, 41.8], // vegetable garden
+  [78.8, 35.3, 81.0, 38.6], // planter
+  [89.0, 41.3, 91.8, 43.6], // chest
+  [89.15, 45.5, 93.4, 50.7], // doghouse
+  [79.6, 44.8, 80.1, 47.2], // swing post
+  [83.6, 44.8, 84.2, 47.2], // swing post
+  // West lawn
+  [6.0, 37.1, 13.3, 46.75], // shed
+  [13.6, 42.4, 16.1, 45.5], // firewood and crate
+  // Front yard and porch
+  [26.0, 50.0, 28.8, 51.75], // bench
+  [39.7, 45.4, 42.3, 49.1], // potted shrub
+  [49.2, 45.4, 51.8, 49.1], // potted shrub
+  [40.2, 41.3, 41.5, 44.6], // porch pillar
+  [49.6, 41.3, 51.0, 44.6], // porch pillar
+  [51.4, 42.5, 53.5, 45.2], // potted plant
+  [58.6, 42.5, 60.6, 45.2], // potted plant
+  [40.5, 52.6, 41.3, 53.6], // mailbox
+  [50.3, 52.6, 51.3, 53.6], // mailbox
 ];
 
 /** Windows in exterior walls: [x0, y0, x1, y1] inclusive. */
@@ -315,27 +447,27 @@ export const LAMPS = [
 
 export const INTERACTABLES = [
   { id: 'car', rect: [12, 9, 17, 18], name: 'red sedan', text: "A shiny red sedan. Locked tight, and the keys aren't in it." },
-  { id: 'toolbox', rect: [9, 10, 10, 17], name: 'toolbox', loot: 90, text: 'You swipe a toolbox full of expensive tools.' },
-  { id: 'fridge', rect: [26, 7, 28, 11], name: 'fridge', text: 'A midnight snack would be nice... but focus. Loot first.' },
-  { id: 'jar', rect: [38, 7, 39, 8], name: 'cookie jar', loot: 120, text: 'The cookie jar is stuffed with cash! You pocket it.' },
-  { id: 'stove', rect: [33, 7, 35, 8], name: 'stove', text: 'Still warm. Someone cooked dinner not long ago.' },
-  { id: 'jewelry', rect: [66, 7, 67, 9], name: 'jewelry box', loot: 500, text: 'A velvet jewelry box. Pearls, rings... jackpot!' },
-  { id: 'masterbed', rect: [56, 7, 62, 16], name: 'bed', text: 'A big comfy bed. No napping on the job.' },
-  { id: 'tv', rect: [20, 25, 21, 30], name: 'TV', loot: 300, text: 'You unplug the flat-screen TV and squeeze it into the sack.' },
-  { id: 'bookshelf', rect: [23, 20, 28, 22], name: 'bookshelf', text: 'Classics, mysteries... and a book called "Home Security 101".' },
-  { id: 'sofa', rect: [25, 24, 32, 27], name: 'sofa', text: 'Plush red cushions. You check under them: just crumbs.' },
-  { id: 'laptop', rect: [26, 40, 30, 44], name: 'laptop', loot: 800, text: "A brand-new laptop on the study desk. It's coming with you." },
+  { id: 'toolbox', rect: [9, 11, 10, 16], name: 'toolbox', loot: 90, text: 'You swipe a toolbox full of expensive tools.' },
+  { id: 'fridge', rect: [25, 7, 27, 12], name: 'fridge', text: 'A midnight snack would be nice... but focus. Loot first.' },
+  { id: 'jar', rect: [38, 7, 39, 10], name: 'cookie jar', loot: 120, text: 'The cookie jar is stuffed with cash! You pocket it.' },
+  { id: 'stove', rect: [33, 7, 35, 10], name: 'stove', text: 'Still warm. Someone cooked dinner not long ago.' },
+  { id: 'jewelry', rect: [66, 8, 67, 11], name: 'jewelry box', loot: 500, text: 'A velvet jewelry box. Pearls, rings... jackpot!' },
+  { id: 'masterbed', rect: [56, 8, 62, 17], name: 'bed', text: 'A big comfy bed. No napping on the job.' },
+  { id: 'tv', rect: [20, 25, 22, 31], name: 'TV', loot: 300, text: 'You unplug the flat-screen TV and squeeze it into the sack.' },
+  { id: 'bookshelf', rect: [23, 20, 28, 23], name: 'bookshelf', text: 'Classics, mysteries... and a book called "Home Security 101".' },
+  { id: 'sofa', rect: [25, 24, 33, 28], name: 'sofa', text: 'Plush red cushions. You check under them: just crumbs.' },
+  { id: 'laptop', rect: [26, 40, 30, 45], name: 'laptop', loot: 800, text: "A brand-new laptop on the study desk. It's coming with you." },
   { id: 'console', rect: [73, 23, 75, 28], name: 'game console', loot: 200, text: "A handheld game console. The kid won't be happy." },
-  { id: 'watch', rect: [74, 37, 75, 39], name: 'gold watch', loot: 250, text: 'A gold watch on the nightstand. It ticks into your sack.' },
-  { id: 'piggybank', rect: [67, 20, 69, 22], name: 'piggy bank', loot: 60, text: 'A piggy bank on the shelf. Coins jingle as you take it.' },
-  { id: 'silverware', rect: [51, 28, 52, 33], name: 'silver cabinet', loot: 350, text: 'The cabinet holds the family silverware. Shiny!' },
-  { id: 'pool', rect: [79, 14, 87, 21], name: 'pool', text: "The pool glows in the dusk. A flamingo float drifts lazily. Don't get wet." },
-  { id: 'doghouse', rect: [89, 45, 91, 47], name: 'doghouse', text: 'A dog is snoring inside. Tiptoe... tiptoe...' },
-  { id: 'shed', rect: [6, 37, 13, 44], name: 'shed', text: 'The shed is padlocked. Rakes and shovels lean inside.' },
+  { id: 'watch', rect: [74, 37, 75, 40], name: 'gold watch', loot: 250, text: 'A gold watch on the nightstand. It ticks into your sack.' },
+  { id: 'piggybank', rect: [67, 20, 69, 23], name: 'piggy bank', loot: 60, text: 'A piggy bank on the shelf. Coins jingle as you take it.' },
+  { id: 'silverware', rect: [51, 27, 52, 33], name: 'silver cabinet', loot: 350, text: 'The cabinet holds the family silverware. Shiny!' },
+  { id: 'pool', rect: [78, 13, 87, 21], name: 'pool', text: "The pool glows in the dusk. A flamingo float drifts lazily. Don't get wet." },
+  { id: 'doghouse', rect: [89, 45, 93, 50], name: 'doghouse', text: 'A dog is snoring inside. Tiptoe... tiptoe...' },
+  { id: 'shed', rect: [6, 37, 13, 46], name: 'shed', text: 'The shed is padlocked. Rakes and shovels lean inside.' },
   { id: 'mailbox1', rect: [40, 52, 41, 53], name: 'mailbox', text: 'Bills, flyers, and a pizza coupon.' },
   { id: 'mailbox2', rect: [50, 52, 51, 53], name: 'mailbox', text: 'Empty. The neighbors must have already checked.' },
-  { id: 'veggies', rect: [86, 33, 92, 41], name: 'vegetable garden', text: 'Tomatoes, carrots and lettuce. Somebody has a green thumb.' },
-  { id: 'toilet', rect: [43, 12, 44, 14], name: 'toilet', text: 'Not now!' },
+  { id: 'veggies', rect: [86, 32, 92, 41], name: 'vegetable garden', text: 'Tomatoes, carrots and lettuce. Somebody has a green thumb.' },
+  { id: 'toilet', rect: [42, 13, 44, 15], name: 'toilet', text: 'Not now!' },
 ];
 
 /** Where the bandit starts: on the sidewalk outside the front gate (tiles). */

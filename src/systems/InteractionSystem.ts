@@ -6,6 +6,7 @@ export type Target = { kind: 'item'; item: Interactable } | { kind: 'door'; door
 type Hitbox = { left: number; right: number; top: number; bottom: number };
 
 const AHEAD: Record<Bandit['facing'], [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+const DOOR_REACH = 6; // extra art px around a door where E still works, from either side
 
 /** What the bandit can reach, what he's stolen, and the result of pressing E. */
 export class InteractionSystem {
@@ -34,7 +35,8 @@ export class InteractionSystem {
       [b.x + ax * (REACH / 2), b.y - 4 + ay * (REACH / 2)],
     ];
     for (const [px, py] of probes) {
-      const door = this.doors.find((d) => px >= d.x && px < d.x + d.w && py >= d.y && py < d.y + d.h);
+      const p = DOOR_REACH;
+      const door = this.doors.find((d) => px >= d.x - p && px < d.x + d.w + p && py >= d.y - p && py < d.y + d.h + p);
       if (door) return { kind: 'door', door };
       const tx = Math.floor(px / ART_TILE);
       const ty = Math.floor(py / ART_TILE);
@@ -52,13 +54,32 @@ export class InteractionSystem {
     return `E  Check ${item.name}`;
   }
 
-  /** Opens or closes a door. Returns a message only when it can't (bandit in the doorway). */
+  /**
+   * Opens or closes a door. If the bandit is only brushing the doorway when it closes,
+   * he's nudged clear (away from the door's middle). Returns a message only when he's
+   * properly standing in it.
+   */
   toggleDoor(door: Door, map: TileMap, b: Bandit, hit: Hitbox): string | null {
     if (!map.isOpen(door)) {
       map.setDoor(door, true);
       return null;
     }
-    if (map.doorOverlaps(door, b.x + hit.left, b.y + hit.top, b.x + hit.right, b.y + hit.bottom)) return 'Step out of the doorway first.';
+    const overlaps = (x: number, y: number) => map.doorOverlaps(door, x + hit.left, y + hit.top, x + hit.right, y + hit.bottom);
+    if (overlaps(b.x, b.y)) {
+      const alongY = door.w >= door.h; // front doors are crossed vertically, side doors sideways
+      const sign = alongY ? Math.sign(b.y - (door.y + door.h / 2)) || 1 : Math.sign(b.x - (door.x + door.w / 2)) || 1;
+      let moved = false;
+      for (let d = 1; d <= 10 && !moved; d++) {
+        const nx = alongY ? b.x : b.x + sign * d;
+        const ny = alongY ? b.y + sign * d : b.y;
+        if (!overlaps(nx, ny) && !map.boxBlocked(nx + hit.left, ny + hit.top, nx + hit.right, ny + hit.bottom)) {
+          b.x = nx;
+          b.y = ny;
+          moved = true;
+        }
+      }
+      if (!moved) return 'Step out of the doorway first.';
+    }
     map.setDoor(door, false);
     return null;
   }

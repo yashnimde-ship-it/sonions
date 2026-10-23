@@ -178,6 +178,8 @@ export function doorSprites(ref, floorLayer) {
         const s = ((y + j) * W + x + i) * 3;
         closed.set([ref.rgb[s], ref.rgb[s + 1], ref.rgb[s + 2], 255], (j * w + i) * 4);
       }
+    // Side doors: the reference shows them open, so that's the open sprite.
+    if (d.side) return { id: d.id, name: d.name, box: d.box, x, y, w, h, closed: sideLeaf(w, h), open: closed };
     // The door's wood color: the median of the slab's middle.
     const wood = [];
     for (let j = Math.floor(h * 0.35); j < h * 0.75; j++)
@@ -223,4 +225,27 @@ export function doorSprites(ref, floorLayer) {
       }
     return { id: d.id, name: d.name, box: d.box, x, y, w, h, closed, open };
   });
+}
+
+/** A closed side door: a wooden leaf filling the gap, seen edge-on, with a brass knob. */
+function sideLeaf(w, h) {
+  const WOOD = [124, 76, 42];
+  const LIGHT = [164, 104, 58];
+  const DARK = [62, 36, 20];
+  const KNOB = [232, 184, 70];
+  const out = new Uint8Array(w * h * 4);
+  const vertical = h >= w;
+  const len = vertical ? h : w;
+  const thick = vertical ? w : h;
+  for (let a = 0; a < len; a++)
+    for (let b = 0; b < thick; b++) {
+      let c = WOOD;
+      if (a === 0 || a === len - 1 || b === 0 || b === thick - 1) c = DARK;
+      else if (b === 1) c = LIGHT;
+      else if (a === Math.floor(len / 3) || a === Math.floor((2 * len) / 3)) c = DARK.map((v, k) => Math.round((v + WOOD[k]) / 2));
+      if (b === thick - 2 && Math.abs(a - Math.floor(len / 2)) <= 1 && thick > 3) c = KNOB;
+      const [i, j] = vertical ? [b, a] : [a, b];
+      out.set([...c, 255], (j * w + i) * 4);
+    }
+  return out;
 }

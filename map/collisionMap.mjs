@@ -41,6 +41,13 @@ export function buildCollision(plan, opts = {}) {
       }
   };
 
+  /** Marks every cell the box (tiles) overlaps by more than 2 art px: nothing drawn is left walkable. */
+  const solidCover = (x0, y0, x1, y1) => {
+    const m = 2 / 16;
+    for (let cy = Math.max(0, Math.floor((y0 + m) * PER_TILE)); cy < Math.min(CH, Math.ceil((y1 - m) * PER_TILE)); cy++)
+      for (let cx = Math.max(0, Math.floor((x0 + m) * PER_TILE)); cx < Math.min(CW, Math.ceil((x1 - m) * PER_TILE)); cx++) grid[cy * CW + cx] = 1;
+  };
+
   // Walls (doors are carved out of the plan already).
   const mask = opts.wallMask;
   if (mask) {
@@ -68,8 +75,10 @@ export function buildCollision(plan, opts = {}) {
     if (!inGate) solidTile(x, bottom);
   }
 
-  // Furniture and props. Footprints are trimmed a little so you can walk right up to them.
-  for (const o of M.OBJECTS) {
+  // Furniture and props. With the reference art, the boxes traced from it; otherwise
+  // the OBJECTS footprints, trimmed a little so you can walk right up to them.
+  if (mask) for (const box of M.SOLIDS) solidCover(...box);
+  for (const o of mask ? [] : M.OBJECTS) {
     if (o.solid === false) continue;
     if (o.hit) {
       solidBox(...o.hit);

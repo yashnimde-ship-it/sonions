@@ -35,8 +35,10 @@ Open the printed URL in Chrome. Other scripts:
 
 Every wooden door starts **closed** and blocks the way. Walk up to one and press E to
 open it (E again closes it; a door won't close while you're standing in it). That
-includes the front door, the patio and back doors, and the roll-up garage door. The
-pale strips on vertical walls are doorways seen edge-on and are always open.
+includes the front door, the patio and back doors, the roll-up garage door, and the
+side doors in vertical walls (drawn open as pale strips in the reference; closed, a
+wooden leaf fills the gap). If you close a door while just brushing its edge, the
+bandit is nudged clear.
 
 Nine items are worth stealing (look for the twinkle): the toolbox, cookie jar, TV,
 laptop, jewelry box, gold watch, game console, piggy bank and silverware.
@@ -107,7 +109,9 @@ Every object in `mapData` is also exported as its own transparent PNG in
 The generator cuts every layer into 16x16 tiles and deduplicates them into one
 tileset (about 2,000 unique tiles); the map JSON stores each layer as tile IDs.
 
-**Collision** is a separate 192 x 128 grid of half-tile cells. Walls are read straight
+**Collision** is a separate 192 x 128 grid of half-tile cells. Furniture and props use
+boxes traced from the reference (`SOLIDS` in `mapData.mjs`) that cover each piece as
+drawn, so the bandit stops at its edge. Walls are read straight
 from the reference (`artWalls.mjs`): the thick dark-navy wall bands are kept and thin
 furniture outlines are dropped, so collision follows the drawn walls exactly; exterior
 windows (pale strips) are kept solid. Then come fences and each object's footprint (trimmed so you can stand right next to
@@ -126,6 +130,19 @@ the opening tinted with the floor beyond, leaves folded back) to `map/doors.png`
 each door's collision cells to the map JSON. Those cells are open in the saved grid;
 the game closes every door at start and opens it on E (`TileMap.setDoor`). `npm run check`
 verifies everything is reachable with doors open and reports what the doors guard.
+
+## Fix log
+
+- **Doors not closing.** The study, bathroom and patio door boxes didn't line up
+  with the art, and the side doors in vertical walls were always open. Fixed: door
+  boxes re-traced from the reference, 8 side doors added (21 doors in total), the E
+  prompt works a few pixels around every door from either side, and closing a door
+  you're brushing nudges you out instead of refusing.
+- **Bandit walking over furniture.** Footprints came from the old procedural layout
+  and were trimmed (small props blocked only their lower half). Fixed: every piece of
+  furniture and every outdoor prop has a collision box traced from the reference, and
+  any cell a box overlaps is solid. Interactables were realigned with the new boxes.
+- **Walls not matching the picture.** Fixed earlier: walls are read from the art.
 
 ## Bandit sprite (art team)
 
