@@ -7,6 +7,7 @@ import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
 import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { cleanName } from './data/names';
+import { distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, isGameMode, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
 import { CUSTOM_MIN, CUSTOM_PAD, type Phase, placementRefusal, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H } from './entities/Bandit';
@@ -144,6 +145,34 @@ async function boot() {
   let getaway = MAPS.estate.getaway;
   /** The map I'd like to play next (the crew's majority decides). */
   let myMap: MapId = 'estate';
+  /** The game mode I'd like next: a heist, or Hide & Seek. */
+  let myMode: GameMode = 'heist';
+  try {
+    const saved = localStorage.getItem('bandit-mode');
+    if (isGameMode(saved)) myMode = saved;
+  } catch {
+    // Storage blocked: a heist.
+  }
+  /** The mode of the match I'm in (set as soon as a round starts). */
+  let modeNow: GameMode = 'heist';
+  /** Hide & Seek: who the Seeker is this round. */
+  let seekerNow = '';
+  /** The Seeker's gun as the server last told us, and recent shots (flash and tracer). */
+  let gun = { ammo: GUN.ammo, reloadEnd: 0, hp: SEEKER_HP };
+  const shots: { x0: number; y0: number; x1: number; y1: number; hit: boolean; at: number }[] = [];
+  /** Hiders caught or escaped this round (ghosts from then on). */
+  const caught = new Set<string>();
+  const escaped = new Set<string>();
+  const isGhost = (id: string) => caught.has(id) || escaped.has(id);
+  /** The hiding place I'm in, if any; sprint noises the Seeker heard; when I last searched. */
+  let hiddenIn: string | null = null;
+  const noises: { x: number; y: number; at: number }[] = [];
+  let lastSeek = 0;
+  /** This deck's hiding places (Hide & Seek only). */
+  const hidePlaces = (): HideSpot[] => (hideSeek() ? estateData.hiding ?? [] : []);
+  const seekerId = () => seekerNow;
+  /** Hide & Seek: is this round one? (The Saboteur is then the Seeker, with a body and a gun.) */
+  const hideSeek = () => modeNow === 'hideSeek';
   try {
     const saved = localStorage.getItem('bandit-map');
     if (isMapId(saved)) myMap = saved;
@@ -189,6 +218,15 @@ async function boot() {
   canvas.addEventListener('pointermove', (e) => ([mouseX, mouseY] = toWorld(e)));
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('pointerdown', (e) => {
+    if (scene === 'match' && hideSeek()) {
+      // The Seeker's gun: click where to shoot.
+      if (match?.saboteur && phase === 'live' && e.button === 0 && !result) {
+        const [x, y] = toWorld(e);
+        if (performance.now() < gun.reloadEnd || gun.ammo <= 0) sfx('click');
+        else net.send({ t: 'shoot', x, y });
+      }
+      return;
+    }
     if (scene !== 'match' || !match?.saboteur) return;
     const [x, y] = toWorld(e);
     if (phase === 'setup' && e.button === 2) {
@@ -247,7 +285,7 @@ async function boot() {
   let viewX = 0;
   let viewY = 0;
   /** The heist you're in; `saboteur` is whether *you* are it (nobody is told who else is). */
-  let match: { id: string; size: number; saboteur: boolean } | null = null;
+  let match: { id: string; size: number; saboteur: boolean; mode: GameMode } | null = null;
   let bannerUntil = 0;
   let serverFull = false;
   /** The diamonds as the server tells us (the Saboteur sees where each is hidden). */
@@ -343,11 +381,11 @@ async function boot() {
       // The reveal: everyone sees the whole map, with every diamond's spot marked.
       scale = fitScale();
       [tx, ty] = [w / 2, h / 2];
-    } else if (match?.saboteur) {
+    } else if (match?.saboteur && !hideSeek()) {
       sabScale = sabScale && Math.min(ZOOM * dpr, Math.max(fitScale(), sabScale));
       scale = sabScale || fitScale();
       [tx, ty] = [freeX, freeY];
-    } else if (phase === 'setup') {
+    } else if (phase === 'setup' && !hideSeek()) {
       scale = fitScale();
       [tx, ty] = [w / 2, h / 2];
     } else scale = ZOOM * dpr;
@@ -447,7 +485,8 @@ async function boot() {
     traps = MAPS[id].traps;
     getaway = MAPS[id].getaway;
     abilities.traps = traps;
-    spots = estateData.interactables.filter(isHidingSpot);
+    // No diamonds in Hide & Seek: no furniture to search.
+    spots = hideSeek() ? [] : estateData.interactables.filter(isHidingSpot);
     // Players on the other decks drop out of view until we meet again.
     remotes.clear();
   }
@@ -467,6 +506,16 @@ async function boot() {
   }
 
   function startMatch(msg: Extract<ServerMsg, { t: 'match' }>) {
+    modeNow = msg.mode ?? 'heist';
+    seekerNow = msg.seeker ?? '';
+    if (!msg.resume) {
+      gun = { ammo: GUN.ammo, reloadEnd: 0, hp: SEEKER_HP };
+      shots.length = 0;
+      caught.clear();
+      escaped.clear();
+      hiddenIn = null;
+      noises.length = 0;
+    }
     mapId = msg.map ?? 'estate';
     deckMaps = new Map(decksOf(mapId).map((d) => [d, new TileMap(worlds[d].data, worlds[d].tiles, worlds[d].doors)]));
     allSpots = [];
@@ -503,7 +552,7 @@ async function boot() {
     trapJammedUntil.clear();
     tripwireArmed.clear();
     doorJammedUntil.clear();
-    match = { id: msg.matchId, size: msg.size, saboteur: msg.role === 'saboteur' };
+    match = { id: msg.matchId, size: msg.size, saboteur: msg.role === 'saboteur', mode: msg.mode ?? 'heist' };
     roundNo = msg.round;
     roundsTotal = msg.rounds;
     maxTrapEnergy = msg.maxEnergy ?? saboteurMaxEnergy(myCharacter, msg.size);
@@ -512,13 +561,13 @@ async function boot() {
     selectTrap(null);
     phase = msg.phase;
     phaseEndsAt = performance.now() + msg.ms;
-    trapBar.show(msg.role === 'saboteur' && phase === 'setup');
-    setupPanel.show(msg.role === 'saboteur' && phase === 'setup');
+    trapBar.show(msg.role === 'saboteur' && phase === 'setup' && !hideSeek());
+    setupPanel.show(msg.role === 'saboteur' && phase === 'setup' && !hideSeek());
     trapBar.setEnergy(trapEnergy, maxTrapEnergy);
     updateTrapBar();
     sabScale = 0;
     lastTrapCheck = 0;
-    hud.setHealth(msg.role === 'saboteur' ? null : hp);
+    hud.setHealth(msg.role === 'saboteur' && msg.mode !== 'hideSeek' ? null : hp);
     hud.setCarrying(null);
     hud.hideMessage();
     profile.recordHeist();
@@ -538,12 +587,21 @@ async function boot() {
       if (p.character !== myCharacter) setCharacter(p.character);
     }
     abilities.setRound(myCharacter, msg.role);
-    const role = msg.role === 'saboteur' ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
-    const job =
-      msg.role === 'saboteur'
+    const hs = hideSeek();
+    // The Seeker has no Saboteur ability in Hide & Seek: their gun is their tool.
+    // Abilities are heist tools (traps, diamonds): Hide & Seek plays without them.
+    document.getElementById('ability')!.style.display = hs ? 'none' : '';
+    const role = hs
+      ? msg.role === 'saboteur' ? '<b class="saboteur">THE SEEKER</b>' : '<b class="runner">A HIDER</b>'
+      : msg.role === 'saboteur' ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
+    const job = hs
+      ? msg.role === 'saboteur'
+        ? 'Count to 30 in the Staff Room while they hide. Then hunt them in the dark: aim with the mouse, click to shoot.'
+        : 'The lights are out and the owner has a gun. Hide! Survive the hunt; at the end the main entrance opens.'
+      : msg.role === 'saboteur'
         ? `Hide the diamonds and place up to ${trapSlots(msg.size)} traps. Confirm when your setup is ready.`
         : 'The Saboteur is rigging the house. Get ready to go in.';
-    banner.innerHTML = `<span class="kicker">ROUND ${msg.round} OF ${msg.rounds} · ${MAPS[mapId].name}</span><span>You are ${role}</span><span class="crew-list">${job}</span>`;
+    banner.innerHTML = `<span class="kicker">ROUND ${msg.round} OF ${msg.rounds} · ${hs ? 'HIDE &amp; SEEK · ' : ''}${MAPS[mapId].name}</span><span>You are ${role}</span><span class="crew-list">${job}</span>`;
     banner.hidden = false;
     bannerUntil = performance.now() + BANNER_MS;
     setScene('match');
@@ -587,6 +645,9 @@ async function boot() {
         // The server forgets nothing between heists, but tell it again after (re)joining.
         lobby.setMap(myMap);
         net.send({ t: 'map', map: myMap });
+        lobby.setMode(myMode);
+        net.send({ t: 'mode', mode: myMode });
+        modeNow = 'heist';
         break;
       case 'match':
         if (msg.resume && match?.id === msg.matchId) {
@@ -753,6 +814,56 @@ async function boot() {
       case 'trapFired':
         trapFired(msg);
         break;
+      case 'gunshot':
+        shots.push({ x0: msg.x0, y0: msg.y0, x1: msg.x1, y1: msg.y1, hit: !!msg.hit, at: performance.now() });
+        sfx('gunshot');
+        break;
+      case 'gun': {
+        const wasReloading = performance.now() < gun.reloadEnd;
+        gun = { ammo: msg.ammo, reloadEnd: performance.now() + msg.reloadMs, hp: msg.hp };
+        if (msg.reloadMs > 0 && !wasReloading) sfx('reload');
+        if (match?.saboteur) hud.setHealth(gun.hp);
+        break;
+      }
+      case 'shot':
+        // The Seeker got me.
+        hp = msg.hp;
+        hud.setHealth(hp);
+        trapImpact('#ff3b4a', 7);
+        trapNotice = hp > 0 ? `SHOT! ${hp} HP left: one more and you're caught` : 'CAUGHT!';
+        trapNoticeUntil = performance.now() + 2500;
+        break;
+      case 'hidden':
+        hiddenIn = msg.spot;
+        me.x = msg.x;
+        me.y = msg.y;
+        if (!msg.spot) toast('Out of hiding');
+        break;
+      case 'searched': {
+        const name = hideSpotName(msg.spot);
+        if (msg.found) sfx('caught');
+        hud.alert(msg.found ? `<span class="who">The Seeker</span> <b>found ${msg.found === myId ? 'you' : esc(msg.name)}</b><span class="where">in the ${esc(name)}</span>` : `<span class="who">The Seeker</span> searched the ${esc(name)}<span class="where">nobody there</span>`, msg.found ? 'danger' : 'good');
+        break;
+      }
+      case 'escaped': {
+        escaped.add(msg.id);
+        hiddenIn = msg.id === myId ? null : hiddenIn;
+        sfx('banked');
+        const who = msg.id === myId ? 'You' : esc(msg.name);
+        hud.alert(`<span class="who">${who}</span> <b>escaped the ship!</b><span class="where">${msg.left} hider${msg.left === 1 ? '' : 's'} left</span>`, 'good');
+        break;
+      }
+      case 'noise':
+        noises.push({ x: msg.x, y: msg.y, at: performance.now() });
+        break;
+      case 'caught': {
+        caught.add(msg.id);
+        if (msg.id === myId) hiddenIn = null;
+        sfx('caught');
+        const who = msg.id === myId ? 'You were' : `${esc(msg.name)} was`;
+        hud.alert(`<span class="who">${who}</span> <b>caught by the Seeker</b><span class="where">${msg.left} hider${msg.left === 1 ? '' : 's'} left</span>`);
+        break;
+      }
       case 'tripwireArmed':
         tripwireArmed.add(msg.id);
         break;
@@ -815,6 +926,15 @@ async function boot() {
       // Not remembered; still applies now.
     }
     net.send({ t: 'map', map: id });
+  };
+  lobby.onMode = (mode) => {
+    myMode = mode;
+    try {
+      localStorage.setItem('bandit-mode', mode);
+    } catch {
+      // Not remembered; still applies now.
+    }
+    net.send({ t: 'mode', mode });
   };
   lobby.onStart = () => {
     const s = startState();
@@ -1316,7 +1436,8 @@ async function boot() {
     }
     if (performance.now() > bannerUntil) banner.hidden = true;
     const left = Math.max(0, phaseEndsAt - performance.now());
-    hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${phase === 'setup' ? 'SETUP' : 'HEIST'}`, left);
+    const stage = hideSeek() ? (phase === 'setup' ? 'HIDE' : left <= ESCAPE_MS ? 'ESCAPE' : 'HUNT') : phase === 'setup' ? 'SETUP' : 'HEIST';
+    hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${stage}`, left);
     // A tick each second for the last ten.
     const secs = Math.ceil(left / 1000);
     if (phase === 'live' && secs <= 10 && secs > 0 && secs !== lastTickSec) sfx('tick');
@@ -1324,15 +1445,22 @@ async function boot() {
     resultScreen.tick();
     updateObjective();
     const sab = !!match?.saboteur;
-    if (input.ability && !hud.messageOpen && phase === 'live') abilities.use(abilityContext());
+    const hs = hideSeek();
+    if (hs && sab && phase === 'live' && keyPressed('KeyR')) net.send({ t: 'reload' });
+    // A finished reload: the gun is full again (the server agrees on its next shot).
+    if (hs && sab && gun.ammo === 0 && gun.reloadEnd && performance.now() >= gun.reloadEnd) gun = { ...gun, ammo: GUN.ammo, reloadEnd: 0 };
+    if (input.ability && !hud.messageOpen && phase === 'live' && !hs) abilities.use(abilityContext());
     abilities.render();
-    if (sab) {
+    if (sab && !hs) {
       saboteurUpdate(input);
       sendPosition();
       frameCamera(false);
       return;
     }
-    if (phase !== 'live') {
+    // Heist: Runners wait outside during setup. Hide & Seek: the Hiders scatter while the
+    // Seeker counts. Everyone stops when time's up.
+    if (hs ? phase === 'over' || (sab && phase === 'setup') : phase !== 'live') {
+      hud.setArea(areaName(me.x, me.y - 4));
       // Runners wait outside during setup, and stop when time's up.
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
       hud.setPrompt(null);
@@ -1356,11 +1484,13 @@ async function boot() {
       const now = performance.now();
       me.carryMult = (myDiamond() ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1);
       // Confusion Gas: left is right and up is down.
-      me.update(now < reverseUntil ? { ...input, dx: -input.dx, dy: -input.dy } : input, estate);
+      // (In a hiding place you can't move.)
+      const move = hiddenIn ? { ...input, dx: 0, dy: 0, sprint: false } : input;
+      me.update(now < reverseUntil ? { ...move, dx: -move.dx, dy: -move.dy } : move, estate);
       checkCrushers(now);
       checkTraps();
       checkSpotlights(performance.now());
-      runnerDiamonds(input);
+      if (!hideSeek() || !hideSeekControls(input)) runnerDiamonds(input);
     }
     hud.setArea(areaName(me.x, me.y - 4));
     sendPosition();
@@ -1369,6 +1499,28 @@ async function boot() {
 
   /** The objective panel, top left: one gem per diamond, and what this side has to do. */
   function updateObjective() {
+    if (hideSeek()) {
+      const sab = !!match?.saboteur;
+      const escape = phase === 'live' && phaseEndsAt - performance.now() <= ESCAPE_MS;
+      hud.setObjective(
+        sab ? 'FIND THEM' : 'HIDE',
+        [],
+        isGhost(myId)
+          ? escaped.has(myId) ? 'You got away! Watch the rest of the hunt' : "Caught. You're a ghost now: watch the hunt"
+          : hiddenIn
+            ? `Hidden in the ${hideSpotName(hiddenIn)}. Stay still.`
+            : phase === 'setup'
+          ? sab ? 'Counting in the Staff Room...' : 'Find a hiding place (E at a wardrobe, the bar, the curtains...)'
+          : escape
+            ? sab ? 'The main entrance is open: stop them escaping' : 'The main entrance is open: escape!'
+            : sab ? 'Hunt them down in the dark' : 'Stay out of the flashlight. Survive.',
+      );
+      if (sab && phase === 'live') {
+        const reloading = performance.now() < gun.reloadEnd;
+        hud.setObjective('FIND THEM', [], reloading ? 'RELOADING...' : `AMMO ${'|'.repeat(gun.ammo)}${'.'.repeat(GUN.ammo - gun.ammo)}  ·  click to shoot, R reload · a miss costs ${GUN.missPenalty} HP`);
+      }
+      return;
+    }
     const mine = myDiamond();
     const order = { banked: 0, mine: 1, carried: 2, floor: 3, hidden: 4 } as const;
     const gems = diamonds
@@ -1479,6 +1631,40 @@ async function boot() {
     return def ? `These stairs lead to ${def.name}. Travel between decks isn't connected yet: pick it in Map Info to play that deck.` : 'These stairs are closed.';
   }
 
+  /**
+   * Hide & Seek's own E: a Hider hides in (or comes out of) a hiding place; the Seeker searches
+   * one. Ghosts just watch. Returns true when it handled this frame (no doors or stairs then).
+   */
+  function hideSeekControls(input: { action: boolean }): boolean {
+    const now = performance.now();
+    if (isGhost(myId)) {
+      hud.setPrompt(now < trapNoticeUntil ? trapNotice : escaped.has(myId) ? 'You escaped! Watch the rest of the hunt' : "You're a ghost: watch the rest of the hunt");
+      return true;
+    }
+    const seeker = !!match?.saboteur;
+    if (hiddenIn) {
+      hud.setPrompt(now < trapNoticeUntil ? trapNotice : `Hidden in the ${hideSpotName(hiddenIn)} · E to come out (bullets still find you)`);
+      if (input.action) net.send({ t: 'unhide' });
+      return true;
+    }
+    let best: HideSpot | null = null;
+    let bestD = HIDE_REACH;
+    for (const sp of hidePlaces()) {
+      const d = distToHideSpot(sp, me.x, me.y - 4);
+      if (d <= bestD) [best, bestD] = [sp, d];
+    }
+    if (!best || (seeker && phase !== 'live')) return false;
+    const name = hideSpotName(best.id);
+    hud.setPrompt(now < trapNoticeUntil ? trapNotice : seeker ? `E  Search the ${name}` : `E  Hide in the ${name}`);
+    if (input.action) {
+      if (seeker && now - lastSeek > 600) {
+        lastSeek = now;
+        net.send({ t: 'seekSpot', spot: best.id });
+      } else if (!seeker) net.send({ t: 'hideIn', spot: best.id });
+    }
+    return true;
+  }
+
   /** The Saboteur isn't in the house: they fly a camera round it and pick traps. */
   function saboteurUpdate(input: { dx: number; dy: number; sprint: boolean }) {
     if (phase === 'setup' && !hud.messageOpen) for (const kind of TRAP_KINDS) if (keyPressed(kind.key)) selectTrap(selectedTrap?.id === kind.id ? null : kind);
@@ -1510,6 +1696,8 @@ async function boot() {
   // ---------- Draw ----------
 
   let frame = 0;
+  /** Hide & Seek's ghosts this frame (drawn see-through). */
+  let ghostsToDraw: Bandit[] = [];
   function draw() {
     frame++;
     // Snap the camera to whole screen pixels so the art stays crisp.
@@ -1535,7 +1723,7 @@ async function boot() {
 
     // Characters are drawn back to front so nearer ones overlap farther ones.
     // In a heist the Saboteur isn't in the house, so they're not drawn.
-    const inHouse = (id: string) => scene !== 'match' || (match?.saboteur ? id !== myId : true);
+    const inHouse = (id: string) => scene !== 'match' || hideSeek() || (match?.saboteur ? id !== myId : true);
     const actors =
       scene === 'title'
         ? []
@@ -1575,6 +1763,13 @@ async function boot() {
     const shake = impactProgress < 1 ? impactShake * dpr * (1 - impactProgress) ** 2 : 0;
     ctx.save();
     ctx.translate(Math.sin(frame * 2.7) * shake, Math.cos(frame * 3.4) * shake * 0.7);
+    // Hide & Seek: whoever's hiding isn't drawn; ghosts are see-through (drawn separately).
+    if (hideSeek()) {
+      const hiddenMe = hiddenIn ? me : null;
+      const ghostBandits = new Set([...(isGhost(myId) ? [me] : []), ...[...remotes.entries()].filter(([id]) => isGhost(id)).map(([, r]) => r.bandit)]);
+      for (let i = actors.length - 1; i >= 0; i--) if (actors[i] === hiddenMe || ghostBandits.has(actors[i])) actors.splice(i, 1);
+      ghostsToDraw = [...ghostBandits];
+    } else ghostsToDraw = [];
     blit(estate.below, estate.widthPx, estate.heightPx);
     ctx.save();
     ctx.scale(scale, scale);
@@ -1582,14 +1777,29 @@ async function boot() {
     drawPlacedTraps(camX, camY);
     drawTrapPlates(camX, camY);
     actors.forEach((b) => b.draw(ctx, camX, camY));
+    ctx.globalAlpha = 0.4;
+    ghostsToDraw.forEach((b) => b.draw(ctx, camX, camY, false));
+    ctx.globalAlpha = 1;
+    if (hiddenIn) {
+      // My hiding place: a small eye, so I know where I am.
+      const sp = hidePlaces().find((h) => h.id === hiddenIn);
+      if (sp) {
+        const c = hideSpotCenter(sp);
+        ctx.fillStyle = '#e8fffa';
+        ctx.fillRect(Math.round(c.x - 4 - camX), Math.round(c.y - 2 - camY), 8, 4);
+        ctx.fillStyle = '#1ad0c0';
+        ctx.fillRect(Math.round(c.x - 1 - camX), Math.round(c.y - 2 - camY), 3, 4);
+      }
+    }
     ctx.restore();
     blit(estate.above, estate.widthPx, estate.heightPx);
     if (settings.values.lighting) lighting.draw(ctx, camX, camY, vw, vh, scale);
-    // Characters again over the darkness, so players can always see each other.
+    // Characters again over the darkness, so players can always see each other (not in
+    // Hide & Seek: there, the dark is the point).
     ctx.save();
     ctx.scale(scale, scale);
     ctx.globalAlpha = CHAR_GLOW;
-    actors.forEach((b) => b.draw(ctx, camX, camY, false));
+    if (!hideSeek()) actors.forEach((b) => b.draw(ctx, camX, camY, false));
     ctx.globalAlpha = 1;
     drawTrapEffects(camX, camY);
     drawFiring(camX, camY);
@@ -1600,9 +1810,11 @@ async function boot() {
     for (const r of remotes.values()) if (r.state.carrying) carriedGem(r.bandit, camX, camY);
     ctx.restore();
     drawGetawayLabel(camX, camY);
+    if (hideSeek() && !result && !isGhost(myId)) drawDarkness(camX, camY);
+    if (hideSeek() && !result) drawHideSeekMarks(camX, camY);
     if (settings.values.nameTags && !result) drawNameTags(camX, camY);
     drawTrapMinimap();
-    if (phase === 'setup' && !match?.saboteur) drawBlueprint(camX, camY);
+    if (phase === 'setup' && !match?.saboteur && !hideSeek()) drawBlueprint(camX, camY);
     if (match?.saboteur && !result) drawTrapMarkers(camX, camY);
     if (match?.saboteur && phase === 'setup') drawSpotLabel(camX, camY);
     if (performance.now() < blackoutUntil && !match?.saboteur) drawBlackout(camX, camY);
@@ -1659,6 +1871,172 @@ async function boot() {
       ctx.strokeRect(Math.round((t.x - k.w / 2 - camX) * scale), Math.round((t.y - k.h / 2 - camY) * scale), Math.round(k.w * scale), Math.round(k.h * scale));
     }
     ctx.restore();
+  }
+
+  /** Hide & Seek's dark, drawn as its own layer so lights can be cut out of it. */
+  const dark = document.createElement('canvas');
+  const darkCtx = dark.getContext('2d')!;
+
+  /**
+   * Hide & Seek: the ship is pitch black. A Hider sees a small circle round themselves; the
+   * Seeker a flashlight cone towards the mouse (and a little glow at their feet). While the
+   * Seeker counts, their screen is black.
+   */
+  function drawDarkness(camX: number, camY: number) {
+    if (dark.width !== canvas.width || dark.height !== canvas.height) {
+      dark.width = canvas.width;
+      dark.height = canvas.height;
+    }
+    const g = darkCtx;
+    const seeker = !!match?.saboteur;
+    g.globalCompositeOperation = 'source-over';
+    g.clearRect(0, 0, dark.width, dark.height);
+    g.fillStyle = 'rgba(2, 2, 8, 0.97)';
+    g.fillRect(0, 0, dark.width, dark.height);
+    const counting = seeker && phase === 'setup';
+    if (!counting) {
+      g.globalCompositeOperation = 'destination-out';
+      const sx = (me.x - camX) * scale;
+      const sy = (me.y - 14 - camY) * scale;
+      // Light stops at walls, closed doors and furniture: rays from my eyes out to `range`.
+      const ox = me.x;
+      const oy = me.y - 14;
+      const lit = (range: number, from: number, to: number, rays: number, soft: number) => {
+        const r = range * scale;
+        const grad = g.createRadialGradient(sx, sy, r * soft, sx, sy, r);
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grad;
+        g.beginPath();
+        if (to - from < Math.PI * 2) g.moveTo(sx, sy);
+        for (let i = 0; i <= rays; i++) {
+          const a = from + ((to - from) * i) / rays;
+          const dx = Math.cos(a);
+          const dy = Math.sin(a);
+          // Out of whatever I'm standing against first, then on until the next wall.
+          let d = 2;
+          let out = false;
+          while (d < range) {
+            const solid = estate.solidAt(ox + dx * d, oy + dy * d);
+            if (!solid) out = true;
+            else if (out || d > 24) break;
+            d += 3;
+          }
+          // A little past the wall's face, so the wall itself is lit.
+          d = Math.min(range, d + 4);
+          const px = sx + dx * d * scale;
+          const py = sy + dy * d * scale;
+          if (i === 0 && to - from >= Math.PI * 2) g.moveTo(px, py);
+          else g.lineTo(px, py);
+        }
+        g.closePath();
+        g.fill();
+      };
+      if (seeker) {
+        // The flashlight: a cone towards the mouse, and a little glow round my feet.
+        const angle = Math.atan2(mouseY - oy, mouseX - ox);
+        lit(FLASHLIGHT_RANGE, angle - FLASHLIGHT_HALF_ANGLE, angle + FLASHLIGHT_HALF_ANGLE, 72, 0.6);
+        lit(SEEKER_GLOW, 0, Math.PI * 2, 32, 0.3);
+      } else {
+        lit(HIDER_LIGHT, 0, Math.PI * 2, 64, 0.35);
+      }
+    }
+    // Muzzle flashes light up the shooter (and where the shot landed) for a moment.
+    const now = performance.now();
+    g.globalCompositeOperation = 'destination-out';
+    for (const sh of shots) {
+      const t = (now - sh.at) / 260;
+      if (t >= 1) continue;
+      for (const [x, y, r] of [[sh.x0, sh.y0, 70], [sh.x1, sh.y1, 26]] as const) {
+        const px = (x - camX) * scale;
+        const py = (y - camY) * scale;
+        const grad = g.createRadialGradient(px, py, 0, px, py, r * scale);
+        grad.addColorStop(0, `rgba(0,0,0,${1 - t})`);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grad;
+        g.fillRect(px - r * scale, py - r * scale, r * 2 * scale, r * 2 * scale);
+      }
+    }
+    ctx.drawImage(dark, 0, 0);
+    drawShots(camX, camY);
+    if (counting) {
+      // The Seeker's count, big in the middle of a black screen.
+      const n = Math.max(0, Math.ceil((phaseEndsAt - performance.now()) / 1000));
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffe39a';
+      ctx.font = `${Math.round(40 * dpr)}px "Press Start 2P"`;
+      ctx.fillText(String(n), canvas.width / 2, canvas.height / 2);
+      ctx.fillStyle = '#9a94b0';
+      ctx.font = `${Math.round(9 * dpr)}px "Press Start 2P"`;
+      ctx.fillText('COUNTING... THE HIDERS ARE HIDING', canvas.width / 2, canvas.height / 2 + 40 * dpr);
+      ctx.restore();
+    }
+  }
+
+  /** Hide & Seek over the dark: the Seeker sees noise rings; everyone sees the open exit. */
+  function drawHideSeekMarks(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = noises.length - 1; i >= 0; i--) {
+      const n = noises[i];
+      const t = (now - n.at) / 700;
+      if (t >= 1) {
+        noises.splice(i, 1);
+        continue;
+      }
+      ctx.save();
+      ctx.globalAlpha = 0.8 * (1 - t);
+      ctx.strokeStyle = '#ffe39a';
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath();
+      ctx.arc((n.x - camX) * scale, (n.y - 6 - camY) * scale, (6 + t * 22) * scale, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // The gangway glows green once the main entrance is open.
+    if (phase === 'live' && phaseEndsAt - now <= ESCAPE_MS && deckId === mapId) {
+      const z = ESCAPE_ZONE;
+      ctx.save();
+      ctx.globalAlpha = 0.35 + 0.2 * Math.sin(frame / 8);
+      ctx.fillStyle = '#6fe07a';
+      ctx.fillRect((z.x * ART_TILE - camX) * scale, (z.y * ART_TILE - camY) * scale, z.w * ART_TILE * scale, z.h * ART_TILE * scale);
+      ctx.restore();
+      textTag('ESCAPE', ((z.x + z.w / 2) * ART_TILE - camX) * scale, (z.y * ART_TILE - camY) * scale, '#6fe07a', Math.round(9 * dpr));
+    }
+    // Ghost: a purple tint, so it's clear you're only watching.
+    if (isGhost(myId)) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(90, 50, 160, 0.18)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    }
+  }
+
+  /** Bullet tracers and the flash at the muzzle. */
+  function drawShots(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = shots.length - 1; i >= 0; i--) {
+      const sh = shots[i];
+      const t = (now - sh.at) / 220;
+      if (t >= 1) {
+        if (now - sh.at > 400) shots.splice(i, 1);
+        continue;
+      }
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      ctx.strokeStyle = '#fff2b0';
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath();
+      ctx.moveTo((sh.x0 - camX) * scale, (sh.y0 - camY) * scale);
+      ctx.lineTo((sh.x1 - camX) * scale, (sh.y1 - camY) * scale);
+      ctx.stroke();
+      ctx.fillStyle = sh.hit ? '#ff3b4a' : '#ffd25a';
+      ctx.beginPath();
+      ctx.arc((sh.x1 - camX) * scale, (sh.y1 - camY) * scale, (sh.hit ? 7 : 4) * dpr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   /** Waiting Runners see the house as a blue plan while the Saboteur works. */
@@ -1820,6 +2198,7 @@ async function boot() {
 
   /** The zone on the street where loot is banked. */
   function drawGetaway(camX: number, camY: number) {
+    if (hideSeek()) return; // no getaway in Hide & Seek (the escape is the main entrance)
     const x = getaway.x * ART_TILE - camX;
     const y = getaway.y * ART_TILE - camY;
     const w = getaway.w * ART_TILE;
@@ -1836,6 +2215,7 @@ async function boot() {
   }
 
   function drawGetawayLabel(camX: number, camY: number) {
+    if (hideSeek()) return;
     const sx = ((getaway.x + getaway.w / 2) * ART_TILE - camX) * scale;
     const sy = ((getaway.y + getaway.h / 2) * ART_TILE - camY) * scale;
     ctx.font = `${Math.round(10 * dpr)}px "Press Start 2P"`;
@@ -2442,7 +2822,8 @@ async function boot() {
       ctx.lineTo(sx, sy + 4 * dpr);
       ctx.fill();
     };
-    const hidden = (id: string) => inMatch && (match?.saboteur ? id === myId : false);
+    const hidden = (id: string) =>
+      inMatch && (hideSeek() ? !!match?.saboteur || id === seekerId() : match?.saboteur ? id === myId : false);
     for (const [id, r] of remotes) if (!hidden(id)) tag(r.bandit, id, r.state.offline ? `${r.state.name} (reconnecting)` : r.state.name, r.state.character, inMatch && r.state.carrying, inMatch ? r.state.hp : MAX_HP);
     if (!hidden(myId)) tag(me, myId, myName, myCharacter, inMatch && !!myDiamond(), inMatch ? hp : MAX_HP);
   }

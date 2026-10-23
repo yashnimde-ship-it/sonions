@@ -2,6 +2,7 @@ import { CHARACTERS, type CharacterId } from '../config';
 import { abilityFor, CHARACTER_INFO } from '../data/characters';
 import type { Profile } from '../data/profile';
 import { CUSTOM_MIN, MAX_CREW } from '../data/round';
+import type { GameMode } from '../data/hideSeek';
 import type { MapId } from '../data/maps';
 import type { PortalState, Taken } from '../net/protocol';
 import { iconHtml, type IconName } from './pixelIcons';
@@ -70,6 +71,11 @@ export class LobbyUI {
   private size = CUSTOM_MIN;
   /** Set once the player presses - or +: from then on the CUSTOM pad keeps their size. */
   customPicked = false;
+  /** The game mode I want: a heist, or Hide & Seek (3+ players, on the cruise ship). */
+  private mode: GameMode = 'heist';
+  private modeRow = document.createElement('div');
+  /** The mode switch was clicked. */
+  onMode: (mode: GameMode) => void = () => {};
   private custom = document.createElement('div');
   private lastCard = '';
   private lastStart = '';
@@ -123,6 +129,18 @@ export class LobbyUI {
     this.custom.innerHTML = `<span class="label">CUSTOM</span><button type="button" data-step="-1" aria-label="Fewer players">-</button><b class="n"></b><button type="button" data-step="1" aria-label="More players">+</button><button type="button" class="join">JOIN</button>`;
     this.portalList.after(this.custom);
     this.renderCustom();
+    // Which game: a heist, or Hide & Seek on the cruise ship.
+    this.modeRow.className = 'mode-row';
+    this.modeRow.innerHTML = `<span class="label">MODE</span><button type="button" data-mode="heist">HEIST</button><button type="button" data-mode="hideSeek">HIDE &amp; SEEK</button><span class="mode-note">Hide &amp; Seek: 3+ players, on the cruise ship</span>`;
+    this.portalList.before(this.modeRow);
+    this.modeRow.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-mode]');
+      if (!btn) return;
+      this.setMode(btn.dataset.mode as GameMode);
+      this.onMode(this.mode);
+      btn.blur();
+    }, opts);
+    this.renderMode();
     this.custom.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
       if (!btn) return;
@@ -234,6 +252,20 @@ export class LobbyUI {
 
   private mapName = (id: MapId | null) => this.maps.find((m) => m.id === id)?.name ?? '';
 
+  get gameMode() {
+    return this.mode;
+  }
+
+  setMode(mode: GameMode) {
+    this.mode = mode;
+    this.renderMode();
+    this.lastPortals = '';
+  }
+
+  private renderMode() {
+    for (const b of this.modeRow.querySelectorAll<HTMLButtonElement>('[data-mode]')) b.classList.toggle('on', b.dataset.mode === this.mode);
+  }
+
   /** The pads in the safehouse; their rows always show. */
   setPadSizes(sizes: number[]) {
     this.padSizes = new Set(sizes);
@@ -286,7 +318,9 @@ export class LobbyUI {
     const mineState = portals.find((p) => p.size === mine);
     const pick = `Your map: <b class="map-pick">${esc(this.mapName(this.selectedMap))}</b>`;
     this.partyStatus.innerHTML = mineState
-      ? `Party: <b class="c${mineState.size}">${mineState.size}P</b> · ${mineState.count}/${mineState.size} ready · map <b class="map-pick">${esc(this.mapName(mineState.map))}</b>`
+      ? mineState.mode === 'hideSeek'
+        ? `Party: <b class="c${mineState.size}">${mineState.size}P</b> · ${mineState.count}/${mineState.size} ready · <b class="map-pick">HIDE &amp; SEEK</b> on the cruise ship`
+        : `Party: <b class="c${mineState.size}">${mineState.size}P</b> · ${mineState.count}/${mineState.size} ready · map <b class="map-pick">${esc(this.mapName(mineState.map))}</b>`
       : `No party yet · ${pick}`;
   }
 

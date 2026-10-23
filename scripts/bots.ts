@@ -1,7 +1,7 @@
 // Test bots for the lobby: they join the server, wander, then walk into a portal.
 // Handy for trying a party alone. Sizes 4-9 stand on the CUSTOM pad and pick that size.
 //
-// Usage: npm run bots -- [count=1] [portal size=2] [server=ws://localhost:3001/ws]
+// Usage: npm run bots -- [count=1] [portal size=2] [server=ws://localhost:3001/ws] [mode=heist|hideSeek]
 
 import fs from 'node:fs';
 import { CHARACTERS } from '../src/config.ts';
@@ -12,8 +12,10 @@ import type { ClientMsg, ServerMsg } from '../src/net/protocol.ts';
 const count = Number(process.argv[2] ?? 1);
 const portalSize = Number(process.argv[3] ?? 2);
 const url = process.argv[4] ?? 'ws://localhost:3001/ws';
+const mode = process.argv[5] === 'hideSeek' ? 'hideSeek' : 'heist';
 const TILE = 16;
 
+const cruise = JSON.parse(fs.readFileSync(new URL('../public/assets/maps/cruise-f1/map.json', import.meta.url), 'utf8'));
 const lobby = JSON.parse(fs.readFileSync(new URL('../public/assets/lobby/lobby.json', import.meta.url), 'utf8'));
 const portal = lobby.portals.find((p: { size: number }) => p.size === (portalSize >= CUSTOM_MIN ? CUSTOM_PAD : portalSize));
 if (!portal || portalSize > 9) throw new Error(`No ${portalSize}-player party`);
@@ -46,6 +48,7 @@ for (let i = 0; i < count; i++) {
       y = msg.y;
       inMatch = false;
       picked = false;
+      send({ t: 'mode', mode });
     }
     if (msg.t === 'match') {
       inMatch = true;
@@ -56,6 +59,13 @@ for (let i = 0; i < count; i++) {
       console.log(`Bot ${i + 1} entered ${msg.matchId} as ${saboteur ? 'SABOTEUR' : 'runner'}`);
       // A Saboteur bot doesn't hide anything itself: it ends setup, and the server hides the diamonds.
       if (saboteur) setTimeout(() => send({ t: 'ready' }), 3000);
+      // Hide & Seek, as a Hider: walk to a hiding place (one each) and get in.
+      if (!saboteur && msg.mode === 'hideSeek') {
+        const h = cruise.hiding[(i * 3 + 1) % cruise.hiding.length];
+        spot = { x: ((h.box[0] + h.box[2]) / 2) * TILE, y: (h.box[3] + 0.5) * TILE };
+        setTimeout(() => send({ t: 'hideIn', spot: h.id }), 2500);
+        console.log(`Bot ${i + 1} hides in ${h.id}`);
+      }
     }
     if (msg.t === 'ability') console.log(`Bot ${i + 1} saw player ${msg.by} use ${msg.ability}`);
     // When a crewmate leaves the heist, head back to the safehouse and queue again.
@@ -91,6 +101,13 @@ for (let i = 0; i < count; i++) {
       }
     send({ t: 'trap', id: best.id });
   }, 3000);
+  // Hide & Seek, as the Seeker: shoot at whoever it can see (the server only sends Hiders in
+  // reach), once a second.
+  setInterval(() => {
+    if (!inMatch || !saboteur || mode !== 'hideSeek' || !others.length || ws.readyState !== WebSocket.OPEN) return;
+    const o = others[0];
+    send({ t: 'shoot', x: o.x, y: o.y - 12 });
+  }, 1000);
   // As a Runner: report position and health, and play medic for any hurt Runner every 4 s.
   setInterval(() => {
     if (!inMatch || saboteur || ws.readyState !== WebSocket.OPEN) return;

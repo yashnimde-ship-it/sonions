@@ -13,6 +13,7 @@ import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
+import { distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
@@ -24,6 +25,9 @@ const PORT = Number(process.env.PORT ?? 3001);
 // For playtests: SETUP_SECONDS=10 HEIST_SECONDS=30 npm run server makes rounds quick.
 const SETUP_TIME = Number(process.env.SETUP_SECONDS ?? 0) * 1000 || SETUP_MS;
 const LIVE_TIME = Number(process.env.HEIST_SECONDS ?? 0) * 1000 || LIVE_MS;
+// The same playtest overrides shorten Hide & Seek's count and hunt.
+const HIDE_TIME = Number(process.env.SETUP_SECONDS ?? 0) * 1000 || HIDE_MS;
+const HUNT_TIME = Number(process.env.HEIST_SECONDS ?? 0) * 1000 || HUNT_MS;
 const TILE = 16;
 
 const readJson = (rel: string) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
@@ -50,6 +54,8 @@ interface Client {
   portalChoice: number | null;
   /** The map they picked in the lobby. */
   mapPref: MapId;
+  /** The game mode they'd like (heist or Hide & Seek). */
+  modePref: GameMode;
   /** This tab's secret player key (from hello), so a dropped player can come back as themselves. */
   key: string | null;
   /** While the connection is down: when the held seat is given up. */
@@ -110,6 +116,165 @@ function openFloor(map: MapId, x: number, y: number, halfW = 10, halfH = 8) {
 }
 const doorsOf = (matchId: string) => decksIn(matchId).flatMap((d) => mapData[d].doors);
 /** The crew's map: the most-picked one; a tie goes to whoever got there first (crew is in arrival order). */
+/** The crew's mode: Hide & Seek if most of them want it and there are enough of them. */
+function crewMode(crew: Client[]): GameMode {
+  const want = crew.filter((c) => c.modePref === 'hideSeek').length;
+  return crew.length >= HIDE_SEEK_MIN_PLAYERS && want * 2 > crew.length ? 'hideSeek' : 'heist';
+}
+/** Per match: a heist or Hide & Seek. */
+const matchModes = new Map<string, GameMode>();
+const isHideSeek = (matchId: string) => matchModes.get(matchId) === 'hideSeek';
+
+/** Per Hide & Seek round: the Seeker's gun and health, each Hider's health, who's caught. */
+interface Hunt {
+  ammo: number;
+  reloadUntil: number;
+  lastShot: number;
+  seekerHp: number;
+  hp: Map<string, number>;
+  caught: Set<string>;
+  /** Got out through the main entrance. */
+  escaped: Set<string>;
+  /** Who's in which hiding place. */
+  hidden: Map<string, string>;
+  /** When each Hider last made a noise the Seeker heard. */
+  noise: Map<string, number>;
+}
+/** A deck's hiding places (from its layout). */
+const hideSpotsOn = (deck: MapId): HideSpot[] => (mapData[deck] as { hiding?: HideSpot[] }).hiding ?? [];
+/** Still in play: not caught, not escaped. */
+const inPlay = (hunt: Hunt, id: string) => !hunt.caught.has(id) && !hunt.escaped.has(id);
+/** Hiders still in play. */
+function huntersLeft(matchId: string, hunt: Hunt) {
+  const sab = saboteurs.get(matchId);
+  return [...(matches.get(matchId) ?? [])].filter((id) => id !== sab && inPlay(hunt, id)).length;
+}
+const hunts = new Map<string, Hunt>();
+
+/** Is (x, y) on this deck solid for a bullet? Walls, furniture and closed doors are. */
+function blocksShot(matchId: string, deck: MapId, x: number, y: number) {
+  const data = mapData[deck];
+  const { cell, width, height } = data.collision;
+  const cx = Math.floor(x / cell);
+  const cy = Math.floor(y / cell);
+  if (cx < 0 || cy < 0 || cx >= width || cy >= height) return true;
+  const i = cy * width + cx;
+  if (mapCollision[deck][i] === 0) return false;
+  // An open door lets the shot through.
+  const states = doorStates.get(matchId);
+  return !data.doors.some((d) => states?.get(d.id) && (d as { cells?: number[] }).cells?.includes(i));
+}
+
+function sendGun(c: Client, hunt: Hunt) {
+  send(c, { t: 'gun', ammo: hunt.ammo, reloadMs: Math.max(0, hunt.reloadUntil - Date.now()), hp: hunt.seekerHp });
+}
+
+/** The Seeker pulls the trigger at (tx, ty): first wall or Hider along the line takes it. */
+function shoot(c: Client, tx: number, ty: number) {
+  const matchId = c.room;
+  const hunt = hunts.get(matchId);
+  const now = Date.now();
+  if (!hunt || !isHideSeek(matchId) || saboteurs.get(matchId) !== c.state.id || phases.get(matchId)?.phase !== 'live') return;
+  if (hunt.reloadUntil > now) return sendGun(c, hunt);
+  if (hunt.reloadUntil && hunt.ammo === 0) hunt.ammo = GUN.ammo; // a finished reload
+  if (hunt.ammo <= 0 || now - hunt.lastShot < GUN.fireMs) return sendGun(c, hunt);
+  hunt.ammo--;
+  hunt.lastShot = now;
+  if (hunt.ammo === 0) hunt.reloadUntil = now + GUN.reloadMs;
+  const deck = deckOf(c);
+  const x0 = c.state.x;
+  const y0 = c.state.y - 14;
+  const len = Math.hypot(tx - x0, ty - y0) || 1;
+  const dx = (tx - x0) / len;
+  const dy = (ty - y0) / len;
+  // Walk the bullet out; the first Hider whose body it passes, or the first wall, stops it.
+  const targets = [...(matches.get(matchId) ?? [])]
+    .map((id) => clients.get(id))
+    .filter((t): t is Client => !!t && t !== c && inPlay(hunt, t.state.id) && deckOf(t) === deck);
+  // A bullet through a hiding place hits whoever is inside it.
+  const spots = hideSpotsOn(deck);
+  const insideSpot = (t: Client, x: number, y: number) => {
+    const sp = spots.find((h) => h.id === hunt.hidden.get(t.state.id));
+    return !!sp && x >= sp.box[0] * TILE - 2 && x <= sp.box[2] * TILE + 2 && y >= sp.box[1] * TILE - 2 && y <= sp.box[3] * TILE + 2;
+  };
+  let hit: Client | null = null;
+  let d = 6;
+  for (; d < GUN.range && !hit; d += 2) {
+    const x = x0 + dx * d;
+    const y = y0 + dy * d;
+    hit = targets.find((t) => insideSpot(t, x, y)) ?? null;
+    if (hit) break;
+    if (blocksShot(matchId, deck, x, y)) break;
+    hit = targets.find((t) => !hunt.hidden.has(t.state.id) && Math.hypot(t.state.x - x, t.state.y - 12 - y) <= GUN.hitRadius) ?? null;
+  }
+  const end = hit ? { x: hit.state.x, y: hit.state.y - 12 } : { x: x0 + dx * d, y: y0 + dy * d };
+  for (const id of matches.get(matchId) ?? []) {
+    const m = clients.get(id);
+    if (m && deckOf(m) === deck) send(m, { t: 'gunshot', x0, y0, x1: end.x, y1: end.y, hit: hit?.state.id ?? null, deck });
+  }
+  if (hit) {
+    const hp = Math.max(0, (hunt.hp.get(hit.state.id) ?? MAX_HP) - GUN.damage);
+    hunt.hp.set(hit.state.id, hp);
+    send(hit, { t: 'shot', damage: GUN.damage, hp });
+    if (hp === 0) catchHider(matchId, hit);
+    else if (hunt.hidden.has(hit.state.id)) unhide(matchId, hit); // shot out of their hiding place
+  } else {
+    // A miss costs the Seeker; out of health, they've lost.
+    hunt.seekerHp = Math.max(0, hunt.seekerHp - GUN.missPenalty);
+    if (hunt.seekerHp === 0) finish(matchId, 'runners');
+  }
+  sendGun(c, hunt);
+}
+
+/** A Hider is caught: a ghost for the rest of the round. All caught: the Seeker wins. */
+function catchHider(matchId: string, hider: Client) {
+  const hunt = hunts.get(matchId);
+  if (!hunt || hunt.caught.has(hider.state.id)) return;
+  hunt.caught.add(hider.state.id);
+  hunt.hidden.delete(hider.state.id);
+  const left = huntersLeft(matchId, hunt);
+  for (const id of matches.get(matchId) ?? []) {
+    const m = clients.get(id);
+    if (m) send(m, { t: 'caught', id: hider.state.id, name: hider.state.name, left });
+  }
+  endHuntIfDone(matchId, hunt);
+}
+
+/** Nobody left to find: the Seeker wins if they caught everyone, the Hiders if anyone got out. */
+function endHuntIfDone(matchId: string, hunt: Hunt) {
+  if (huntersLeft(matchId, hunt) > 0) return;
+  finish(matchId, hunt.escaped.size > 0 ? 'runners' : 'saboteur');
+}
+
+/** Out of a hiding place, standing right in front of it. */
+function unhide(matchId: string, c: Client) {
+  const hunt = hunts.get(matchId);
+  const spot = hideSpotsOn(deckOf(c)).find((h) => h.id === hunt?.hidden.get(c.state.id));
+  hunt?.hidden.delete(c.state.id);
+  if (spot) {
+    c.state.x = hideSpotCenter(spot).x;
+    c.state.y = spot.box[3] * TILE + 6;
+  }
+  send(c, { t: 'hidden', spot: null, x: c.state.x, y: c.state.y });
+}
+
+/** In the last stretch of the hunt, a Hider on the main entrance gangway gets away. */
+function checkEscape(matchId: string, c: Client) {
+  const hunt = hunts.get(matchId);
+  const round = phases.get(matchId);
+  if (!hunt || !round || round.phase !== 'live' || round.endsAt - Date.now() > ESCAPE_MS || !inPlay(hunt, c.state.id)) return;
+  if (deckOf(c) !== HIDE_SEEK_MAP) return;
+  const z = ESCAPE_ZONE;
+  if (c.state.x < z.x * TILE || c.state.x > (z.x + z.w) * TILE || c.state.y < z.y * TILE || c.state.y > (z.y + z.h) * TILE) return;
+  hunt.escaped.add(c.state.id);
+  const left = huntersLeft(matchId, hunt);
+  for (const id of matches.get(matchId) ?? []) {
+    const m = clients.get(id);
+    if (m) send(m, { t: 'escaped', id: c.state.id, name: c.state.name, left });
+  }
+  endHuntIfDone(matchId, hunt);
+}
+
 function crewMap(crew: Client[]): MapId {
   const votes = new Map<MapId, number>();
   for (const c of crew) votes.set(c.mapPref, (votes.get(c.mapPref) ?? 0) + 1);
@@ -337,15 +502,20 @@ function endMatch(matchId: string) {
   phases.delete(matchId);
   abilityUses.delete(matchId);
   series.delete(matchId);
+  matchModes.delete(matchId);
+  hunts.delete(matchId);
 }
 
 function startMatch(size: number, crew: Client[]) {
   const matchId = `heist-${nextMatch++}`;
+  const mode = crewMode(crew);
   const first = crewMap(crew);
   // Saboteur turns in a random order; the map starts with the crew's pick and then rotates.
+  // Hide & Seek always plays on the cruise ship.
   const order = crew.map((c) => c.state.id).sort(() => Math.random() - 0.5);
   const rounds = roundsFor(crew.length);
-  const maps = Array.from({ length: rounds }, (_, i) => MAP_IDS[(MAP_IDS.indexOf(first) + i) % MAP_IDS.length]);
+  const maps = Array.from({ length: rounds }, (_, i) => (mode === 'hideSeek' ? HIDE_SEEK_MAP : MAP_IDS[(MAP_IDS.indexOf(first) + i) % MAP_IDS.length]));
+  matchModes.set(matchId, mode);
   matches.set(matchId, new Set(crew.map((c) => c.state.id)));
   matchSizes.set(matchId, size);
   series.set(matchId, {
@@ -363,7 +533,7 @@ function startMatch(size: number, crew: Client[]) {
     c.portalSince.clear();
     c.portalChoice = null;
   }
-  console.log(`${matchId}: ${size}-player match, ${rounds} rounds, with ${crew.map((c) => c.state.name).join(', ')}`);
+  console.log(`${matchId}: ${size}-player ${mode === 'hideSeek' ? 'Hide & Seek' : 'heist'} match, ${rounds} rounds, with ${crew.map((c) => c.state.name).join(', ')}`);
   startRound(matchId);
 }
 
@@ -395,15 +565,23 @@ function startRound(matchId: string) {
     c.state.stunned = false;
   });
   saboteurs.set(matchId, saboteur);
+  const hs = isHideSeek(matchId);
+  if (hs) hunts.set(matchId, { ammo: GUN.ammo, reloadUntil: 0, lastShot: 0, seekerHp: SEEKER_HP, hp: new Map(), caught: new Set(), escaped: new Set(), hidden: new Map(), noise: new Map() });
+  if (hs) {
+    // Hide & Seek: the Seeker counts in the Staff Room while everyone else scatters.
+    const seeker = clients.get(saboteur)!.state;
+    seeker.x = SEEKER_START.x * TILE;
+    seeker.y = SEEKER_START.y * TILE;
+  }
   const sabCharacter = clients.get(saboteur)!.state.character;
   const size = matchSizes.get(matchId) ?? crew.length;
   const maxEnergy = saboteurMaxEnergy(sabCharacter, size);
   saboteurEnergy.set(matchId, { current: maxEnergy, max: maxEnergy });
   placedTraps.set(matchId, new Map());
   // The diamonds start in the Saboteur's hands; they hide them during setup.
-  const total = diamondCount(size);
+  const total = hs ? 0 : diamondCount(size);
   vaults.set(matchId, { diamonds: Array.from({ length: total }, (_, i) => ({ id: `d${i + 1}`, place: { at: 'tray' } })), searched: new Set(), banked: 0, need: diamondsToWin(total), winner: null, hits: 0, glints: new Map(), lastSearch: new Map() });
-  phases.set(matchId, { phase: 'setup', endsAt: Date.now() + SETUP_TIME });
+  phases.set(matchId, { phase: 'setup', endsAt: Date.now() + (hs ? HIDE_TIME : SETUP_TIME) });
   trapState.set(matchId, new Map(MAPS[map].traps.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
   overclockReadyAt.set(matchId, 0);
@@ -437,7 +615,7 @@ function finishSeries(matchId: string) {
   sr.nextAt = null;
   const round = phases.get(matchId);
   if (round) round.phase = 'over';
-  const msg: ServerMsg = { t: 'final', standings: standings(matchId), rounds: sr.history };
+  const msg: ServerMsg = { t: 'final', standings: standings(matchId), rounds: sr.history, mode: matchModes.get(matchId) };
   for (const id of matches.get(matchId) ?? []) {
     const c = clients.get(id);
     if (c) send(c, msg);
@@ -454,7 +632,7 @@ function matchMsg(c: Client, matchId: string, resume = false): ServerMsg {
   const isSaboteur = c.state.id === saboteur;
   const players = [...(matches.get(matchId) ?? [])]
     .map((id) => clients.get(id)?.state)
-    .filter((p): p is PlayerState => !!p && (p.id !== saboteur || isSaboteur))
+    .filter((p): p is PlayerState => !!p && (p.id !== saboteur || isSaboteur || isHideSeek(matchId)))
     .map((p) => ({ ...p }));
   const round = phases.get(matchId);
   const energy = saboteurEnergy.get(matchId);
@@ -472,6 +650,9 @@ function matchMsg(c: Client, matchId: string, resume = false): ServerMsg {
     ...(resume ? { resume: true } : {}),
     round: (series.get(matchId)?.round ?? 0) + 1,
     rounds: series.get(matchId)?.rounds ?? 1,
+    mode: matchModes.get(matchId) ?? 'heist',
+    // Hide & Seek's Seeker is no secret: everyone knows the owner has the gun.
+    ...(isHideSeek(matchId) && saboteur ? { seeker: saboteur } : {}),
   };
 }
 
@@ -520,7 +701,7 @@ function updatePortals(now: number): PortalState[] {
     }
     if (inside.length < portal.size) {
       portalEnds.delete(portal.size);
-      return { size: portal.size, count: inside.length, countdown: null, map: inside.length ? crewMap(sortByArrival(inside, portal.size)) : null };
+      return { size: portal.size, count: inside.length, countdown: null, map: inside.length ? crewMap(sortByArrival(inside, portal.size)) : null, mode: inside.length ? crewMode(sortByArrival(inside, portal.size).slice(0, portal.size)) : undefined };
     }
     if (!portalEnds.has(portal.size)) portalEnds.set(portal.size, now + PORTAL_COUNTDOWN * 1000);
     const left = (portalEnds.get(portal.size)! - now) / 1000;
@@ -531,7 +712,8 @@ function updatePortals(now: number): PortalState[] {
       portalEnds.delete(portal.size);
       return { size: portal.size, count: 0, countdown: null, map: null };
     }
-    return { size: portal.size, count: inside.length, countdown: Math.ceil(left), map: crewMap(sortByArrival(inside, portal.size).slice(0, portal.size)) };
+    const crew = sortByArrival(inside, portal.size).slice(0, portal.size);
+    return { size: portal.size, count: inside.length, countdown: Math.ceil(left), map: crewMap(crew), mode: crewMode(crew) };
   });
 }
 
@@ -544,9 +726,22 @@ function tick() {
   for (const c of inRoom('lobby')) send(c, { t: 'snapshot', room: 'lobby', players: lobbyPlayers, portals, online, taken });
   for (const [matchId, ids] of matches) {
     const players = [...ids].map((id) => clients.get(id)?.state).filter((s): s is PlayerState => !!s && s.id !== saboteurs.get(matchId));
+    const seeker = isHideSeek(matchId) ? clients.get(saboteurs.get(matchId) ?? '')?.state : undefined;
     for (const id of ids) {
       const c = clients.get(id);
-      if (c) send(c, { t: 'snapshot', room: 'match', players, portals: [], online, taken: [] });
+      if (!c) continue;
+      let seen = players;
+      if (seeker) {
+        // Hide & Seek in the dark: you only hear where someone is if you could see them.
+        // Hiders always know where their crew is; the Seeker only when they're in reach.
+        const near = (a: PlayerState, b: PlayerState, r: number) => (a.deck ?? '') === (b.deck ?? '') && Math.hypot(a.x - b.x, a.y - b.y) <= r;
+        const hunt = hunts.get(matchId);
+        const ghost = !!hunt && !inPlay(hunt, id);
+        seen = id === seeker.id
+          ? players.filter((p) => near(p, seeker, SEEKER_SEES_HIDERS) && (!hunt || (inPlay(hunt, p.id) && !hunt.hidden.has(p.id))))
+          : ghost || near(c.state, seeker, HIDER_SEES_SEEKER) ? [...players, seeker] : players;
+      }
+      send(c, { t: 'snapshot', room: 'match', players: seen, portals: [], online, taken: [] });
     }
     if (!players.length) {
       endMatch(matchId);
@@ -568,8 +763,9 @@ function tick() {
     const p = phases.get(matchId);
     if (p && p.phase !== 'over' && now >= p.endsAt) {
       // Setup over: the heist starts. Heist over: the Saboteur held on to enough diamonds.
+      // (Hide & Seek: running out the clock means the Hiders survived.)
       if (p.phase === 'setup') goLive(matchId);
-      else finish(matchId, 'saboteur');
+      else finish(matchId, isHideSeek(matchId) ? 'runners' : 'saboteur');
     }
     if (p?.phase === 'live') sendGlints(matchId);
     // The break after a round: then the next round, or after the last one the final results.
@@ -608,7 +804,9 @@ function handle(c: Client, msg: ClientMsg) {
       const fromY = s.y;
       if (c.room !== 'lobby') {
         const round = phases.get(c.room);
-        if (!round || round.phase !== 'live' || saboteurs.get(c.room) === s.id) break;
+        const seekerHere = isHideSeek(c.room) && saboteurs.get(c.room) === s.id;
+        if (!round || round.phase === 'over') break;
+        if (isHideSeek(c.room) ? round.phase === 'setup' && seekerHere : round.phase !== 'live' || saboteurs.get(c.room) === s.id) break;
       }
       s.x = msg.x;
       s.y = msg.y;
@@ -623,6 +821,19 @@ function handle(c: Client, msg: ClientMsg) {
       s.hp = Math.max(0, Math.min(MAX_HP, Number(msg.hp) || 0));
       s.stunned = !!msg.stunned;
       if (held && s.hp === 0) dropDiamond(c.room, s.id, s.x, s.y);
+      const hunt = hunts.get(c.room);
+      if (hunt && saboteurs.get(c.room) !== s.id) {
+        // Hide & Seek: in a hiding place you stay put; on the gangway at the end you get out;
+        // sprinting is loud enough for the Seeker to hear.
+        const spot = hideSpotsOn(deckOf(c)).find((h) => h.id === hunt.hidden.get(s.id));
+        if (spot) [s.x, s.y] = [hideSpotCenter(spot).x, hideSpotCenter(spot).y];
+        checkEscape(c.room, c);
+        const seeker = clients.get(saboteurs.get(c.room) ?? '');
+        if (seeker && inPlay(hunt, s.id) && msg.sprint && msg.moving && !spot && Date.now() - (hunt.noise.get(s.id) ?? 0) >= NOISE_MS && deckOf(seeker) === deckOf(c) && Math.hypot(seeker.state.x - s.x, seeker.state.y - s.y) <= NOISE_RANGE) {
+          hunt.noise.set(s.id, Date.now());
+          send(seeker, { t: 'noise', x: s.x, y: s.y });
+        }
+      }
       if (c.room !== 'lobby') {
         const now = Date.now();
         const saboteurId = saboteurs.get(c.room);
@@ -683,7 +894,7 @@ function handle(c: Client, msg: ClientMsg) {
       break;
     case 'ready': {
       const matchId = c.room;
-      if (saboteurs.get(matchId) !== s.id || phases.get(matchId)?.phase !== 'setup') break;
+      if (saboteurs.get(matchId) !== s.id || phases.get(matchId)?.phase !== 'setup' || isHideSeek(matchId)) break;
       goLive(matchId);
       break;
     }
@@ -919,6 +1130,53 @@ function handle(c: Client, msg: ClientMsg) {
     case 'map':
       if (isMapId(msg.map)) c.mapPref = msg.map;
       break;
+    case 'mode':
+      if (isGameMode(msg.mode)) c.modePref = msg.mode;
+      break;
+    case 'shoot':
+      if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) shoot(c, msg.x, msg.y);
+      break;
+    case 'hideIn': {
+      // A Hider (still in play) gets into a free hiding place within reach.
+      const hunt = hunts.get(c.room);
+      if (!hunt || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase === 'over' || !inPlay(hunt, s.id) || hunt.hidden.has(s.id)) break;
+      const spot = hideSpotsOn(deckOf(c)).find((h) => h.id === msg.spot);
+      if (!spot || distToHideSpot(spot, s.x, s.y) > HIDE_REACH + 12 || [...hunt.hidden.values()].includes(spot.id)) break;
+      hunt.hidden.set(s.id, spot.id);
+      const at = hideSpotCenter(spot);
+      s.x = at.x;
+      s.y = at.y;
+      send(c, { t: 'hidden', spot: spot.id, x: at.x, y: at.y });
+      break;
+    }
+    case 'unhide': {
+      const hunt = hunts.get(c.room);
+      if (hunt?.hidden.has(s.id)) unhide(c.room, c);
+      break;
+    }
+    case 'seekSpot': {
+      // The Seeker opens a hiding place: whoever's inside is out, and seen.
+      const hunt = hunts.get(c.room);
+      if (!hunt || saboteurs.get(c.room) !== s.id || phases.get(c.room)?.phase !== 'live') break;
+      const spot = hideSpotsOn(deckOf(c)).find((h) => h.id === msg.spot);
+      if (!spot || distToHideSpot(spot, s.x, s.y) > HIDE_REACH + 12) break;
+      const inside = [...hunt.hidden].find(([, id]) => id === spot.id)?.[0];
+      const hider = inside ? clients.get(inside) : undefined;
+      if (hider) unhide(c.room, hider);
+      for (const id of matches.get(c.room) ?? []) {
+        const m = clients.get(id);
+        if (m) send(m, { t: 'searched', spot: spot.id, found: hider?.state.id ?? null, name: hider?.state.name ?? '' });
+      }
+      break;
+    }
+    case 'reload': {
+      const hunt = hunts.get(c.room);
+      if (!hunt || saboteurs.get(c.room) !== s.id || hunt.reloadUntil > Date.now() || hunt.ammo === GUN.ammo) break;
+      hunt.ammo = 0;
+      hunt.reloadUntil = Date.now() + GUN.reloadMs;
+      sendGun(c, hunt);
+      break;
+    }
     case 'deck': {
       // Stairs to another deck of the ship: from now on the player is there, at (x, y).
       if (!matches.has(c.room) || !isMapId(msg.deck) || !decksIn(c.room).includes(msg.deck)) break;
@@ -1047,16 +1305,25 @@ function goLive(matchId: string) {
     if (free) d.place = { at: 'spot', spot: free.id };
   }
   round.phase = 'live';
-  round.endsAt = Date.now() + LIVE_TIME;
+  round.endsAt = Date.now() + (isHideSeek(matchId) ? HUNT_TIME : LIVE_TIME);
   // Placed traps stay secret from the Runners, except Fake Loot chests, which are meant to be seen.
   const decoys = [...(placedTraps.get(matchId)?.values() ?? [])].filter((t) => t.kind === 'fakeLoot');
   for (const id of matches.get(matchId) ?? []) {
     const member = clients.get(id);
     if (!member) continue;
-    send(member, { t: 'phase', phase: 'live', ms: LIVE_TIME });
+    send(member, { t: 'phase', phase: 'live', ms: isHideSeek(matchId) ? HUNT_TIME : LIVE_TIME });
     if (id !== saboteurs.get(matchId)) for (const trap of decoys) send(member, { t: 'place', trap });
   }
   sendDiamonds(matchId);
+}
+
+/** Hide & Seek's round: who was caught, who escaped, and who simply stayed hidden. */
+function huntSummary(matchId: string) {
+  const hunt = hunts.get(matchId)!;
+  const sab = saboteurs.get(matchId);
+  const names = (ids: Iterable<string>) => [...ids].map((id) => series.get(matchId)?.players.get(id)?.name ?? clients.get(id)?.state.name ?? '?');
+  const survived = [...(matches.get(matchId) ?? [])].filter((id) => id !== sab && inPlay(hunt, id));
+  return { caught: names(hunt.caught), escaped: names(hunt.escaped), survived: names(survived) };
 }
 
 /** The heist is over: score it, tell everyone who won and where everything was, start the break. */
@@ -1070,9 +1337,14 @@ function finish(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
   round.endsAt = Date.now();
   if (sr) {
     const sab = saboteurs.get(matchId);
+    const hunt = hunts.get(matchId);
     for (const [id, p] of sr.players) {
       let pts = 0;
-      if (id === sab) {
+      if (hunt) {
+        // Hide & Seek: the Seeker scores catches and the win; Hiders score for surviving.
+        if (id === sab) pts = hunt.caught.size * HS_SCORE.catch + (winner === 'saboteur' ? HS_SCORE.seekerWin : 0);
+        else if (matches.get(matchId)?.has(id) && !hunt.caught.has(id) && winner !== 'none') pts = HS_SCORE.survive + (hunt.escaped.has(id) ? HS_SCORE.escape : 0);
+      } else if (id === sab) {
         pts = vault.hits * SCORE.trapHit + (vault.diamonds.length - vault.banked) * SCORE.unbanked + (winner === 'saboteur' ? SCORE.saboteurWin : 0);
       } else if (matches.get(matchId)?.has(id)) {
         pts = vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).length * SCORE.bank + (winner === 'runners' ? SCORE.runnersWin : 0);
@@ -1111,6 +1383,7 @@ function resultMsg(matchId: string): ServerMsg {
     standings: standings(matchId),
     nextMs: Math.max(0, (sr?.nextAt ?? Date.now()) - Date.now()),
     last: !sr || r + 1 >= sr.rounds,
+    ...(hunts.has(matchId) ? { hunt: huntSummary(matchId) } : {}),
   };
 }
 
@@ -1165,7 +1438,16 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
     send(known, diamondsMsg(known, known.room));
     if (phases.get(known.room)?.phase === 'over') send(known, resultMsg(known.room));
     const sr = series.get(known.room);
-    if (sr?.done) send(known, { t: 'final', standings: standings(known.room), rounds: sr.history });
+    // Hide & Seek: who's out, my hiding place, the Seeker's gun.
+    const hunt = hunts.get(known.room);
+    if (hunt) {
+      const left = huntersLeft(known.room, hunt);
+      for (const id of hunt.caught) send(known, { t: 'caught', id, name: clients.get(id)?.state.name ?? '', left });
+      for (const id of hunt.escaped) send(known, { t: 'escaped', id, name: clients.get(id)?.state.name ?? '', left });
+      if (hunt.hidden.has(known.state.id)) send(known, { t: 'hidden', spot: hunt.hidden.get(known.state.id)!, x: known.state.x, y: known.state.y });
+      if (saboteurs.get(known.room) === known.state.id) sendGun(known, hunt);
+    }
+    if (sr?.done) send(known, { t: 'final', standings: standings(known.room), rounds: sr.history, mode: matchModes.get(known.room) });
     vaults.get(known.room)?.glints.delete(known.state.id);
   }
   console.log(`${known.state.name} reconnected (${known.room})`);
@@ -1200,6 +1482,7 @@ wss.on('connection', (ws) => {
     portalSince: new Map(),
     portalChoice: null,
     mapPref: 'estate',
+    modePref: 'heist',
     key: null,
     dropTimer: null,
     state: { id, name: '', character: 'maya', x: LOBBY_SPAWN.x, y: LOBBY_SPAWN.y, facing: 'down', moving: false, sprint: false, carrying: false, hp: MAX_HP, stunned: false },

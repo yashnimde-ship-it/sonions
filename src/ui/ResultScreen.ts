@@ -3,7 +3,7 @@ import type { ServerMsg, Standing } from '../net/protocol';
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 type Result = Extract<ServerMsg, { t: 'result' }>;
 type Final = Extract<ServerMsg, { t: 'final' }>;
-const MAP_NAMES: Record<string, string> = { estate: 'The Estate', museum: 'Midnight Museum', 'cruise-b1': 'Luxury Cruise' };
+const MAP_NAMES: Record<string, string> = { estate: 'The Estate', museum: 'Midnight Museum', 'cruise-b1': 'Luxury Cruise B1', 'cruise-f1': 'Luxury Cruise F1' };
 
 /**
  * The end of a round: a big WIN or LOSE card over the revealed map, this round's points, the
@@ -14,6 +14,7 @@ export class ResultScreen {
   private countdown: HTMLElement | null = null;
   private nextAt = 0;
   private last = false;
+  private hideSeek = false;
 
   constructor(onBack: () => void) {
     this.root.id = 'result';
@@ -27,32 +28,41 @@ export class ResultScreen {
   /** A round is over. `me` is my player id, `saboteur` whether I was the Saboteur this round. */
   show(r: Result, me: string, saboteur: boolean) {
     const won = r.winner !== 'none' && (r.winner === 'saboteur') === saboteur;
-    const reason =
-      r.winner === 'none'
+    const h = r.hunt;
+    const list = (names: string[]) => names.map(esc).join(', ');
+    const reason = h
+      ? r.winner === 'none'
+        ? 'The Seeker left, so this round is called off.'
+        : r.winner === 'saboteur'
+          ? `The Seeker caught everyone: ${list(h.caught)}.`
+          : [h.escaped.length ? `Escaped: ${list(h.escaped)}.` : '', h.survived.length ? `Stayed hidden: ${list(h.survived)}.` : '', h.caught.length ? `Caught: ${list(h.caught)}.` : ''].filter(Boolean).join(' ')
+      : r.winner === 'none'
         ? 'The Saboteur left, so this round is called off.'
         : r.winner === 'runners'
           ? `The Runners banked ${r.banked} of ${r.total} diamonds (needed ${r.need}).`
           : `Time's up: only ${r.banked} of ${r.total} diamonds were banked (needed ${r.need}).`;
+    const sides = h ? (['HIDERS WIN', 'SEEKER WINS'] as const) : (['RUNNERS WIN', 'SABOTEUR WINS'] as const);
     const points = r.points
-      .map((p) => `<li class="${p.id === me ? 'me' : ''}"><span class="who">${esc(p.name)}${p.saboteur ? ' <em>SABOTEUR</em>' : ''}</span><b>+${p.points}</b></li>`)
+      .map((p) => `<li class="${p.id === me ? 'me' : ''}"><span class="who">${esc(p.name)}${p.saboteur ? ` <em>${h ? 'SEEKER' : 'SABOTEUR'}</em>` : ''}</span><b>+${p.points}</b></li>`)
       .join('');
     this.root.className = r.winner === 'none' ? 'off' : won ? 'win' : 'lose';
     this.root.innerHTML = `
       <div class="result-card">
-        <span class="kicker">ROUND ${r.round} OF ${r.rounds} · ${r.winner === 'none' ? 'CALLED OFF' : r.winner === 'runners' ? 'RUNNERS WIN' : 'SABOTEUR WINS'}</span>
+        <span class="kicker">ROUND ${r.round} OF ${r.rounds} · ${h ? 'HIDE &amp; SEEK · ' : ''}${r.winner === 'none' ? 'CALLED OFF' : r.winner === 'runners' ? sides[0] : sides[1]}</span>
         <h1>${r.winner === 'none' ? 'NO CONTEST' : won ? 'YOU WIN' : 'YOU LOSE'}</h1>
         <p class="reason">${reason}</p>
         <div class="result-cols">
           <div><h2>THIS ROUND</h2><ol class="points">${points}</ol></div>
           <div><h2>SCOREBOARD</h2>${table(r.standings, me)}</div>
         </div>
-        <p class="legend"><i class="gem banked"></i> banked <i class="gem floor"></i> dropped <i class="gem hidden"></i> never found</p>
+        ${h ? '' : '<p class="legend"><i class="gem banked"></i> banked <i class="gem floor"></i> dropped <i class="gem hidden"></i> never found</p>'}
         <p class="next"></p>
         <button type="button" class="result-back">LEAVE MATCH</button>
       </div>`;
     this.countdown = this.root.querySelector('.next');
     this.nextAt = performance.now() + r.nextMs;
     this.last = r.last;
+    this.hideSeek = !!h;
     this.root.hidden = false;
     this.tick();
   }
@@ -82,7 +92,8 @@ export class ResultScreen {
         : iWon
           ? 'YOU WIN THE MATCH'
           : `${esc(winners[0].name)} WINS`;
-    const rounds = f.rounds.map((r, i) => `<li>Round ${i + 1} · ${MAP_NAMES[r.map] ?? r.map} · Saboteur ${esc(r.saboteur)} · <b>${r.winner === 'none' ? 'called off' : r.winner === 'runners' ? 'Runners won' : 'Saboteur won'}</b></li>`).join('');
+    const hs = f.mode === 'hideSeek';
+    const rounds = f.rounds.map((r, i) => `<li>Round ${i + 1} · ${MAP_NAMES[r.map] ?? r.map} · ${hs ? 'Seeker' : 'Saboteur'} ${esc(r.saboteur)} · <b>${r.winner === 'none' ? 'called off' : r.winner === 'runners' ? (hs ? 'Hiders won' : 'Runners won') : hs ? 'Seeker won' : 'Saboteur won'}</b></li>`).join('');
     this.root.className = iWon ? 'win final' : 'final';
     this.root.innerHTML = `
       <div class="result-card">
@@ -101,7 +112,7 @@ export class ResultScreen {
   tick() {
     if (!this.countdown || this.root.hidden) return;
     const s = Math.max(0, Math.ceil((this.nextAt - performance.now()) / 1000));
-    const text = this.last ? `Final results in ${s}...` : `Next round starts in ${s}... (new Saboteur, new map)`;
+    const text = this.last ? `Final results in ${s}...` : `Next round starts in ${s}... ${this.hideSeek ? '(new Seeker)' : '(new Saboteur, new map)'}`;
     if (this.countdown.textContent !== text) this.countdown.textContent = text;
   }
 

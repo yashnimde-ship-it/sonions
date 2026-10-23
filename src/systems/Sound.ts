@@ -4,7 +4,7 @@
 
 import type { TrapKindId } from '../data/trapKinds';
 
-export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert';
+export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'gunshot' | 'reload' | 'caught' | 'click';
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -137,6 +137,21 @@ export function play(id: SoundId) {
       break;
     case 'tick':
       tone(a, 'square', 1000, 1000, 0.05, 0, 0.12);
+      break;
+    case 'gunshot':
+      noise(a, 0.18, 0, 0.9, 'lowpass', 2200);
+      tone(a, 'square', 180, 60, 0.12, 0, 0.5);
+      break;
+    case 'reload':
+      tone(a, 'square', 900, 900, 0.03, 0, 0.2);
+      tone(a, 'square', 600, 600, 0.03, 0.25, 0.2);
+      tone(a, 'square', 1200, 1200, 0.04, 1.8, 0.25);
+      break;
+    case 'caught':
+      [440, 330, 220].forEach((f, i) => tone(a, 'sawtooth', f, f * 0.9, 0.18, i * 0.12, 0.25));
+      break;
+    case 'click':
+      tone(a, 'square', 2000, 2000, 0.02, 0, 0.15);
       break;
     case 'alert':
       tone(a, 'square', 660, 660, 0.08, 0, 0.15);

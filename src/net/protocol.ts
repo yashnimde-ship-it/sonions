@@ -4,6 +4,7 @@ import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node
 import type { AbilityId } from '../data/characters.ts';
 import type { MapId } from '../data/maps.ts';
 import type { Diamond } from '../data/diamonds.ts';
+import type { GameMode } from '../data/hideSeek.ts';
 import type { Phase } from '../data/round.ts';
 import type { PlacedTrap, TrapKindId } from '../data/trapKinds.ts';
 
@@ -44,6 +45,8 @@ export interface PortalState {
   countdown: number | null;
   /** The map this crew would play (their majority pick), or null while the portal is empty. */
   map: MapId | null;
+  /** What they'd play: a heist, or Hide & Seek (needs 3+ players). */
+  mode?: GameMode;
 }
 
 /** Game -> server */
@@ -67,6 +70,15 @@ export type ClientMsg =
   | { t: 'character'; character: CharacterId }
   /** The map this player wants to play next (the crew's majority decides). */
   | { t: 'map'; map: MapId }
+  /** The game mode this player wants next (the crew's majority decides). */
+  | { t: 'mode'; mode: GameMode }
+  /** Hide & Seek: the Seeker fires at (x, y), art px on their deck; or reloads. */
+  | { t: 'shoot'; x: number; y: number }
+  | { t: 'reload' }
+  /** Hide & Seek: a Hider gets into a hiding place (or back out); the Seeker searches one. */
+  | { t: 'hideIn'; spot: string }
+  | { t: 'unhide' }
+  | { t: 'seekSpot'; spot: string }
   /** Took the stairs to another deck of the ship, arriving at (x, y) there. */
   | { t: 'deck'; deck: MapId; x: number; y: number }
   // In a match: shared world changes, relayed to everyone in it.
@@ -110,7 +122,7 @@ export type ServerMsg =
    * A portal filled up: you are in a new match with these players. `role` is only your own:
    * nobody is told who the Saboteur is (except the Saboteur).
    */
-  | { t: 'match'; matchId: string; size: number; map: MapId; deck?: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean; round: number; rounds: number }
+  | { t: 'match'; matchId: string; size: number; map: MapId; deck?: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean; round: number; rounds: number; mode: GameMode; seeker?: string }
   /** The server rejected an optimistic trap placement. */
   | { t: 'placementRejected'; id: string; reason: string }
   /** Current Saboteur trap energy after a placement or pickup. */
@@ -144,9 +156,11 @@ export type ServerMsg =
       /** Until the next round starts, or until the final results (last round). */
       nextMs: number;
       last: boolean;
+      /** Hide & Seek rounds: who was caught, who escaped, who just survived. */
+      hunt?: { caught: string[]; escaped: string[]; survived: string[] };
     }
   /** The match is over: everyone's totals, and what happened each round. */
-  | { t: 'final'; standings: Standing[]; rounds: { map: MapId; saboteur: string; winner: 'runners' | 'saboteur' | 'none' }[] }
+  | { t: 'final'; standings: Standing[]; rounds: { map: MapId; saboteur: string; winner: 'runners' | 'saboteur' | 'none' }[]; mode?: GameMode }
   /** The round moved on (setup -> live -> over); `ms` is how long this phase lasts. */
   | { t: 'phase'; phase: Phase; ms: number }
   | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
@@ -173,6 +187,22 @@ export type ServerMsg =
   | { t: 'unplace'; id: string }
   /** A trap plate is jammed for `ms`: it can't fire, and a pending shock is cancelled. */
   | { t: 'jam'; id: string; ms: number; trap?: PlacedTrap }
+  /** Hide & Seek: a shot was fired (everyone on that deck sees the flash and the tracer). */
+  | { t: 'gunshot'; x0: number; y0: number; x1: number; y1: number; hit: string | null; deck?: MapId }
+  /** Hide & Seek: you were shot (Hiders), for `damage`. */
+  | { t: 'shot'; damage: number; hp: number }
+  /** Hide & Seek: the Seeker's gun and health (sent to the Seeker). */
+  | { t: 'gun'; ammo: number; reloadMs: number; hp: number }
+  /** Hide & Seek: a Hider was caught (two hits): they're a ghost for the rest of the round. */
+  | { t: 'caught'; id: string; name: string; left: number }
+  /** Hide & Seek: a Hider got out through the main entrance (safe; a ghost from now on). */
+  | { t: 'escaped'; id: string; name: string; left: number }
+  /** Hide & Seek: you're now in this hiding place (null: out of it), at (x, y). */
+  | { t: 'hidden'; spot: string | null; x: number; y: number }
+  /** Hide & Seek: the Seeker opened a hiding place; `found` is who was in it, if anyone. */
+  | { t: 'searched'; spot: string; found: string | null; name: string }
+  /** Hide & Seek (Seeker): someone sprinting, heard at (x, y). */
+  | { t: 'noise'; x: number; y: number }
   /** Someone in the heist got caught by a trap: shown to everyone as a pop-up. */
   /** Someone was caught; (x, y) on `deck` is where (for the 4-second minimap flash). */
   | { t: 'trapAlert'; id: string; name: string; trap: string; area: string; x: number; y: number; deck: MapId }

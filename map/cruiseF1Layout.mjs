@@ -46,6 +46,19 @@ export function inside(x, y) {
   return true;
 }
 
+/**
+ * Small props painted out of the art (filled from the floor beside them) so the cramped deck
+ * has room to run and hide; nothing structural or big goes. Their SOLIDS are gone too.
+ */
+export const CLEARED = [
+  // Each repeats clean floor from the same plank rows (or columns) nearby, so nothing ghosts.
+  { box: [47.5, 18.2, 51.0, 22.3], from: 'left', strip: [51.0, 52.4] }, // ballroom table, west
+  { box: [68.0, 17.0, 72.0, 21.6], from: 'left', strip: [65.0, 67.4] }, // ballroom table, east
+  { box: [89.2, 22.7, 92.4, 26.1], from: 'left', strip: [93.0, 94.8] }, // lounge: a round table and its chairs
+  { box: [5.7, 27.6, 7.95, 31.1], from: 'left', strip: [8.0, 9.3] }, // front deck: deck chair
+  { box: [9.3, 32.7, 12.1, 36.9], from: 'left', strip: [8.6, 9.2] }, // front deck: deck chair
+];
+
 /** Rooms, for the HUD (all indoors). Later entries win where they overlap. */
 export const ROOMS = [
   { name: 'Promenade', box: [0, 0, 112, 56] },
@@ -111,7 +124,7 @@ function cabinSolids() {
 export const SOLIDS = [
   // Front deck
   [10.2, 13.6, 11.8, 16.6], [12.6, 14.2, 13.4, 17.2], // deck chair, bench
-  [6.0, 19.4, 7.6, 22.2], [6.0, 27.6, 7.6, 30.4], [6.6, 33.4, 8.2, 36.4], [10.2, 33.4, 11.8, 36.4], // deck chairs
+  [6.0, 19.4, 7.6, 22.2], [6.6, 33.4, 8.2, 36.4], // deck chairs (two cleared, see CLEARED)
   [10.6, 18.6, 12.0, 21.0], [10.6, 27.4, 12.0, 30.0], [5.2, 33.6, 6.4, 35.4], // potted palms
   // Kitchen: counters round the walls, two islands; the middle stays open
   [14.6, 11.0, 37.6, 12.6],
@@ -128,7 +141,7 @@ export const SOLIDS = [
   [50.4, 4.6, 65.8, 8.0], [52.4, 8.0, 63.6, 11.2], // curtains and stage
   [45.6, 8.6, 50.2, 10.2], [66.2, 8.6, 72.4, 10.2], // backstage cabinets
   [47.0, 12.4, 51.0, 16.8], // grand piano
-  [47.6, 18.4, 50.6, 21.6], [47.8, 23.0, 50.8, 25.4], [67.6, 11.8, 70.6, 15.2], [69.0, 17.6, 72.0, 21.0], [67.6, 21.2, 70.6, 24.6],
+  [47.8, 23.0, 50.8, 25.4], [67.6, 11.8, 70.6, 15.2], [67.6, 21.2, 70.6, 24.6], // (two cleared)
   [46.0, 25.4, 52.0, 27.4], [54.6, 25.6, 57.4, 27.2], [60.6, 25.6, 63.6, 27.2], [65.4, 25.4, 71.6, 27.4], // counters and sofas along the south side
   // Stairs up to F2 (the treads; you climb from the landing below them)
   [39.8, 8.8, 44.0, 14.4], [74.2, 8.8, 78.2, 14.4],
@@ -137,10 +150,10 @@ export const SOLIDS = [
   [91.6, 11.4, 92.8, 13.2], [98.0, 11.0, 99.4, 14.6], // plant, cabinet
   [93.6, 14.2, 95.6, 17.6], [96.6, 14.2, 98.6, 17.6], // armchairs
   [95.4, 19.8, 99.0, 23.6], [97.8, 23.8, 99.4, 26.6], // round table, palm
-  [80.4, 23.0, 83.2, 25.6], [84.0, 23.2, 85.8, 25.6], [86.0, 22.8, 88.6, 25.4], [89.0, 23.0, 91.6, 25.6], // lounge tables
+  [80.4, 23.0, 83.2, 25.6], [84.0, 23.2, 85.8, 25.6], [86.0, 22.8, 88.6, 25.4], // lounge tables (one cleared)
   [79.4, 26.6, 90.4, 28.2], [92.6, 26.8, 98.2, 28.4], // benches along the south side (doorway between)
   // Side deck
-  [103.6, 16.6, 106.6, 19.0], [100.6, 10.6, 102.0, 12.4], [101.0, 23.4, 102.4, 25.4], [103.8, 32.6, 105.2, 35.4],
+  [103.6, 16.6, 106.6, 19.0], [100.6, 10.6, 102.0, 12.4], [101.0, 23.4, 102.4, 25.4],
   // Crew stairs by the cabins (locked)
   [100.8, 31.6, 103.0, 36.4], [13.6, 39.4, 15.8, 43.6],
   // Promenade: sofas by the cabins

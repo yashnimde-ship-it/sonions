@@ -15,6 +15,8 @@
 //   OFF_LIMITS        area names nobody can reach on purpose (the open sea)
 //   AUTO_WALLS        also read walls from the art's dark wall bands (inside() only), with
 //                     NOT_WALLS boxes clearing anything it mistakes for wall
+//   CLEARED           small props painted out of the art (same fill as LABELS) to open up
+//                     cramped rooms; their SOLIDS boxes are removed from the layout too
 //
 // Steps: the reference (already 96 x 64 tiles at 16 px) has its room-name plaques painted
 // over with the floor beside them; it's cut into 16x16 tiles and deduplicated. Collision is
@@ -67,10 +69,15 @@ const ref = (() => {
 
 // ---------- Paint over the room-name plaques ----------
 
-/** Fills a box by repeating (mirrored) the strip of `span` tiles on one side of it. */
-function repair(img, { box, from, span }) {
+/**
+ * Fills a box by repeating (mirrored) the strip of `span` tiles on one side of it. Or, for a
+ * prop with clutter right beside it: `strip: [a, b]` repeats a clean strip elsewhere in the same
+ * rows (from 'left'/'right', x in tiles) or columns ('up'/'down', y in tiles), so floor planks
+ * carry on; `shift: [dx, dy]` copies a clean patch that many tiles away (for tiled floors).
+ */
+function repair(img, { box, from, span, strip, shift }) {
   const [x0, y0, x1, y1] = box.map(px);
-  const s = Math.max(1, px(span));
+  const s = Math.max(1, px(strip ? strip[1] - strip[0] : span));
   const mirror = (d) => {
     const k = d % (2 * s);
     return k < s ? k : 2 * s - 1 - k;
@@ -79,15 +86,22 @@ function repair(img, { box, from, span }) {
     for (let x = x0; x < x1; x++) {
       let sx = x;
       let sy = y;
-      if (from === 'right') sx = x1 + mirror(x1 - 1 - x);
-      if (from === 'left') sx = x0 - 1 - mirror(x - x0);
-      if (from === 'down') sy = y1 + mirror(y1 - 1 - y);
-      if (from === 'up') sy = y0 - 1 - mirror(y - y0);
+      if (shift) {
+        sx = x + px(shift[0]);
+        sy = y + px(shift[1]);
+      } else if (strip) {
+        if (from === 'left' || from === 'right') sx = px(strip[0]) + mirror(x - x0);
+        else sy = px(strip[0]) + mirror(y - y0);
+      }
+      else if (from === 'right') sx = x1 + mirror(x1 - 1 - x);
+      if (!shift && !strip && from === 'left') sx = x0 - 1 - mirror(x - x0);
+      if (!shift && !strip && from === 'down') sy = y1 + mirror(y1 - 1 - y);
+      if (!shift && !strip && from === 'up') sy = y0 - 1 - mirror(y - y0);
       const si = (Math.min(img.h - 1, Math.max(0, sy)) * img.w + Math.min(img.w - 1, Math.max(0, sx))) * 3;
       img.rgb.copyWithin((y * img.w + x) * 3, si, si + 3);
     }
 }
-for (const label of L.LABELS) repair(ref, label);
+for (const label of [...L.LABELS, ...(L.CLEARED ?? [])]) repair(ref, label);
 
 const floor = { w: W, h: H, data: new Uint8Array(W * H * 4) };
 for (let i = 0; i < W * H; i++) floor.data.set([ref.rgb[i * 3], ref.rgb[i * 3 + 1], ref.rgb[i * 3 + 2], 255], i * 4);

@@ -130,12 +130,22 @@ export const WALLS = [
 ];
 
 /** Furniture, cargo and machinery that block movement. */
+/**
+ * Small props painted out of the art (filled from the floor beside them) so the cramped deck
+ * has room to run and hide; nothing structural or big goes. Their SOLIDS are gone too.
+ */
+export const CLEARED = [
+  { box: [8.7, 21.5, 10.9, 24.8], shift: [8, 0] }, // cargo hold: loose crate (clean tiles 8 to the east)
+  { box: [52.2, 17.5, 56.1, 19.7], from: 'down', span: 1 }, // crew quarters: small table
+  { box: [63.0, 20.7, 65.3, 23.3], from: 'up', span: 1 }, // locker room: bench
+  { box: [75.5, 20.0, 76.8, 21.9], from: 'left', strip: [76.9, 77.9] }, // laundry: chair
+];
+
 export const SOLIDS = [
   // Crate alcove along the hull above the cargo hold (sealed by stacked cargo)
   [8, 12, 25.4, 17.6],
   // Cargo hold
   [11.4, 18.4, 19.4, 20.2], // shelving along the north wall
-  [9.0, 21.8, 11.6, 24.4],
   [11.8, 21.6, 16.4, 26.9], // big crate stack
   [20.4, 20.4, 23.4, 24.6],
   [6.2, 23.4, 8.2, 28.0],
@@ -159,8 +169,7 @@ export const SOLIDS = [
   [31.6, 16.6, 32.8, 23.2],
   // Crew quarters
   [39.2, 14.2, 56.6, 17.4], // bunks along the north wall
-  [39.4, 17.4, 42.0, 21.0],
-  [53.2, 17.6, 56.4, 19.6],
+  [39.4, 17.4, 40.6, 21.0], // cabinet (the floor beside it is open)
   [37.2, 13.4, 38.8, 23.2], // plant and shelves, west
   [56.4, 13.4, 57.8, 23.2], // shelves, east
   [38.8, 21.0, 46.4, 23.2], // bunks and crates, south
@@ -168,7 +177,6 @@ export const SOLIDS = [
   // Locker room
   [64.0, 14.2, 69.8, 18.0], // lockers
   [70.0, 14.0, 71.2, 18.0],
-  [63.4, 20.8, 65.4, 23.2],
   [68.6, 20.8, 73.2, 23.2],
   // Laundry
   [75.4, 14.2, 80.2, 19.6], // linen shelves
@@ -178,7 +186,6 @@ export const SOLIDS = [
   [90.4, 18.6, 92.6, 23.4],
   [86.0, 21.0, 90.4, 23.2], // folding counter
   [80.4, 21.4, 85.0, 23.2],
-  [77.0, 20.4, 78.4, 22.0], // chair
   // Engine room: the gallery
   [27.6, 29.4, 30.4, 33.4], // red machinery
   [33.0, 29.4, 33.8, 32.0], // panel

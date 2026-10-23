@@ -60,6 +60,8 @@ export interface EstateJson {
   doors: Door[];
   /** Stairwells to other decks (cruise maps): where E works, and where they lead. */
   stairs?: Stairwell[];
+  /** Hide & Seek's hiding places (the layout's HIDING_SPOTS), boxes in tiles. */
+  hiding?: { id: string; room: string; box: [number, number, number, number] }[];
   spawn: { x: number; y: number; facing: 'up' | 'down' | 'left' | 'right' };
 }
 

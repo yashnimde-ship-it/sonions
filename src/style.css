@@ -1713,3 +1713,25 @@ kbd {
 @media (max-width: 700px) {
   .result-cols { grid-template-columns: 1fr; }
 }
+
+/* Game mode switch in the Heist Lobby panel */
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5vw;
+  margin: 0.4vh 0 0.6vh;
+  font-size: calc(var(--u) * 1.15);
+}
+.mode-row .label { color: #c8b8ff; margin-right: 0.3vw; }
+.mode-row button {
+  font: inherit;
+  color: #e8e4f4;
+  background: #1b1430;
+  border: 2px solid #4a3d70;
+  border-radius: 3px;
+  padding: 0.2vh 0.5vw;
+  cursor: pointer;
+}
+.mode-row button.on { color: #0e0a1a; background: #ffc94a; border-color: #ffc94a; }
+.mode-row .mode-note { flex-basis: 100%; font-size: calc(var(--u) * 0.85); color: #9a94b0; }
