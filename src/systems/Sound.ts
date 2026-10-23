@@ -4,7 +4,7 @@
 
 import type { TrapKindId } from '../data/trapKinds';
 
-export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'gunshot' | 'reload' | 'caught' | 'click';
+export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'gateOpen';
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -153,6 +153,36 @@ export function play(id: SoundId) {
     case 'click':
       tone(a, 'square', 2000, 2000, 0.02, 0, 0.15);
       break;
+    case 'flare':
+      // A hiss and a rising whistle as the flare goes up.
+      noise(a, 0.7, 0, 0.45, 'highpass', 3000);
+      tone(a, 'sine', 300, 1400, 0.35, 0, 0.25);
+      break;
+    case 'heartbeat':
+      // Lub-dub, twice.
+      [0, 0.22, 0.7, 0.92].forEach((at, i) => tone(a, 'sine', i % 2 ? 70 : 95, 45, 0.14, at, 0.7));
+      break;
+    case 'boost':
+      tone(a, 'sawtooth', 200, 900, 0.3, 0, 0.18);
+      noise(a, 0.3, 0, 0.3, 'bandpass', 1500);
+      break;
+    case 'hurt':
+      tone(a, 'square', 320, 110, 0.22, 0, 0.35);
+      noise(a, 0.1, 0, 0.4, 'lowpass', 1200);
+      break;
+    case 'footstep':
+      tone(a, 'triangle', 130, 80, 0.06, 0, 0.3);
+      break;
+    case 'hideIn':
+      // A wardrobe door swinging shut.
+      noise(a, 0.12, 0, 0.35, 'lowpass', 600);
+      tone(a, 'triangle', 220, 140, 0.12, 0.05, 0.3);
+      break;
+    case 'gateOpen':
+      // The main entrance grinds open, then a bright chime.
+      tone(a, 'sawtooth', 90, 180, 0.7, 0, 0.12);
+      [660, 880, 1320].forEach((f, i) => tone(a, 'square', f, f, 0.12, 0.6 + i * 0.12, 0.15));
+      break
     case 'alert':
       tone(a, 'square', 660, 660, 0.08, 0, 0.15);
       tone(a, 'square', 880, 880, 0.08, 0.1, 0.15);

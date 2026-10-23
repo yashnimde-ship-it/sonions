@@ -167,6 +167,7 @@ async function boot() {
   let boostUntil = 0;
   let scan = { spots: [] as string[], until: 0 };
   let hsSentAt = 0;
+  let lastStage = '';
   const shots: { x0: number; y0: number; x1: number; y1: number; hit: boolean; at: number }[] = [];
   /** Hiders caught or escaped this round (ghosts from then on). */
   const caught = new Set<string>();
@@ -603,6 +604,8 @@ async function boot() {
     // The Seeker has no Saboteur ability in Hide & Seek: their gun is their tool.
     // Abilities are heist tools (traps, diamonds): Hide & Seek plays without them.
     document.getElementById('ability')!.style.display = hs ? 'none' : '';
+    const help = document.querySelector<HTMLElement>('#hud .help');
+    if (help) help.textContent = hs ? (msg.role === 'saboteur' ? 'WASD move · Click shoot · R reload · Q Flare · C Heartbeat · E search · Esc safehouse' : 'WASD move · Shift sprint · E hide · Q Boost · Esc safehouse') : 'WASD move · Shift sprint · E action · Q ability · Esc safehouse';
     const role = hs
       ? msg.role === 'saboteur' ? '<b class="saboteur">THE SEEKER</b>' : '<b class="runner">A HIDER</b>'
       : msg.role === 'saboteur' ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
@@ -842,18 +845,20 @@ async function boot() {
         hp = msg.hp;
         hud.setHealth(hp);
         trapImpact('#ff3b4a', 7);
+        sfx('hurt');
         trapNotice = hp > 0 ? `SHOT! ${hp} HP left: one more and you're caught` : 'CAUGHT!';
         trapNoticeUntil = performance.now() + 2500;
         break;
       case 'hidden':
         hiddenIn = msg.spot;
+        sfx('hideIn');
         me.x = msg.x;
         me.y = msg.y;
         if (!msg.spot) toast('Out of hiding');
         break;
       case 'searched': {
         const name = hideSpotName(msg.spot);
-        if (msg.found) sfx('caught');
+        sfx(msg.found ? 'caught' : 'click');
         hud.alert(msg.found ? `<span class="who">The Seeker</span> <b>found ${msg.found === myId ? 'you' : esc(msg.name)}</b><span class="where">in the ${esc(name)}</span>` : `<span class="who">The Seeker</span> searched the ${esc(name)}<span class="where">nobody there</span>`, msg.found ? 'danger' : 'good');
         break;
       }
@@ -867,6 +872,7 @@ async function boot() {
       }
       case 'noise':
         noises.push({ x: msg.x, y: msg.y, at: performance.now() });
+        sfx('footstep');
         break;
       case 'hsAbility':
         hsReady[msg.ability] = msg.readyMs < 0 ? Infinity : performance.now() + msg.readyMs;
@@ -875,14 +881,15 @@ async function boot() {
           boostUntil = performance.now() + BOOST.ms;
           toast('Boost!');
         }
-        sfx(msg.ability === 'boost' ? 'reload' : 'click');
+        if (msg.ability === 'boost') sfx('boost');
         break;
       case 'flare':
         flareUntil = performance.now() + msg.ms;
-        sfx('gunshot');
+        sfx('flare');
         if (!match?.saboteur) hud.alert('<span class="who">The Seeker</span> <b>fired a flare!</b><span class="where">run or hide</span>', 'danger');
         break;
       case 'scanned':
+        sfx('heartbeat');
         if (msg.you) hud.alert('<span class="who">You</span> <b>were scanned!</b><span class="where">the Seeker knows someone is here</span>', 'danger');
         else {
           scan = { spots: msg.spots, until: performance.now() + msg.ms };
@@ -1471,6 +1478,16 @@ async function boot() {
     const left = Math.max(0, phaseEndsAt - performance.now());
     const stage = hideSeek() ? (phase === 'setup' ? 'HIDE' : left <= ESCAPE_MS ? 'ESCAPE' : 'HUNT') : phase === 'setup' ? 'SETUP' : 'HEIST';
     hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${stage}`, left);
+    // Hide & Seek: a cue when the hunt starts and when the main entrance opens.
+    if (hideSeek() && phase !== 'over' && stage !== lastStage) {
+      if (stage === 'HUNT' && lastStage === 'HIDE') sfx('alert');
+      if (stage === 'ESCAPE' && lastStage) {
+        sfx('gateOpen');
+        hud.alert(`<span class="who">The main entrance</span> <b>is open!</b><span class="where">${match?.saboteur ? 'stop them escaping' : 'get to the gangway'}</span>`, 'good');
+      }
+      lastStage = stage;
+    }
+    if (phase === 'over') lastStage = '';
     // A tick each second for the last ten.
     const secs = Math.ceil(left / 1000);
     if (phase === 'live' && secs <= 10 && secs > 0 && secs !== lastTickSec) sfx('tick');
@@ -1555,11 +1572,11 @@ async function boot() {
           ? sab ? 'Counting in the Staff Room...' : 'Find a hiding place (E at a wardrobe, the bar, the curtains...)'
           : escape
             ? sab ? 'The main entrance is open: stop them escaping' : 'The main entrance is open: escape!'
-            : sab ? 'Hunt them down in the dark' : 'Stay out of the flashlight. Survive.',
+            : sab ? 'Hunt them down in the dark' : 'Stay out of the flashlight. Q: Boost to get away (it makes noise)',
       );
       if (sab && phase === 'live') {
         const reloading = performance.now() < gun.reloadEnd;
-        hud.setObjective('FIND THEM', [], reloading ? 'RELOADING...' : `AMMO ${'|'.repeat(gun.ammo)}${'.'.repeat(GUN.ammo - gun.ammo)}  ·  click to shoot, R reload · a miss costs ${GUN.missPenalty} HP`);
+        hud.setObjective('FIND THEM', [], reloading ? 'RELOADING...' : `AMMO ${'|'.repeat(gun.ammo)}${'.'.repeat(GUN.ammo - gun.ammo)}  ·  click shoot · R reload · Q Flare · C Heartbeat · a miss costs ${GUN.missPenalty} HP`);
       }
       return;
     }
