@@ -131,7 +131,7 @@ for (let cy = 0; cy < CH; cy++)
 for (let cx = 0; cx < CW; cx++) grid[cx] = grid[(CH - 1) * CW + cx] = 1;
 for (let cy = 0; cy < CH; cy++) grid[cy * CW] = grid[cy * CW + CW - 1] = 1;
 // Doorways stay open in the saved grid; the game closes each door at the start.
-for (const d of L.DOORS) for (const c of doorCells(d.box)) grid[c] = 0;
+for (const d of L.DOORS) for (const c of doorCells(d.hit ?? d.box)) grid[c] = 0;
 
 // ---------- Doors ----------
 
@@ -186,7 +186,7 @@ const map = {
   indoor,
   lights: L.LIGHTS,
   interactables: L.INTERACTABLES,
-  doors: doors.map((d, i) => ({ id: d.id, name: d.name, x: d.x, y: d.y, w: d.w, h: d.h, atlas: d.atlas, cells: doorCells(d.box), ...(L.DOORS[i].keypad ? { keypad: true } : {}) })),
+  doors: doors.map((d, i) => ({ id: d.id, name: d.name, x: d.x, y: d.y, w: d.w, h: d.h, atlas: d.atlas, cells: doorCells(L.DOORS[i].hit ?? d.box), ...(L.DOORS[i].keypad ? { keypad: true } : {}) })),
   spawn: L.SPAWN,
 };
 fs.mkdirSync(OUT, { recursive: true });

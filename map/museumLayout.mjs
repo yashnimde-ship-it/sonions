@@ -89,8 +89,9 @@ export const WALLS = [
   [3.0, 35.4, 12.2, 36.4], // dinosaur exhibit, south (gift shop door 12.2-14.6, cafeteria door 20.0-21.8)
   [14.6, 35.4, 20.0, 36.4],
   [21.8, 35.4, 34.2, 36.4],
-  [17.8, 36.4, 18.6, 40.0], // gift shop | cafeteria (doorway 40.0-45.8)
-  [17.8, 45.8, 18.6, 50.4],
+  [17.8, 36.4, 18.6, 39.0], // gift shop | cafeteria (two side doors, 39.0-41.7 and 43.5-46.2)
+  [17.8, 41.7, 18.6, 43.5],
+  [17.8, 46.2, 18.6, 50.4],
   [3.0, 46.6, 18.6, 50.2], // gift shop, south (and the facade below it)
   [18.0, 48.6, 34.2, 50.4], // cafeteria, south
   // ---- Centre ----
@@ -118,9 +119,9 @@ export const WALLS = [
   [75.8, 13.6, 81.8, 14.4],
   [75.6, 14.4, 76.4, 16.0], // modern art doorway 16.0-20.0
   [75.6, 20.0, 76.4, 21.6],
-  [55.6, 21.6, 60.4, 22.6], // classical | royal treasures (openings 60.4-62.2, 69.6-71.6)
-  [62.2, 21.6, 69.6, 22.6],
-  [71.6, 21.6, 77.4, 22.6],
+  [55.6, 21.6, 61.0, 22.6], // classical | royal treasures (side doors 61.0-62.7, 70.2-71.9)
+  [62.7, 21.6, 70.2, 22.6],
+  [71.9, 21.6, 77.4, 22.6],
   [76.4, 23.6, 95.2, 24.6], // modern art | vault
   [75.6, 22.6, 77.4, 28.8], // royal treasures | vault (vault door 28.8-31.2)
   [75.6, 31.2, 77.4, 35.0], // royal treasures | temporary exhibit (opening 35.0-37.4)
@@ -128,9 +129,8 @@ export const WALLS = [
   [76.4, 33.4, 95.2, 34.6], // vault | temporary exhibit (solid: the vault has one way in)
   [76.4, 38.4, 77.2, 46.6], // corridor | temporary exhibit
   [77.2, 45.6, 95.2, 48.6], // temporary exhibit, south
-  [56.4, 37.4, 60.2, 38.4], // royal treasures | restrooms (restroom door 60.2-62.6)
-  [62.6, 37.4, 72.4, 38.4],
-  [62.4, 38.4, 63.2, 45.0], // men | women
+  [56.4, 37.4, 61.0, 38.4], // royal treasures | restrooms (restroom door 61.0-63.2)
+  [63.2, 37.4, 72.4, 38.4],
   [56.4, 48.6, 69.6, 50.4], // restrooms, south
   [68.6, 37.4, 72.4, 50.4], // women | staff corridor (a closet of shelves)
   [71.6, 50.4, 72.4, 55.6], // staff area, west
@@ -215,7 +215,7 @@ export const SOLIDS = [
   [74.0, 9.8, 79.2, 13.6], // bust and writing desk
   [64.6, 20.0, 68.6, 21.4], // bench
   [57.4, 20.2, 60.4, 21.6], // side tables and plants
-  [71.8, 20.2, 75.6, 21.6],
+  [72.0, 20.2, 75.6, 21.6],
   // Modern art gallery
   [81.8, 8.2, 94.4, 11.4], // wall displays
   [77.4, 14.4, 82.0, 16.2],
@@ -249,9 +249,9 @@ export const SOLIDS = [
   [77.2, 41.6, 79.0, 45.6], // fossil display
   [77.2, 37.6, 78.6, 39.4], // plant
   // Restrooms
-  [57.0, 38.4, 60.0, 44.2], // men: toilets and sinks
-  [60.0, 38.4, 61.6, 45.6], // stall partition
-  [63.2, 38.4, 64.6, 45.6],
+  [57.0, 38.4, 59.0, 44.2], // men: toilets and sinks
+  [59.4, 38.6, 60.6, 45.6], // urinal rows either side of the passage behind the door
+  [63.4, 38.6, 64.6, 45.6],
   [65.6, 38.4, 68.6, 44.2], // women: toilets and sinks
   [57.0, 45.6, 58.6, 48.6], // lockers
   [65.6, 45.6, 68.6, 48.6],
@@ -280,7 +280,30 @@ export const SOLIDS = [
  * The restricted vault's door: a side door (drawn open in the reference) that starts shut.
  * `keypad`: walking into it doesn't push it open; someone has to crack the keypad (E).
  */
-export const DOORS = [{ id: 'vault-door', name: 'vault door', box: [76.2, 28.8, 77.4, 31.2], side: true, keypad: true }];
+export const DOORS = [
+  { id: 'vault-door', name: 'vault door', box: [76.2, 28.8, 77.4, 31.2], side: true, keypad: true },
+  // Wooden doors, drawn closed. `box` is the whole door as drawn (it swaps between closed
+  // and open art); `hit` is the part in the wall line that blocks the way when it's shut.
+  { id: 'door-egypt', name: 'great doors', box: [42.2, 20.2, 47.6, 23.6], hit: [42.2, 19.8, 47.6, 21.4] },
+  { id: 'door-workshop', name: 'workshop door', box: [25.3, 14.7, 27.5, 18.3], hit: [25.6, 14.8, 27.4, 16.0] },
+  { id: 'door-security', name: 'security door', box: [5.6, 19.2, 9.6, 21.9], hit: [5.8, 18.8, 9.4, 20.2] },
+  { id: 'door-gift', name: 'gift shop door', box: [12.0, 35.2, 14.8, 38.4], hit: [12.2, 35.4, 14.6, 36.6] },
+  { id: 'door-cafe', name: 'cafeteria door', box: [20.0, 35.2, 22.0, 38.4], hit: [20.0, 35.4, 21.8, 36.6] },
+  { id: 'door-restroom', name: 'restroom door', box: [61.0, 37.6, 63.2, 41.0], hit: [61.0, 37.4, 63.2, 38.6] },
+  // Doorways drawn open (the pale strips); closed, a wooden leaf fills the gap.
+  { id: 'side-dino-1', name: 'exhibit door', box: [19.4, 18.9, 21.2, 19.8], side: true },
+  { id: 'side-dino-2', name: 'exhibit door', box: [26.6, 18.9, 28.2, 19.8], side: true },
+  { id: 'side-shop-1', name: 'cafeteria door', box: [17.7, 39.0, 18.7, 41.7], side: true },
+  { id: 'side-shop-2', name: 'cafeteria door', box: [17.7, 43.5, 18.7, 46.2], side: true },
+  { id: 'side-hall-1', name: 'gallery door', box: [32.9, 25.8, 34.2, 28.0], side: true },
+  { id: 'side-hall-2', name: 'gallery door', box: [32.9, 30.0, 34.2, 33.8], side: true },
+  { id: 'side-egypt', name: 'gallery door', box: [55.6, 15.8, 57.4, 18.8], side: true },
+  { id: 'side-royal-1', name: 'treasury door', box: [55.5, 25.6, 56.5, 27.8], side: true },
+  { id: 'side-royal-2', name: 'treasury door', box: [55.5, 29.6, 56.5, 34.0], side: true },
+  { id: 'side-classical-1', name: 'gallery door', box: [61.0, 21.4, 62.7, 22.6], side: true },
+  { id: 'side-classical-2', name: 'gallery door', box: [70.2, 21.4, 71.9, 22.6], side: true },
+  { id: 'side-marine', name: 'exhibit door', box: [75.6, 35.0, 77.4, 37.4], side: true },
+];
 
 /** Loot (with a value) and things to look at. rect is [x0, y0, x1, y1] in tiles, inclusive. */
 export const INTERACTABLES = [
