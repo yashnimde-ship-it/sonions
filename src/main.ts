@@ -237,6 +237,10 @@ async function boot() {
       if (scene === 'match' && !match?.saboteur) sendPing(...toWorld(e));
       return;
     }
+    if (e.button === 0 && spectated()) {
+      spectateNext();
+      return;
+    }
     if (scene === 'match' && hideSeek()) {
       // The Seeker's gun: click where to shoot.
       if (match?.saboteur && phase === 'live' && e.button === 0 && !result) {
@@ -392,6 +396,8 @@ async function boot() {
   let respawnAt = 0;
   /** When I went down, and why the wait (from the server, which times it) is as long as it is. */
   let koStartedAt = 0;
+  /** While knocked out: the teammate whose view I'm watching (left click picks the next). */
+  let spectating: string | null = null;
   let koReasons: string[] = [];
   const trapFiredAt = new Map<string, number>();
   const trapHits = new Set<string>();
@@ -443,7 +449,8 @@ async function boot() {
     camera.setWorld(w, h);
     // The safehouse fits the window when it can; the estate is played up close. The Saboteur
     // looks round the whole house with a free camera; waiting Runners see all of it.
-    let [tx, ty] = [me.x, me.y - DRAW_H / 2];
+    const watch = spectated();
+    let [tx, ty] = watch ? [watch.bandit.x, watch.bandit.y - DRAW_H / 2] : [me.x, me.y - DRAW_H / 2];
     if (scene !== 'match') scale = Math.max(1.5 * dpr, Math.min(canvas.width / w, canvas.height / h));
     else if (phase === 'over' && result) {
       // The reveal: everyone sees the whole map, with every diamond's spot marked.
@@ -1270,7 +1277,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1317,6 +1324,7 @@ async function boot() {
     hp = to;
     if (knockedOut) {
       knockedOut = false;
+      spectating = null;
       respawnAt = 0;
       me.stunFrames = 0;
     }
@@ -1424,6 +1432,7 @@ async function boot() {
     freeY = me.y;
     hp = KO_HP;
     knockedOut = false;
+    spectating = null;
     respawnAt = 0;
     hud.setHealth(hp);
     toast('Respawned at the entrance · dropped diamonds stay behind');
@@ -1747,6 +1756,8 @@ async function boot() {
       else {
         me.update({ dx: 0, dy: 0, sprint: false }, estate);
         sendPosition();
+        const watch = spectated();
+        hud.setArea(watch ? areaName(watch.bandit.x, watch.bandit.y - 4) : areaName(me.x, me.y - 4));
         frameCamera(false);
         return;
       }
@@ -3354,39 +3365,71 @@ async function boot() {
     ctx.fillText(text, sx, sy - size * 0.35);
   }
 
-  /** While I'm knocked out: the countdown to respawning, and what made it that long. */
+  /** Teammates I can watch while knocked out: Runners still up, on my deck, in a steady order. */
+  function spectateTargets() {
+    return [...remotes].filter(([, r]) => !r.state.offline && r.state.hp > 0 && here(r.state.deck)).map(([id]) => id).sort();
+  }
+
+  /** The teammate I'm watching while I wait to respawn, or null (nobody up: my own spot). */
+  function spectated() {
+    if (!knockedOut || scene !== 'match' || result || match?.saboteur || hideSeek()) return null;
+    const ids = spectateTargets();
+    if (!ids.length) return null;
+    if (!spectating || !ids.includes(spectating)) spectating = ids[0];
+    const r = remotes.get(spectating)!;
+    return { id: spectating, bandit: r.bandit, name: r.state.name, count: ids.length };
+  }
+
+  function spectateNext() {
+    const ids = spectateTargets();
+    if (ids.length < 2) return;
+    spectating = ids[(ids.indexOf(spectating ?? '') + 1) % ids.length];
+    sfx('click');
+  }
+
+  /**
+   * While I'm knocked out: a slim banner at the bottom, over the teammate I'm watching, with
+   * the respawn countdown (and why it's that long) and how to switch who I watch.
+   */
   function drawKnockout() {
     if (!knockedOut || scene !== 'match' || result) return;
     const timed = respawnAt !== Infinity;
     const left = timed ? Math.max(0, respawnAt - performance.now()) : 1;
     const total = timed ? Math.max(1, respawnAt - koStartedAt) : 1;
+    const watch = spectated();
+    const head = watch ? `SPECTATING ${watch.name.toUpperCase()}` : 'KNOCKED OUT';
+    const time = timed ? `RESPAWN IN ${Math.ceil(left / 1000)}` : 'RESPAWN SOON';
+    const hint = watch ? (watch.count > 1 ? 'LEFT CLICK: NEXT TEAMMATE' : 'THE ONLY TEAMMATE UP') : 'NO TEAMMATE UP TO WATCH';
+    const why = koReasons.length ? koReasons.join(' \u00b7 ').toUpperCase() : timed ? 'FIRST KNOCKOUT THIS ROUND' : '';
     const cx = canvas.width / 2;
-    const cy = canvas.height * 0.3; // above my head, below the round timer
-    const big = Math.round(14 * dpr);
-    const small = Math.round(7 * dpr);
-    const lines = koReasons.length ? koReasons : [timed ? 'first knockout this round' : '...'];
-    const w = 300 * dpr;
-    const h = (54 + lines.length * 12) * dpr;
+    const w = Math.min(canvas.width - 32 * dpr, 520 * dpr);
+    const h = 46 * dpr;
+    const y = canvas.height - h - 96 * dpr; // above the prompt line
     ctx.save();
-    ctx.fillStyle = 'rgba(8, 6, 16, 0.88)';
-    ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
-    ctx.strokeStyle = '#ff3b4a';
-    ctx.lineWidth = 2 * dpr;
-    ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.font = `${big}px "Press Start 2P"`;
-    ctx.fillStyle = '#ff8a8a';
-    ctx.fillText(timed ? `KNOCKED OUT · ${Math.ceil(left / 1000)}` : 'KNOCKED OUT', cx, cy - h / 2 + 10 * dpr);
-    // The bar drains to the respawn.
-    const bw = w - 32 * dpr;
-    ctx.fillStyle = '#2a2236';
-    ctx.fillRect(cx - bw / 2, cy - h / 2 + 32 * dpr, bw, 5 * dpr);
+    ctx.fillStyle = 'rgba(8, 6, 16, 0.82)';
+    ctx.fillRect(cx - w / 2, y, w, h);
     ctx.fillStyle = '#ff3b4a';
-    ctx.fillRect(cx - bw / 2, cy - h / 2 + 32 * dpr, bw * (left / total), 5 * dpr);
-    ctx.font = `${small}px "Press Start 2P"`;
+    ctx.fillRect(cx - w / 2, y, w, 2 * dpr);
+    // The bar along the bottom drains to the respawn.
+    ctx.fillStyle = '#2a2236';
+    ctx.fillRect(cx - w / 2, y + h - 4 * dpr, w, 4 * dpr);
+    ctx.fillStyle = '#ff3b4a';
+    ctx.fillRect(cx - w / 2, y + h - 4 * dpr, w * (left / total), 4 * dpr);
+    ctx.textBaseline = 'top';
+    ctx.font = `${Math.round(9 * dpr)}px "Press Start 2P"`;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = watch ? '#7ceaff' : '#ff8a8a';
+    ctx.fillText(head, cx - w / 2 + 12 * dpr, y + 9 * dpr);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ffe39a';
+    ctx.fillText(time, cx + w / 2 - 12 * dpr, y + 9 * dpr);
+    ctx.font = `${Math.round(6 * dpr)}px "Press Start 2P"`;
+    ctx.textAlign = 'left';
     ctx.fillStyle = '#c9c2d8';
-    lines.forEach((l, i) => ctx.fillText(l.toUpperCase(), cx, cy - h / 2 + (46 + i * 12) * dpr));
+    ctx.fillText(hint, cx - w / 2 + 12 * dpr, y + 25 * dpr);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#8f88a6';
+    ctx.fillText(why, cx + w / 2 - 12 * dpr, y + 25 * dpr);
     ctx.restore();
   }
 
