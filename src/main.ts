@@ -23,9 +23,11 @@ import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { drawTrap } from './systems/TrapArt';
 import { heistMusicLevel, setHeistMusic, setHeistMusicEnabled } from './systems/HeistMusic';
-import { setLobbyMusic, setMusicEnabled } from './systems/Music';
+import { lobbyMusicInfo, setLobbyMusic, setMusicEnabled } from './systems/Music';
 import { surfaceAt } from './data/surfaces';
-import { footstep, play as sfx, setSoundEnabled, unlockSound } from './systems/Sound';
+import { audioOut, footstep, play as sfx, setSoundEnabled, unlockSound } from './systems/Sound';
+/** For playtests: is sound running yet? */
+const audioOutState = () => audioOut()?.state ?? 'none';
 import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
 import { HUD } from './ui/HUD';
 import { LobbyUI, type MapInfo, type StartState } from './ui/LobbyUI';
@@ -1266,8 +1268,8 @@ async function boot() {
   setMusicEnabled(settings.values.music);
   setHeistMusicEnabled(settings.values.music);
   // Web Audio must be started during a real user gesture; most game sounds arrive later via WS.
-  window.addEventListener('pointerdown', unlockSound, { once: true });
-  window.addEventListener('keydown', unlockSound, { once: true });
+  // Every gesture, until it's running (phones need touchend; it's a no-op once unlocked).
+  for (const type of ['pointerdown', 'touchend', 'click', 'keydown'] as const) window.addEventListener(type, unlockSound, { passive: true });
   settings.onChange(() => {
     setSoundEnabled(settings.values.sound);
     if (settings.values.sound) unlockSound();
@@ -1345,7 +1347,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get pings() { return pings; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get pings() { return pings; }, lobbyMusicInfo, audioState: () => audioOutState(), get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1947,7 +1949,7 @@ async function boot() {
       const mine = id === myId;
       const dx = b.x - me.x;
       const far = Math.hypot(dx, b.y - me.y);
-      const vol = (mine ? 0.45 : 0.6 * Math.max(0, 1 - far / HEAR_PX)) * (sprint ? 1.4 : 1);
+      const vol = (mine ? 0.85 : 0.9 * Math.max(0, 1 - far / HEAR_PX)) * (sprint ? 1.3 : 1);
       const surface = floor(b.x, b.y);
       footstep(surface, vol, mine ? 0 : dx / HEAR_PX);
       if (mine) stepLog.push(surface);

@@ -9,16 +9,33 @@ export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'h
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
+/** Footsteps have their own, louder bus (straight to the speakers, not through `master`). */
+let stepBus: GainNode | null = null;
 let enabled = true;
+const unlockedListeners: (() => void)[] = [];
+
+/** Call `fn` whenever sound becomes allowed (the first tap or key press, or after a resume). */
+export function onAudioUnlocked(fn: () => void) {
+  unlockedListeners.push(fn);
+}
 
 export function setSoundEnabled(on: boolean) {
   enabled = on;
 }
 
-/** Create/resume the context during a user gesture so later server events can make sound. */
+/**
+ * Create/resume the context during a user gesture so later sounds (server events, music) can
+ * play. Call it from every tap, click and key press until sound is running: phones (iOS
+ * especially) only unlock audio inside a real gesture, and a silent blip started there helps.
+ */
 export function unlockSound() {
   const a = audio();
-  if (a?.state === 'suspended') void a.resume();
+  if (!a || a.state === 'running') return;
+  const blip = a.createBufferSource();
+  blip.buffer = a.createBuffer(1, 1, 22050);
+  blip.connect(a.destination);
+  blip.start(0);
+  void a.resume();
 }
 
 /** The audio context for the soundtrack (it has its own volume and setting), or null. */
@@ -34,6 +51,13 @@ function audio() {
     master = ctx.createGain();
     master.gain.value = 0.35;
     master.connect(ctx.destination);
+    stepBus = ctx.createGain();
+    stepBus.gain.value = 0.9;
+    stepBus.connect(ctx.destination);
+    const c = ctx;
+    c.addEventListener('statechange', () => {
+      if (c.state === 'running') for (const fn of unlockedListeners) fn();
+    });
   }
   if (ctx.state === 'suspended') void ctx.resume();
   return ctx;
@@ -84,33 +108,38 @@ export function footstep(surface: Surface, vol: number, pan = 0) {
   if (!a) return;
   const out = a.createStereoPanner();
   out.pan.value = Math.max(-1, Math.min(1, pan));
-  out.connect(master!);
+  out.connect(stepBus!);
   const v = vol * (0.85 + Math.random() * 0.3);
   const p = 0.92 + Math.random() * 0.16; // a little pitch wobble, so steps don't repeat exactly
   switch (surface) {
+    // Mostly mid and high frequencies, which laptop and phone speakers can actually play, with
+    // a little low thump for headphones.
     case 'wood':
-      tone(a, 'triangle', 170 * p, 90, 0.07, 0, 0.5 * v, out);
-      noise(a, 0.06, 0, 0.3 * v, 'bandpass', 900 * p, out);
+      tone(a, 'triangle', 520 * p, 260, 0.06, 0, 0.45 * v, out);
+      noise(a, 0.05, 0, 0.7 * v, 'bandpass', 1500 * p, out);
+      tone(a, 'triangle', 160 * p, 90, 0.05, 0, 0.3 * v, out);
       break;
     case 'metal':
-      tone(a, 'sine', 110 * p, 60, 0.06, 0, 0.3 * v, out);
-      tone(a, 'square', 820 * p, 780 * p, 0.12, 0, 0.06 * v, out);
-      tone(a, 'sine', 1240 * p, 1200 * p, 0.18, 0, 0.12 * v, out);
-      noise(a, 0.05, 0, 0.25 * v, 'highpass', 3000, out);
+      tone(a, 'sine', 1800 * p, 1750 * p, 0.2, 0, 0.18 * v, out);
+      tone(a, 'square', 950 * p, 900 * p, 0.08, 0, 0.08 * v, out);
+      noise(a, 0.06, 0, 0.5 * v, 'highpass', 3500, out);
+      tone(a, 'triangle', 200 * p, 110, 0.05, 0, 0.3 * v, out);
       break;
     case 'carpet':
-      noise(a, 0.08, 0, 0.35 * v, 'lowpass', 260 * p, out);
+      noise(a, 0.07, 0, 0.6 * v, 'bandpass', 900 * p, out);
+      noise(a, 0.06, 0, 0.35 * v, 'lowpass', 400, out);
       break;
     case 'stone':
-      noise(a, 0.04, 0, 0.35 * v, 'highpass', 2200 * p, out);
-      tone(a, 'sine', 140 * p, 70, 0.05, 0, 0.25 * v, out);
+      noise(a, 0.045, 0, 0.7 * v, 'highpass', 2500 * p, out);
+      tone(a, 'triangle', 300 * p, 160, 0.04, 0, 0.3 * v, out);
       break;
     case 'tile':
-      noise(a, 0.035, 0, 0.35 * v, 'bandpass', 2600 * p, out);
-      tone(a, 'triangle', 420 * p, 300, 0.04, 0, 0.15 * v, out);
+      noise(a, 0.04, 0, 0.65 * v, 'bandpass', 3000 * p, out);
+      tone(a, 'triangle', 900 * p, 600, 0.035, 0, 0.25 * v, out);
       break;
     case 'grass':
-      noise(a, 0.09, 0, 0.22 * v, 'bandpass', 3200 * p, out);
+      noise(a, 0.08, 0, 0.5 * v, 'bandpass', 4000 * p, out);
+      noise(a, 0.05, 0, 0.3 * v, 'bandpass', 1800 * p, out);
       break;
   }
   setTimeout(() => out.disconnect(), 400);
