@@ -412,7 +412,7 @@ kbd {
 
 .brand-title {
   margin: 0;
-  font-size: clamp(24px, 3.5vw, 72px);
+  font-size: clamp(14px, 2.5vw, 52px);
   line-height: 1;
   letter-spacing: 0.06em;
   color: var(--cream);

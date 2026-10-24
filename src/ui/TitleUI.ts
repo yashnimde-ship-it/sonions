@@ -15,6 +15,18 @@ export class TitleUI {
 
   constructor() {
     const lineup = document.getElementById('lineup')!;
+    const crew: HTMLDivElement[] = [];
+    const fitLineup = () => {
+      const gap = Math.min(28, Math.max(4, window.innerWidth * 0.02));
+      const available = Math.max(0, window.innerWidth - 32 - gap * (CHARACTERS.length - 1));
+      const scale = Math.min(LINEUP_SCALE, available / (CHAR_FRAME_W * CHARACTERS.length));
+      crew.forEach((el) => {
+        const sprite = el.querySelector<HTMLDivElement>('.sprite')!;
+        sprite.style.width = `${CHAR_FRAME_W * scale}px`;
+        sprite.style.height = `${CHAR_FRAME_H * scale}px`;
+        sprite.style.backgroundSize = `${CHAR_FRAME_W * CHAR_FRAMES * scale}px ${CHAR_FRAME_H * scale}px`;
+      });
+    };
     CHARACTERS.forEach((id, i) => {
       const info = CHARACTER_INFO[id];
       const el = document.createElement('div');
@@ -22,12 +34,12 @@ export class TitleUI {
       el.style.setProperty('--delay', `${i * 0.15}s`);
       el.innerHTML = `<div class="sprite"></div><span style="color:${info.color}">${info.nick}</span>`;
       const sprite = el.querySelector<HTMLDivElement>('.sprite')!;
-      sprite.style.width = `${CHAR_FRAME_W * LINEUP_SCALE}px`;
-      sprite.style.height = `${CHAR_FRAME_H * LINEUP_SCALE}px`;
       sprite.style.backgroundImage = `url(${characterSheet(id)})`;
-      sprite.style.backgroundSize = `${CHAR_FRAME_W * CHAR_FRAMES * LINEUP_SCALE}px ${CHAR_FRAME_H * LINEUP_SCALE}px`;
       lineup.append(el);
+      crew.push(el);
     });
+    fitLineup();
+    window.addEventListener('resize', fitLineup);
 
     try {
       this.nameInput.value = localStorage.getItem(NAME_KEY) ?? '';

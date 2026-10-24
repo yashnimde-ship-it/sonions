@@ -96,6 +96,8 @@ export type ClientMsg =
   /** The Saboteur puts a trap down, or picks one up. */
   | { t: 'place'; trap: PlacedTrap }
   | { t: 'unplace'; id: string }
+  /** The Saboteur repositions one unused trap once during the live phase. */
+  | { t: 'moveTrap'; id: string; x: number; y: number; deck?: MapId }
   /** A Runner jams every trap in reach (Trap Jam). */
   | { t: 'jam'; x: number; y: number }
   /** I (a Runner) just got caught by a trap, and where; the server tells the whole crew. */
@@ -187,6 +189,9 @@ export type ServerMsg =
   /** The Saboteur put a trap down, or picked one up. */
   | { t: 'place'; trap: PlacedTrap }
   | { t: 'unplace'; id: string }
+  /** A placed trap was repositioned, or the Saboteur's move was refused. */
+  | { t: 'trapMoved'; trap: PlacedTrap }
+  | { t: 'trapMoveRejected'; id: string; reason: string }
   /** A trap plate is jammed for `ms`: it can't fire, and a pending shock is cancelled. */
   | { t: 'jam'; id: string; ms: number; trap?: PlacedTrap }
   /** Hide & Seek: a shot was fired (everyone on that deck sees the flash and the tracer). */

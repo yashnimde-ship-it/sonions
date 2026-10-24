@@ -64,6 +64,8 @@ export class LobbyUI {
   private disconnected = $('disconnected');
   private startBtn = $<HTMLButtonElement>('start-btn');
   private startStatus = $('start-status');
+  private partyTitle = $('party-title');
+  private lobbyHint = $('lobby-hint');
   private abort = new AbortController();
   private lastPortals = '';
   /** Party sizes that have a pad in the safehouse; other sizes are custom parties. */
@@ -263,7 +265,17 @@ export class LobbyUI {
   }
 
   private renderMode() {
+    const hideSeek = this.mode === 'hideSeek';
     for (const b of this.modeRow.querySelectorAll<HTMLButtonElement>('[data-mode]')) b.classList.toggle('on', b.dataset.mode === this.mode);
+    this.partyTitle.textContent = hideSeek ? 'Hide & Seek Lobby' : 'Heist Lobby';
+    this.partyTitle.closest('section')?.setAttribute('aria-label', hideSeek ? 'Hide & Seek lobby' : 'Heist lobby');
+    this.modeRow.querySelector('.mode-note')!.textContent = hideSeek
+      ? '3+ players on the cruise ship · smaller crews play Heist'
+      : '2–9 players · set traps, hide diamonds, and escape';
+    this.lobbyHint.textContent = hideSeek
+      ? 'Join 3 or more to play Hide & Seek aboard the cruise ship. Smaller crews play Heist.'
+      : 'Walk into a portal with your crew to start the heist.';
+    this.lastStart = '';
   }
 
   /** The pads in the safehouse; their rows always show. */
@@ -371,7 +383,8 @@ export class LobbyUI {
     this.startBtn.classList.toggle('blocked', !ready);
     this.startBtn.classList.toggle('go', ready);
     this.startBtn.setAttribute('aria-disabled', String(!ready));
-    this.startBtn.innerHTML = ready ? `STARTING ${state.seconds} <span class="arrow">&gt;</span>` : 'START HEIST <span class="arrow">&gt;</span>';
+    const startLabel = this.mode === 'hideSeek' ? 'START HIDE & SEEK' : 'START HEIST';
+    this.startBtn.innerHTML = ready ? `STARTING ${state.seconds} <span class="arrow">&gt;</span>` : `${startLabel} <span class="arrow">&gt;</span>`;
     if (nudging) return; // the explanation stays up for a moment
     this.startStatus.className = `start-status ${state.kind}`;
     this.startStatus.textContent =
@@ -380,7 +393,7 @@ export class LobbyUI {
         : state.kind === 'waiting'
           ? `Waiting for your crew: ${state.count}/${state.size} in the ${state.size}-player portal.`
           : state.kind === 'countdown'
-            ? `Crew ready! The heist starts in ${state.seconds}...`
+          ? `Crew ready! ${this.mode === 'hideSeek' ? 'Hide & Seek' : 'The heist'} starts in ${state.seconds}...`
             : 'Not connected to the game server.';
   }
 

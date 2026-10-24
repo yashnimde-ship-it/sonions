@@ -66,6 +66,7 @@ interface TrapRuntime {
   firedAt: number | null;
   jammedUntil: number;
   tripwired: boolean;
+  moved?: boolean;
   /** Players who personally discovered this otherwise hidden trap. */
   revealedTo?: Set<string>;
   /** Laser grid stays hot after its first crossing. */
@@ -1075,6 +1076,63 @@ function handle(c: Client, msg: ClientMsg) {
       send(c, msg);
       const energy = saboteurEnergy.get(c.room);
       if (energy) send(c, { t: 'energy', current: energy.current, max: energy.max });
+      break;
+    }
+    case 'moveTrap': {
+      if (saboteurs.get(c.room) !== s.id || phases.get(c.room)?.phase !== 'live' || isHideSeek(c.room)) break;
+      const reject = (reason: string) => send(c, { t: 'trapMoveRejected', id: msg.id, reason });
+      const placed = placedTraps.get(c.room);
+      const trap = placed?.get(msg.id);
+      const state = trapState.get(c.room)?.get(msg.id);
+      if (!trap || !state) {
+        reject('That trap is no longer available');
+        break;
+      }
+      if (state.firedAt !== null) {
+        reject('A trap that has fired cannot be moved');
+        break;
+      }
+      if (state.moved) {
+        reject('Each trap can only be repositioned once');
+        break;
+      }
+      if (!Number.isFinite(msg.x) || !Number.isFinite(msg.y)) {
+        reject('Choose a valid floor tile');
+        break;
+      }
+      if (msg.deck !== undefined && (!isMapId(msg.deck) || !decksIn(c.room).includes(msg.deck))) {
+        reject('That floor is not part of this map');
+        break;
+      }
+      const deck = onDeck(c.room, msg.deck);
+      const kind = trapKind(trap.kind)!;
+      const x = Math.round(msg.x / (TILE / 2)) * (TILE / 2);
+      const y = Math.round(msg.y / (TILE / 2)) * (TILE / 2);
+      const halfW = Math.min(kind.w - 6, 24) / 2;
+      const halfH = Math.min(kind.h - 6, 24) / 2;
+      if (!openFloor(deck, x, y, halfW, halfH)) {
+        reject('That spot is blocked · choose open floor');
+        break;
+      }
+      if ((trap.deck ?? matchMaps.get(c.room)) === deck && Math.hypot(trap.x - x, trap.y - y) < 1) {
+        reject('Choose a new spot for the trap');
+        break;
+      }
+      trap.x = x;
+      trap.y = y;
+      if (deck === matchMaps.get(c.room)) delete trap.deck;
+      else trap.deck = deck;
+      state.moved = true;
+      const moved = { ...trap };
+      send(c, { t: 'trapMoved', trap: moved });
+      // Fake Loot is intentionally visible; hidden traps remain private to the Saboteur.
+      if (trap.kind === 'fakeLoot') {
+        for (const id of matches.get(c.room) ?? []) {
+          if (id === s.id) continue;
+          const member = clients.get(id);
+          if (member) send(member, { t: 'trapMoved', trap: moved });
+        }
+      }
       break;
     }
     case 'trapHit': {

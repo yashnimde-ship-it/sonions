@@ -259,6 +259,38 @@ async function boot() {
       return hideAt(x, y);
     }
     if (phase !== 'live') return;
+    if (e.button === 2) {
+      if (movingTrapId) {
+        movingTrapId = null;
+        movingTrapPending = false;
+        return toast('Trap move cancelled');
+      }
+      const hit = placedUnder(x, y);
+      if (!hit) return;
+      if (trapFiredAt.has(hit.id)) return toast('That trap has already fired and cannot be moved');
+      if (movedTraps.has(hit.id)) return toast('Each trap can only be repositioned once');
+      movingTrapId = hit.id;
+      movingTrapPending = false;
+      return toast('Trap selected · click open floor to move it · right-click to cancel');
+    }
+    if (e.button !== 0) return;
+    if (movingTrapId) {
+      if (movingTrapPending) return;
+      const moving = placed.get(movingTrapId);
+      const kind = moving && trapKind(moving.kind);
+      if (!moving || !kind) {
+        movingTrapId = null;
+        return;
+      }
+      const tx = snap(x);
+      const ty = snap(y);
+      if (!canPlace(kind, tx, ty)) return toast('That spot is blocked · choose open floor');
+      const targetDeck = multiDeck() ? deckId : undefined;
+      if ((moving.deck ?? mapId) === (targetDeck ?? mapId) && Math.hypot(moving.x - tx, moving.y - ty) < 1) return toast('Choose a new spot for the trap');
+      movingTrapPending = true;
+      net.send({ t: 'moveTrap', id: moving.id, x: tx, y: ty, ...(targetDeck ? { deck: targetDeck } : {}) });
+      return;
+    }
     const trap = trapUnder(x, y);
     if (trap && trapReady(trap.id)) net.send({ t: 'trap', id: trap.id });
   });
@@ -331,6 +363,10 @@ async function boot() {
   const diamondIn = (spotId: string) => diamonds.find((d) => d.place.at === 'spot' && d.place.spot === spotId);
   let trapEnergy = 0;
   let maxTrapEnergy = 0;
+  /** Live-phase repositioning: each unused trap may move once per round. */
+  let movingTrapId: string | null = null;
+  let movingTrapPending = false;
+  const movedTraps = new Set<string>();
   /** My health (Runners only), and when each trap plate last fired (performance.now ms). */
   let hp = MAX_HP;
   let knockedOut = false;
@@ -569,6 +605,9 @@ async function boot() {
     me.stunFrames = 0;
     trapFiredAt.clear();
     trapHits.clear();
+    movedTraps.clear();
+    movingTrapId = null;
+    movingTrapPending = false;
     trapJammedUntil.clear();
     tripwireArmed.clear();
     doorJammedUntil.clear();
@@ -799,13 +838,26 @@ async function boot() {
         setupPanel.show(false);
         searching = null;
         if (phase === 'live') {
-          banner.innerHTML = `<span class="kicker">SETUP OVER</span><span>THE HEIST IS ON</span><span class="crew-list">${match?.saboteur ? 'Watch them. Your traps guard the diamonds.' : `Search the furniture (hold E), find the diamonds, bank ${needN || 'them'} at the GETAWAY.`}</span>`;
+          banner.innerHTML = `<span class="kicker">SETUP OVER</span><span>THE HEIST IS ON</span><span class="crew-list">${match?.saboteur ? 'Watch them. Right-click an unused trap to move it once.' : `Search the furniture (hold E), find the diamonds, bank ${needN || 'them'} at the GETAWAY.`}</span>`;
           banner.hidden = false;
           bannerUntil = performance.now() + BANNER_MS;
         }
         break;
       case 'unplace':
         placed.delete(msg.id);
+        break;
+      case 'trapMoved':
+        placed.set(msg.trap.id, msg.trap);
+        movedTraps.add(msg.trap.id);
+        if (movingTrapId === msg.trap.id) {
+          movingTrapId = null;
+          movingTrapPending = false;
+          toast('Trap repositioned');
+        }
+        break;
+      case 'trapMoveRejected':
+        if (movingTrapId === msg.id) movingTrapPending = false;
+        toast(msg.reason);
         break;
       case 'placementRejected':
         placed.delete(msg.id);
@@ -1778,6 +1830,10 @@ async function boot() {
     if (phase === 'setup') {
       const hiddenSpots = allSpots.filter((sp) => diamondIn(sp.id));
       setupPanel.update({ hidden: hiddenSpots.length, total: totalN, traps: placed.size, slots: trapSlots(match?.size ?? 2), guarded: hiddenSpots.filter(guarded).length, selected: null });
+    } else if (phase === 'live') {
+      hud.setPrompt(movingTrapId
+        ? movingTrapPending ? 'Moving trap…' : 'Click open floor to move · right-click to cancel'
+        : 'Right-click an unused trap to reposition it once');
     }
   }
 
@@ -2225,6 +2281,24 @@ async function boot() {
       ctx.setLineDash([3, 2]);
       ctx.strokeRect(Math.round(x - selectedTrap.w / 2 - camX) + 0.5, Math.round(y - selectedTrap.h / 2 - camY) + 0.5, selectedTrap.w, selectedTrap.h);
       ctx.restore();
+    }
+    if (sab && movingTrapId && phase === 'live') {
+      const moving = placed.get(movingTrapId);
+      const kind = moving && trapKind(moving.kind);
+      if (kind) {
+        const x = snap(mouseX);
+        const y = snap(mouseY);
+        const ok = canPlace(kind, x, y) && !movingTrapPending;
+        ctx.save();
+        ctx.globalAlpha = 0.7;
+        drawTrap(ctx, kind, 'saboteur', x - camX, y - camY, now);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = ok ? '#5cff8a' : '#ff4a5a';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 2]);
+        ctx.strokeRect(Math.round(x - kind.w / 2 - camX) + 0.5, Math.round(y - kind.h / 2 - camY) + 0.5, kind.w - 1, kind.h - 1);
+        ctx.restore();
+      }
     }
   }
 
