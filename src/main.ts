@@ -343,6 +343,8 @@ async function boot() {
   const searched = new Set<string>();
   let glints = new Set<string>();
   let bankedN = 0;
+  /** The vault and its keycard this round (heists on a map with a vault), from the server. */
+  let keycard: Extract<ServerMsg, { t: 'keycard' }> | null = null;
   /** The red diamond I was last told I'm holding (to say so once). */
   let lastRedId = '';
   let needN = 0;
@@ -599,6 +601,7 @@ async function boot() {
     searched.clear();
     glints = new Set();
     bankedN = needN = totalN = 0;
+    keycard = null;
     searching = null;
     reviving = null;
     fx.length = 0;
@@ -820,8 +823,34 @@ async function boot() {
       case 'glints':
         glints = new Set(msg.spots);
         break;
+      case 'keycard':
+        keycard = msg;
+        break;
+      case 'keycardEvent': {
+        const who = msg.id === myId ? 'You' : esc(msg.name);
+        const what = msg.kind === 'found' ? 'got the keycard' : msg.kind === 'dropped' ? 'dropped the keycard' : 'opened the VAULT';
+        sfx(msg.kind === 'dropped' ? 'dropped' : msg.kind === 'unlocked' ? 'banked' : 'alert');
+        const by = msg.id === myId ? me : remotes.get(msg.id)?.bandit;
+        if (by && msg.kind === 'unlocked') {
+          particles.burst(by.x, by.y - 14, '#ffd84a', 30, 2.2);
+          particles.pop(by.x, by.y - 36, 'VAULT OPEN!', '#ffd84a');
+        }
+        hud.alert(`<span class="who">${who}</span> <b>${what}</b><span class="where">${esc(keycard?.vaultRoom ?? '')}</span>`, msg.kind === 'dropped' ? 'danger' : 'good');
+        break;
+      }
       case 'searchResult': {
         const spot = spots.find((x) => x.id === msg.spot);
+        if (msg.keycard) {
+          if (spot) {
+            const c = spotCenter(spot);
+            particles.burst(c.x, c.y, '#ffd84a', 24, 2);
+            particles.pop(c.x, c.y - 16, '+ KEYCARD', '#ffd84a');
+          }
+          trapImpact('#ffd84a', 2, 220);
+          sfx('found');
+          toast(`KEYCARD! Take it to the ${keycard?.vaultRoom ?? 'vault'} door`);
+          break;
+        }
         if (spot) fx.push({ kind: msg.found ? 'found' : 'empty', ...spotCenter(spot), at: performance.now() });
         if (spot && msg.found) {
           // The jackpot moment: a burst of diamond-blue, a pop and a little kick.
@@ -1236,7 +1265,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1776,7 +1805,23 @@ async function boot() {
         : sab
           ? `Stop them banking ${needN} pts · ${bankedN}/${needN} banked`
           : `Bank ${needN} pts at the GETAWAY · ${bankedN}/${needN} · red = 3`;
-    hud.setObjective(sab ? 'GUARD THE DIAMONDS' : 'FIND THE DIAMONDS', gems, text);
+    hud.setObjective(sab ? 'GUARD THE DIAMONDS' : 'FIND THE DIAMONDS', gems, text, vaultLine(sab));
+  }
+
+  /** A vault door that the keycard hasn't opened yet. */
+  function vaultLocked(door: { id: string }) {
+    return !!keycard && !keycard.unlocked && keycard.doors.includes(door.id) && deckId === keycard.deck;
+  }
+
+  /** The vault's line under the objective: where the keycard is, who has it, or that it's open. */
+  function vaultLine(sab: boolean) {
+    if (!keycard) return '';
+    const deck = multiDeck() ? ` (${deckShort(keycard.deck)})` : '';
+    if (keycard.unlocked) return `VAULT OPEN · ${keycard.vaultRoom}${deck}: red diamonds inside`;
+    if (keycard.holder === myId) return `YOU HAVE THE KEYCARD · open the ${keycard.vaultRoom}${deck}`;
+    if (keycard.holder) return `KEYCARD: ${keycard.holderName ?? 'a Runner'} has it · VAULT: ${keycard.vaultRoom}${deck}`;
+    if (keycard.floor) return `KEYCARD DROPPED · VAULT: ${keycard.vaultRoom}${deck}`;
+    return sab ? `VAULT: ${keycard.vaultRoom}${deck} · keycard hidden near the ${keycard.hintRoom}` : `VAULT: ${keycard.vaultRoom}${deck} (red diamonds) · keycard somewhere near the ${keycard.hintRoom}`;
   }
 
   /** Runners: open doors, search furniture (hold E), pick up dropped diamonds, bank at the getaway. */
@@ -1791,7 +1836,7 @@ async function boot() {
     let door = near?.kind === 'door' ? near.door : null;
     if (me.bumped && !door) door = interactions.blockingDoor(me, estate, HITBOX);
     // Walking into a closed door pushes it open, so nobody stops dead in a doorway.
-    if (me.bumped && door && !estate.isOpen(door) && !door.keypad) {
+    if (me.bumped && door && !estate.isOpen(door) && !door.keypad && !vaultLocked(door)) {
       estate.setDoor(door, true);
       net.send({ t: 'door', id: door.id, open: true });
     }
@@ -1835,6 +1880,13 @@ async function boot() {
         if (connected) takeStairs(stair);
         else hud.showMessage(stairMessage(stair.to.deck));
       }
+    } else if (door && vaultLocked(door)) {
+      const mine = keycard?.holder === myId;
+      prompt = mine ? `E  Unlock the VAULT with the keycard` : `VAULT LOCKED · needs the keycard`;
+      if (input.action) {
+        if (mine) net.send({ t: 'unlock', door: door.id });
+        else hud.showMessage(keycard?.holder ? `The vault is locked. ${keycard.holderName ?? 'A teammate'} has the keycard.` : keycard?.floor ? 'The vault is locked. The keycard was dropped somewhere: find it.' : `The vault is locked. The keycard is hidden somewhere near the ${keycard?.hintRoom ?? 'house'}.`);
+      }
     } else if (door) {
       const lockLeft = Math.max(0, (doorJammedUntil.get(door.id) ?? 0) - now);
       prompt = lockLeft ? `LOCKED ${Math.ceil(lockLeft / 1000)}s` : near?.kind === 'door' && near.door.id === door.id
@@ -1848,6 +1900,9 @@ async function boot() {
           if (door.keypad && estate.isOpen(door)) toast(`Keypad cracked: the ${door.name} slides open`);
         }
       }
+    } else if (keycard?.floor && !keycard.holder && here(keycard.deck) && Math.hypot(keycard.floor.x - me.x, keycard.floor.y - me.y) <= PICKUP_REACH + 8) {
+      prompt = 'E  Grab the keycard';
+      if (input.action) net.send({ t: 'pickupKey' });
     } else if (dropped) {
       prompt = 'E  Grab the dropped diamond';
       if (input.action) net.send({ t: 'pickup', id: dropped.id });
@@ -2065,6 +2120,7 @@ async function boot() {
     drawFloorDiamonds(camX, camY);
     drawDiamondFx(camX, camY);
     particles.draw(ctx, camX, camY);
+    drawVault(camX, camY);
     if (myDiamond()) carriedGem(me, camX, camY, myDiamond());
     for (const [id, r] of remotes) if (r.state.carrying) carriedGem(r.bandit, camX, camY, diamonds.find((d) => d.place.at === 'carried' && d.place.by === id));
     ctx.restore();
@@ -2692,6 +2748,70 @@ async function boot() {
   }
 
   /** The diamond a bandit carries, held up over their head. */
+  /** A little gold keycard with a dark stripe, centred on (x, y). */
+  function card(x: number, y: number) {
+    x = Math.round(x);
+    y = Math.round(y);
+    ctx.fillStyle = '#1a1424';
+    ctx.fillRect(x - 5, y - 4, 10, 8);
+    ctx.fillStyle = '#ffd84a';
+    ctx.fillRect(x - 4, y - 3, 8, 6);
+    ctx.fillStyle = '#5a3a10';
+    ctx.fillRect(x - 4, y - 1, 8, 1);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(x + 1, y + 1, 2, 1);
+  }
+
+  /** The vault: padlocks on its doors until opened, the keycard on the floor or over its holder,
+   *  and (for the Saboteur) a gold outline on the furniture it's hidden in. */
+  function drawVault(camX: number, camY: number) {
+    if (!keycard || !here(keycard.deck) || result) return;
+    if (!keycard.unlocked) {
+      for (const d of estate.data.doors) {
+        if (!keycard.doors.includes(d.id)) continue;
+        const x = Math.round(d.x + d.w / 2 - camX);
+        const y = Math.round(d.y + d.h / 2 - camY + Math.sin(frame / 15) * 1);
+        ctx.fillStyle = '#1a1424';
+        ctx.fillRect(x - 6, y - 3, 12, 10);
+        ctx.fillStyle = '#ffd84a';
+        ctx.fillRect(x - 5, y - 2, 10, 8);
+        ctx.strokeStyle = '#ffd84a';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(x, y - 3, 3.5, Math.PI, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#5a3a10';
+        ctx.fillRect(x - 1, y + 1, 2, 3);
+      }
+    }
+    if (keycard.spot && match?.saboteur) {
+      const sp = spots.find((x) => x.id === keycard!.spot);
+      if (sp) {
+        const b = spotBox(sp);
+        ctx.save();
+        ctx.strokeStyle = '#ffd84a';
+        ctx.globalAlpha = 0.6 + 0.3 * Math.sin(frame / 10);
+        ctx.setLineDash([2, 2]);
+        ctx.strokeRect(b.x0 - camX + 0.5, b.y0 - camY + 0.5, b.x1 - b.x0 - 1, b.y1 - b.y0 - 1);
+        ctx.restore();
+        const c = spotCenter(sp);
+        card(c.x - camX, c.y - camY - 8);
+      }
+    }
+    if (keycard.floor) {
+      ctx.save();
+      ctx.globalAlpha = 0.35 + 0.15 * Math.sin(frame / 8);
+      ctx.fillStyle = '#ffd84a';
+      ctx.beginPath();
+      ctx.ellipse(keycard.floor.x - camX, keycard.floor.y - camY + 2, 8, 3.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      card(keycard.floor.x - camX, keycard.floor.y - camY - 3 - Math.abs(Math.sin(frame / 12)) * 2);
+    }
+    const holder = keycard.holder === myId ? me : keycard.holder ? remotes.get(keycard.holder)?.bandit : undefined;
+    if (holder) card(holder.x - camX + 9, holder.y - DRAW_H - 2 - camY + Math.sin(frame / 10) * 1.5);
+  }
+
   /** A diamond's colour: red ones red, a cursed one purple (only the Saboteur knows which). */
   const gemColor = (d: Diamond | undefined) => (d?.kind === 'red' ? '#ff4b5c' : d?.kind === 'cursed' ? '#9b6bff' : '#7ceaff');
 

@@ -332,6 +332,24 @@ interface Vault {
 }
 const vaults = new Map<string, Vault>();
 
+/** A heist's vault room and its keycard (see MapDef.vault). */
+interface Keycard {
+  deck: MapId;
+  vaultRoom: string;
+  doors: string[];
+  /** The furniture the keycard is hidden in, and that furniture's room (the Runners' hint). */
+  spot: string;
+  hintRoom: string;
+  holder: string | null;
+  floor: { x: number; y: number } | null;
+  unlocked: boolean;
+  /** The diamonds that start in the vault: the Saboteur can't move them. */
+  vaulted: Set<string>;
+}
+const keycards = new Map<string, Keycard>();
+/** How close a Runner must be to a vault door to unlock it, or to a dropped keycard to take it (art px). */
+const KEY_REACH = 30;
+
 /** Per match: the rounds. Each round has its own Saboteur (in `order`) and map (in `maps`). */
 /** What each player did over the match, for the end-of-match awards. */
 interface Stats {
@@ -532,6 +550,7 @@ function leaveMatch(c: Client) {
   if (!match) return;
   const matchId = c.room;
   dropDiamond(matchId, c.state.id, c.state.x, c.state.y);
+  dropKeycard(matchId, c);
   match.delete(c.state.id);
   for (const id of match) {
     const other = clients.get(id);
@@ -650,6 +669,8 @@ function startRound(matchId: string) {
   const kinds = diamondKinds(total);
   const gems: Diamond[] = kinds.map((kind, i) => ({ id: `d${i + 1}`, place: { at: 'tray' }, ...(kind ? { kind } : {}) }));
   vaults.set(matchId, { diamonds: gems, searched: new Set(), banked: 0, need: diamondsToWin(gems.reduce((n, d) => n + valueOf(d), 0)), winner: null, hits: 0, glints: new Map(), lastSearch: new Map() });
+  keycards.delete(matchId);
+  if (!hs) setupVault(matchId, map, vaults.get(matchId)!);
   phases.set(matchId, { phase: 'setup', endsAt: Date.now() + (hs ? HIDE_TIME : SETUP_TIME) });
   trapState.set(matchId, new Map(MAPS[map].traps.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
@@ -662,6 +683,8 @@ function startRound(matchId: string) {
   for (const c of crew) {
     send(c, matchMsg(c, matchId));
     send(c, diamondsMsg(c, matchId));
+    const key = keycardMsg(c, matchId);
+    if (key) send(c, key);
   }
   console.log(`${matchId}: round ${sr.round + 1}/${sr.rounds} on ${MAPS[map].name}, Saboteur ${clients.get(saboteur)?.state.name}`);
 }
@@ -895,6 +918,7 @@ function handle(c: Client, msg: ClientMsg) {
         const st = statsOf(c.room, s.id);
         if (st) st.knockouts++;
         knockOut(c, held);
+        dropKeycard(c.room, c);
       }
       // Heists: sprinting is loud. The Saboteur sees a ring where it happened.
       if (heistRunner && s.hp > 0 && msg.sprint && msg.moving && phases.get(c.room)?.phase === 'live') makeNoise(c, 'step');
@@ -982,6 +1006,11 @@ function handle(c: Client, msg: ClientMsg) {
       const vault = vaults.get(c.room);
       const d = vault?.diamonds.find((x) => x.id === msg.id);
       if (!vault || !d || saboteurs.get(c.room) !== s.id || phases.get(c.room)?.phase !== 'setup') break;
+      const key = keycards.get(c.room);
+      if (key?.vaulted.has(d.id) || (msg.spot !== null && key && inVault(c.room, key, msg.spot))) {
+        sendDiamonds(c.room);
+        break;
+      }
       if (msg.spot === null) d.place = { at: 'tray' };
       else {
         const spot = spotsOf(c.room).find((x) => x.id === msg.spot);
@@ -1007,6 +1036,16 @@ function handle(c: Client, msg: ClientMsg) {
       if (!spot || distToSpot(spot, s.x, s.y) > SEARCH_REACH + 10 || now - (vault.lastSearch.get(s.id) ?? 0) < 900) break;
       vault.lastSearch.set(s.id, now);
       makeNoise(c, 'search');
+      const key = keycards.get(c.room);
+      if (key && key.spot === spot.id && !key.holder && !key.floor && !key.unlocked) {
+        // The keycard! It doesn't take up your hands; the diamond (if any) is still in there.
+        key.holder = s.id;
+        key.spot = '';
+        send(c, { t: 'searchResult', spot: spot.id, found: null, keycard: true });
+        keycardEvent(c.room, 'found', c);
+        sendKeycard(c.room);
+        break;
+      }
       const d = vault.diamonds.find((x) => x.place.at === 'spot' && x.place.spot === spot.id);
       if (d) {
         d.place = { at: 'carried', by: s.id };
@@ -1023,6 +1062,33 @@ function handle(c: Client, msg: ClientMsg) {
       if (onDeck(c.room, d.place.deck) !== deckOf(c) || Math.hypot(d.place.x - s.x, d.place.y - s.y) > PICKUP_REACH + 10) break;
       d.place = { at: 'carried', by: s.id };
       sendDiamonds(c.room);
+      break;
+    }
+    case 'pickupKey': {
+      const key = keycards.get(c.room);
+      if (!key?.floor || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || s.hp <= 0 || deckOf(c) !== key.deck) break;
+      if (Math.hypot(key.floor.x - s.x, key.floor.y - s.y) > KEY_REACH) break;
+      key.floor = null;
+      key.holder = s.id;
+      keycardEvent(c.room, 'found', c);
+      sendKeycard(c.room);
+      break;
+    }
+    case 'unlock': {
+      // The keycard holder at a vault door: it opens, for good, and the card is used up.
+      const key = keycards.get(c.room);
+      if (!key || key.unlocked || key.holder !== s.id || s.hp <= 0 || !key.doors.includes(msg.door) || deckOf(c) !== key.deck) break;
+      const door = (mapData[key.deck].doors as { id: string; x: number; y: number; w: number; h: number }[]).find((d) => d.id === msg.door);
+      if (!door || Math.hypot(door.x + door.w / 2 - s.x, door.y + door.h / 2 - s.y) > Math.max(door.w, door.h) / 2 + KEY_REACH) break;
+      key.unlocked = true;
+      key.holder = null;
+      doorStates.get(c.room)?.set(msg.door, true);
+      for (const id of matches.get(c.room) ?? []) {
+        const member = clients.get(id);
+        if (member) send(member, { t: 'door', id: msg.door, open: true });
+      }
+      keycardEvent(c.room, 'unlocked', c);
+      sendKeycard(c.room);
       break;
     }
     case 'bank': {
@@ -1437,6 +1503,11 @@ function handle(c: Client, msg: ClientMsg) {
       const match = matches.get(c.room);
       if (!match || !doorsOf(c.room).some((door) => door.id === msg.id)) break;
       const lockUntil = doorLocks.get(c.room)?.get(msg.id) ?? 0;
+      const key = keycards.get(c.room);
+      if (msg.open && key && !key.unlocked && key.doors.includes(msg.id) && deckOf(c) === key.deck) {
+        send(c, { t: 'door', id: msg.id, open: false });
+        break;
+      }
       if (msg.open && lockUntil > Date.now()) {
         send(c, { t: 'door', id: msg.id, open: false });
         send(c, { t: 'doorLocked', id: msg.id, ms: lockUntil - Date.now() });
@@ -1488,6 +1559,69 @@ function sendDiamonds(matchId: string) {
     const member = clients.get(id);
     if (member) send(member, diamondsMsg(member, matchId));
   }
+}
+
+/**
+ * The round's vault: the red diamonds go into its furniture, and the keycard into other
+ * furniture on the same deck, well away from it when there's a choice.
+ */
+function setupVault(matchId: string, map: MapId, vault: Vault) {
+  const def = MAPS[map].vault;
+  if (!def) return;
+  const onDeck = spotsOf(matchId).filter((sp) => spotDeck(matchId, sp) === map);
+  const inside = onDeck.filter((sp) => spotRoomOf(matchId, sp) === def.room);
+  const outside = onDeck.filter((sp) => spotRoomOf(matchId, sp) !== def.room);
+  if (!inside.length || !outside.length) return;
+  const centre = (sp: HidingSpot) => ({ x: (sp.rect[0] + sp.rect[2] + 1) / 2, y: (sp.rect[1] + sp.rect[3] + 1) / 2 });
+  const v = centre(inside[0]);
+  const far = outside.filter((sp) => Math.hypot(centre(sp).x - v.x, centre(sp).y - v.y) >= 15);
+  const pool = far.length ? far : outside;
+  const spot = pool[Math.floor(Math.random() * pool.length)];
+  const vaulted = new Set<string>();
+  vault.diamonds.filter((d) => d.kind === 'red').forEach((d, i) => {
+    d.place = { at: 'spot', spot: inside[i % inside.length].id };
+    vaulted.add(d.id);
+  });
+  keycards.set(matchId, { deck: map, vaultRoom: def.room, doors: def.doors, spot: spot.id, hintRoom: spotRoomOf(matchId, spot), holder: null, floor: null, unlocked: false, vaulted });
+}
+
+/** Is this furniture inside the vault room? */
+function inVault(matchId: string, key: Keycard, spotId: string) {
+  const sp = spotsOf(matchId).find((x) => x.id === spotId);
+  return !!sp && spotDeck(matchId, sp) === key.deck && spotRoomOf(matchId, sp) === key.vaultRoom;
+}
+
+/** The keycard as this player may know it (only the Saboteur learns which furniture it's in). */
+function keycardMsg(c: Client, matchId: string): ServerMsg | null {
+  const key = keycards.get(matchId);
+  if (!key) return null;
+  const sab = saboteurs.get(matchId) === c.state.id;
+  return { t: 'keycard', deck: key.deck, vaultRoom: key.vaultRoom, doors: key.doors, hintRoom: key.hintRoom, ...(sab && key.spot ? { spot: key.spot } : {}), holder: key.holder, holderName: key.holder ? clients.get(key.holder)?.state.name : undefined, floor: key.floor, unlocked: key.unlocked };
+}
+
+function sendKeycard(matchId: string) {
+  for (const id of matches.get(matchId) ?? []) {
+    const member = clients.get(id);
+    const msg = member && keycardMsg(member, matchId);
+    if (msg) send(member, msg);
+  }
+}
+
+function keycardEvent(matchId: string, kind: 'found' | 'dropped' | 'unlocked', c: Client) {
+  for (const id of matches.get(matchId) ?? []) {
+    const member = clients.get(id);
+    if (member) send(member, { t: 'keycardEvent', kind, id: c.state.id, name: c.state.name });
+  }
+}
+
+/** The keycard holder is down or gone: it lands where they were. */
+function dropKeycard(matchId: string, c: Client) {
+  const key = keycards.get(matchId);
+  if (!key || key.holder !== c.state.id) return;
+  key.holder = null;
+  key.floor = { x: Math.round(c.state.x), y: Math.round(c.state.y) };
+  keycardEvent(matchId, 'dropped', c);
+  sendKeycard(matchId);
 }
 
 /**
@@ -1582,7 +1716,8 @@ function goLive(matchId: string) {
   const vault = vaults.get(matchId);
   const round = phases.get(matchId);
   if (!vault || !round) return;
-  const spots = [...spotsOf(matchId)].sort(() => Math.random() - 0.5);
+  const key = keycards.get(matchId);
+  const spots = [...spotsOf(matchId)].filter((sp) => !key || !inVault(matchId, key, sp.id)).sort(() => Math.random() - 0.5);
   for (const d of vault.diamonds) {
     if (d.place.at !== 'tray') continue;
     const free = spots.find((sp) => !vault.diamonds.some((x) => x.place.at === 'spot' && x.place.spot === sp.id) && roomCount(matchId, vault, roomKey(matchId, sp)) < DIAMONDS_PER_ROOM)
@@ -1737,6 +1872,8 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
     if (known.state.hp === 0 && (known.koUntil ?? 0) > Date.now()) send(known, { t: 'knockout', ms: known.koUntil! - Date.now(), reasons: known.koReasons ?? [] });
     send(known, resyncMsg(known.room, known));
     send(known, diamondsMsg(known, known.room));
+    const key = keycardMsg(known, known.room);
+    if (key) send(known, key);
     if (phases.get(known.room)?.phase === 'over') send(known, resultMsg(known.room));
     const sr = series.get(known.room);
     // Hide & Seek: who's out, my hiding place, the Seeker's gun.

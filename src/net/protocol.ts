@@ -106,6 +106,9 @@ export type ClientMsg =
   | { t: 'heal'; target: string }
   /** Held E long enough beside a knocked-out teammate. */
   | { t: 'revive'; target: string }
+  /** The keycard: pick it up off the floor; use it on a vault door. */
+  | { t: 'pickupKey' }
+  | { t: 'unlock'; door: string }
   /** A quick ping on the map for my teammates (TRAP / DIAMOND / LOOK HERE). */
   | { t: 'ping'; x: number; y: number; label: string }
   /** An ability was used (for effects others should see). */
@@ -143,7 +146,11 @@ export type ServerMsg =
   /** Hiding spots near you that hold a diamond (Runners): they glint. */
   | { t: 'glints'; spots: string[] }
   /** Your search finished: the diamond you found, or null if the furniture was empty. */
-  | { t: 'searchResult'; spot: string; found: string | null }
+  | { t: 'searchResult'; spot: string; found: string | null; keycard?: boolean }
+  /** The vault's keycard: where it's hidden (the room, as a hint; the furniture only for the
+   *  Saboteur), who holds it or where it was dropped, and whether the vault is open. */
+  | { t: 'keycard'; deck: MapId; vaultRoom: string; doors: string[]; hintRoom: string; spot?: string; holder: string | null; holderName?: string; floor: { x: number; y: number } | null; unlocked: boolean }
+  | { t: 'keycardEvent'; kind: 'found' | 'dropped' | 'unlocked'; id: string; name: string }
   /** Someone found, banked or dropped a diamond: a pop-up for everyone. */
   | { t: 'diamondEvent'; kind: 'found' | 'banked' | 'dropped' | 'alarm'; id: string; name: string; area: string }
   /** You're knocked out: the server's wait before you may respawn, and why it's that long. */

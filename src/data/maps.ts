@@ -20,6 +20,12 @@ export interface MapDef {
   preview: string;
   /** Where Runners bank their loot, in tiles. */
   getaway: { x: number; y: number; w: number; h: number };
+  /**
+   * Heists: a room sealed by `doors` that only a keycard opens. The keycard is hidden in other
+   * furniture on the same map; the red diamonds start in the vault. Every way in must be one of
+   * `doors` (checked with the reachability script).
+   */
+  vault?: { room: string; doors: string[] };
   traps: TrapSpot[];
 }
 
@@ -34,6 +40,7 @@ export const MAPS: Record<MapId, MapDef> = {
     doors: '/assets/map/doors.png',
     preview: '/assets/map/preview.png',
     getaway: { x: 39.5, y: 55.6, w: 12, h: 3.8 },
+    vault: { room: 'Master Bedroom', doors: ['door-master'] },
     // The Estate's traps are all the Saboteur's own now (the early placeholder plates are gone).
     traps: [],
   },
@@ -47,6 +54,7 @@ export const MAPS: Record<MapId, MapDef> = {
     doors: '/assets/maps/museum/doors.png',
     preview: '/assets/maps/museum/preview.png',
     getaway: { x: 34, y: 61.2, w: 24, h: 2.6 },
+    vault: { room: 'Restricted Vault', doors: ['vault-door'] },
     traps: MUSEUM_TRAPS,
   },
   'cruise-b1': {
@@ -60,6 +68,7 @@ export const MAPS: Record<MapId, MapDef> = {
     preview: '/assets/maps/cruise-b1/preview.png',
     // Bank loot at the cargo loading ramp in the bow.
     getaway: { x: 1.6, y: 28.4, w: 4.4, h: 5.2 },
+    vault: { room: 'Fuel Storage', doors: ['door-fuel'] },
     traps: CRUISE_B1_TRAPS,
   },
   'cruise-f1': {
@@ -73,6 +82,7 @@ export const MAPS: Record<MapId, MapDef> = {
     preview: '/assets/maps/cruise-f1/preview.png',
     // Bank loot at the gangway landing below the main entrance.
     getaway: { x: 55.4, y: 48, w: 7.4, h: 2.2 },
+    vault: { room: 'Staff Room', doors: ['door-staff'] },
     traps: CRUISE_F1_TRAPS,
   },
 };

@@ -3,6 +3,8 @@ export class HUD {
   private objTitle = document.getElementById('obj-title')!;
   private objGems = document.getElementById('obj-gems')!;
   private objText = document.getElementById('obj-text')!;
+  /** A second line under the objective (the vault and its keycard). */
+  private objSub = Object.assign(document.createElement('div'), { className: 'obj-sub', hidden: true });
   private lastObjective = '';
   private area = document.getElementById('area')!;
   private prompt = document.getElementById('prompt')!;
@@ -19,13 +21,16 @@ export class HUD {
 
   /** The heist's goal, always on screen: one gem per diamond (banked, carried, dropped, hidden). */
   /** `gems`: each diamond's state class, plus 'red' or 'cursed' when it's special. */
-  setObjective(title: string, gems: string[], text: string) {
-    const key = title + gems.join() + text;
+  setObjective(title: string, gems: string[], text: string, sub = '') {
+    const key = title + gems.join() + text + sub;
     if (key === this.lastObjective) return;
     this.lastObjective = key;
     this.objTitle.textContent = title;
     this.objGems.innerHTML = gems.map((g) => `<i class="gem ${g}"></i>`).join('');
     this.objText.textContent = text;
+    if (!this.objSub.isConnected) this.objText.after(this.objSub);
+    this.objSub.hidden = !sub;
+    this.objSub.textContent = sub;
   }
 
   /** The Runner's health bar; null hides it (the Saboteur has none). */
