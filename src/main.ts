@@ -7,8 +7,8 @@ import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
 import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { cleanName } from './data/names';
-import { BOOST, FLARE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, isGameMode, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
-import { CUSTOM_MIN, CUSTOM_PAD, type Phase, placementRefusal, saboteurMaxEnergy, trapSlots } from './data/round';
+import { BOOST, FLARE, HS_SCORE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, isGameMode, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
+import { CUSTOM_MIN, CUSTOM_PAD, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
@@ -18,6 +18,7 @@ import { NetClient } from './net/NetClient';
 import { type ClientMsg, NET_HZ, type PlayerState, type PortalState, type ServerMsg } from './net/protocol';
 import { CameraSystem } from './systems/CameraSystem';
 import { InteractionSystem } from './systems/InteractionSystem';
+import { Particles } from './systems/Particles';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { drawTrap } from './systems/TrapArt';
@@ -227,7 +228,17 @@ async function boot() {
   const toWorld = (e: PointerEvent | MouseEvent): [number, number] => [(e.clientX * dpr) / scale + camera.x, (e.clientY * dpr) / scale + camera.y];
   canvas.addEventListener('pointermove', (e) => ([mouseX, mouseY] = toWorld(e)));
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  // No middle-click autoscroll: middle-click pings.
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 1) e.preventDefault();
+  });
   canvas.addEventListener('pointerdown', (e) => {
+    // Middle-click: ping the spot for my teammates (not the Saboteur or Seeker).
+    if (e.button === 1) {
+      e.preventDefault();
+      if (scene === 'match' && !match?.saboteur) sendPing(...toWorld(e));
+      return;
+    }
     if (scene === 'match' && hideSeek()) {
       // The Seeker's gun: click where to shoot.
       if (match?.saboteur && phase === 'live' && e.button === 0 && !result) {
@@ -340,7 +351,13 @@ async function boot() {
   let totalN = 0;
   /** The furniture I'm searching (holding E), and since when. */
   let searching: { spot: string; since: number } | null = null;
+  /** The knocked-out teammate I'm reviving (holding E), and since when. */
+  let reviving: { id: string; since: number } | null = null;
   /** Little animations: a diamond dropping into furniture, popping out, an empty search. */
+  const particles = new Particles();
+  /** Teammates' pings: where, what, who, on which deck, and when (they last PING_MS). */
+  const pings: { x: number; y: number; label: string; name: string; deck: string; at: number }[] = [];
+  const PING_MS = 4000;
   const fx: { kind: 'hide' | 'found' | 'empty'; x: number; y: number; at: number }[] = [];
   let lastBank = 0;
   /** Placed traps going off right now (everyone draws them), and the ones Runners now know about. */
@@ -586,7 +603,9 @@ async function boot() {
     glints = new Set();
     bankedN = needN = totalN = 0;
     searching = null;
+    reviving = null;
     fx.length = 0;
+    particles.clear();
     firing.length = 0;
     revealed.clear();
     crushers.length = 0;
@@ -803,6 +822,15 @@ async function boot() {
       case 'searchResult': {
         const spot = spots.find((x) => x.id === msg.spot);
         if (spot) fx.push({ kind: msg.found ? 'found' : 'empty', ...spotCenter(spot), at: performance.now() });
+        if (spot && msg.found) {
+          // The jackpot moment: a burst of diamond-blue, a pop and a little kick.
+          const c = spotCenter(spot);
+          particles.burst(c.x, c.y, '#5ad8ff', 26, 2.2);
+          particles.burst(c.x, c.y, '#ffffff', 8, 1.2);
+          particles.pop(c.x, c.y - 16, '+1 DIAMOND', '#5ad8ff');
+          trapImpact('#5ad8ff', 2, 220);
+          setTimeout(() => sfx('coin'), 120);
+        } else if (spot) particles.burst(spotCenter(spot).x, spotCenter(spot).y, '#8a849c', 8, 0.8);
         if (msg.found) hud.setCarrying('CARRYING A DIAMOND · TAKE IT TO THE GETAWAY');
         else toast(`Nothing in the ${spot?.name ?? 'furniture'}`);
         sfx(msg.found ? 'found' : 'empty');
@@ -811,7 +839,20 @@ async function boot() {
       case 'diamondEvent': {
         const who = msg.id === myId ? 'You' : esc(msg.name);
         const what = msg.kind === 'found' ? 'found a diamond' : msg.kind === 'banked' ? `banked a diamond · ${bankedN}/${needN}` : 'dropped a diamond';
-        if (msg.kind === 'banked') sfx('banked');
+        if (msg.kind === 'banked') {
+          sfx('banked');
+          // Banked: gold everywhere at the getaway, and the points.
+          const by = msg.id === myId ? me : remotes.get(msg.id)?.bandit;
+          if (by) {
+            particles.burst(by.x, by.y - 14, '#ffc94a', 40, 2.6);
+            particles.burst(by.x, by.y - 14, '#ffffff', 12, 1.4);
+            particles.pop(by.x, by.y - 36, msg.id === myId ? `+${SCORE.bank}` : 'BANKED!', '#ffc94a');
+          }
+          if (msg.id === myId) {
+            trapImpact('#ffc94a', 3, 300);
+            setTimeout(() => sfx('combo'), 180);
+          }
+        }
         else if (msg.kind === 'dropped') sfx('dropped');
         else if (msg.id !== myId) sfx('alert');
         hud.alert(`<span class="who">${who}</span> <b>${what}</b><span class="where">${esc(msg.area)}</span>`, msg.kind === 'dropped' ? 'danger' : 'good');
@@ -829,6 +870,8 @@ async function boot() {
       case 'final':
         resultScreen.showFinal(msg, myId);
         sfx(msg.standings[0]?.id === myId ? 'win' : 'alert');
+        // A chime as each award card pops in (matches the cards' animation delays).
+        for (let i = 0; i < resultScreen.awardCount; i++) setTimeout(() => sfx('award'), 800 + i * 350);
         break;
       case 'phase':
         phase = msg.phase;
@@ -878,6 +921,12 @@ async function boot() {
         const deckNote = multiDeck() && msg.deck !== deckId ? ` \u00b7 ${deckShort(msg.deck)}` : '';
         hud.alert(`<span class="who">${who}</span> got caught by a <b>${esc(msg.trap)}</b><span class="where">${esc(msg.area)}${deckNote}</span>`);
         trapFlash = { x: msg.x, y: msg.y, deck: msg.deck, trap: msg.trap, area: msg.area, at: performance.now() };
+        if (msg.deck === deckId) particles.burst(msg.x, msg.y - 10, '#ff4d6a', 18, 1.8);
+        if (match?.saboteur) {
+          // The Saboteur's reward: a GOTCHA where it happened, and a chime.
+          if (msg.deck === deckId) particles.pop(msg.x, msg.y - 30, `GOTCHA! +${SCORE.trapHit}`, '#ff4d6a');
+          setTimeout(() => sfx('combo'), 150);
+        }
         break;
       }
       case 'placedTrapHit':
@@ -892,6 +941,8 @@ async function boot() {
         break;
       case 'gunshot':
         shots.push({ x0: msg.x0, y0: msg.y0, x1: msg.x1, y1: msg.y1, hit: !!msg.hit, at: performance.now() });
+        if (here(msg.deck)) particles.burst(msg.x1, msg.y1, msg.hit ? '#ff4d6a' : '#ffe39a', msg.hit ? 16 : 6, msg.hit ? 1.8 : 0.9);
+        if (msg.hit && match?.saboteur) particles.pop(msg.x1, msg.y1 - 14, 'HIT!', '#ff4d6a');
         sfx('gunshot');
         break;
       case 'gun': {
@@ -963,6 +1014,11 @@ async function boot() {
         break;
       case 'caught': {
         caught.add(msg.id);
+        const got = msg.id === myId ? me : remotes.get(msg.id)?.bandit;
+        if (got) {
+          particles.burst(got.x, got.y - 14, '#ff4d6a', 30, 2.2);
+          particles.pop(got.x, got.y - 36, match?.saboteur ? `CAUGHT! +${HS_SCORE.catch}` : 'CAUGHT!', '#ff4d6a');
+        }
         if (msg.id === myId) hiddenIn = null;
         sfx('caught');
         const who = msg.id === myId ? 'You were' : `${esc(msg.name)} was`;
@@ -979,6 +1035,24 @@ async function boot() {
       case 'doorJammed':
         toast('Door jammed');
         break;
+      case 'ping':
+        pings.push({ x: msg.x, y: msg.y, label: msg.label, name: msg.id === myId ? 'you' : msg.name, deck: msg.deck, at: performance.now() });
+        sfx('ping');
+        break;
+      case 'revived': {
+        sfx('revive');
+        const fell = remotes.get(msg.id)?.bandit ?? (msg.id === myId ? me : undefined);
+        if (fell) {
+          particles.burst(fell.x, fell.y - 14, '#6fe07a', 22);
+          particles.pop(fell.x, fell.y - 34, 'REVIVED!', '#6fe07a');
+        }
+        if (msg.id === myId) {
+          healMe(REVIVE_HP);
+          trapNotice = `${msg.byName} got you back up!`;
+          trapNoticeUntil = performance.now() + 2500;
+        } else hud.alert(`<span class="who">${msg.by === myId ? 'You' : esc(msg.byName)}</span> <b>revived ${esc(msg.name)}</b>`, 'good');
+        break;
+      }
       case 'healed':
         if (match && !match.saboteur) healMe();
         break;
@@ -1146,7 +1220,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1581,6 +1655,8 @@ async function boot() {
     // A finished reload: the gun is full again (the server agrees on its next shot).
     if (hs && sab && gun.ammo === 0 && gun.reloadEnd && performance.now() >= gun.reloadEnd) gun = { ...gun, ammo: GUN.ammo, reloadEnd: 0 };
     if (input.ability && !hud.messageOpen && phase === 'live' && !hs) abilities.use(abilityContext());
+    // G (or middle-click): ping where the mouse is, for my teammates.
+    if (!sab && !hud.messageOpen && keyPressed('KeyG')) sendPing(mouseX, mouseY);
     // Hide & Seek abilities: Seeker Q flare, C heartbeat scan; Hider Q boost (the server checks).
     if (hs && phase === 'live' && !hud.messageOpen && !isGhost(myId) && performance.now() - hsSentAt > 300) {
       const want: HsAbility | null = keyPressed('KeyQ') ? (sab ? 'flare' : hiddenIn ? null : 'boost') : sab && keyPressed('KeyC') ? 'scan' : null;
@@ -1715,7 +1791,19 @@ async function boot() {
       const [x0, y0, x1, y1] = st.zone.map((v) => v * ART_TILE);
       return me.x >= x0 - 6 && me.x <= x1 + 6 && me.y >= y0 - 6 && me.y <= y1 + 6;
     });
-    if (stair) {
+    // A knocked-out teammate right here: holding E gets them back up (before anything else).
+    const downed = knockedOut || phase !== 'live' ? undefined : [...remotes.values()].find((o) => o.state.hp === 0 && here(o.state.deck) && Math.hypot(o.bandit.x - me.x, o.bandit.y - me.y) <= REVIVE_REACH);
+    if (downed) {
+      prompt = `Hold E  Revive ${downed.state.name}`;
+      if (input.actionHeld && !me.stunned) {
+        if (reviving?.id !== downed.state.id) reviving = { id: downed.state.id, since: now };
+        else if (now - reviving.since >= REVIVE_MS) {
+          net.send({ t: 'revive', target: downed.state.id });
+          reviving = null;
+        }
+        prompt = `Reviving ${downed.state.name}...`;
+      }
+    } else if (stair) {
       const connected = isMapId(stair.to.deck) && decksOf(mapId).includes(stair.to.deck);
       prompt = connected ? `E  Take the ${stair.name}` : `E  Climb the ${stair.name}`;
       if (input.action) {
@@ -1755,6 +1843,7 @@ async function boot() {
       }
     }
     if (!input.actionHeld || me.moving || !spot || searching?.spot !== spot.id) searching = null;
+    if (!input.actionHeld || me.moving || !downed || reviving?.id !== downed.state.id) reviving = null;
     hud.setPrompt(now < trapNoticeUntil ? trapNotice : now < toastUntil ? hud.promptText : prompt);
   }
 
@@ -1950,6 +2039,7 @@ async function boot() {
     drawSpots(camX, camY);
     drawFloorDiamonds(camX, camY);
     drawDiamondFx(camX, camY);
+    particles.draw(ctx, camX, camY);
     if (myDiamond()) carriedGem(me, camX, camY);
     for (const r of remotes.values()) if (r.state.carrying) carriedGem(r.bandit, camX, camY);
     ctx.restore();
@@ -1957,6 +2047,7 @@ async function boot() {
     if (hideSeek() && !result && !isGhost(myId)) drawDarkness(camX, camY);
     if (hideSeek() && !result) drawHideSeekMarks(camX, camY);
     if (settings.values.nameTags && !result) drawNameTags(camX, camY);
+    if (!result) drawPings(camX, camY);
     drawKnockout();
     drawTrapMinimap();
     if (phase === 'setup' && !match?.saboteur && !hideSeek()) drawBlueprint(camX, camY);
@@ -2130,6 +2221,67 @@ async function boot() {
       ctx.font = `${Math.round(9 * dpr)}px "Press Start 2P"`;
       ctx.fillText('COUNTING... THE HIDERS ARE HIDING', canvas.width / 2, canvas.height / 2 + 40 * dpr);
       ctx.restore();
+    }
+  }
+
+  /** A ping at (x, y): it says TRAP or DIAMOND when there's one I know about right there. */
+  let lastPingSent = 0;
+  function sendPing(x: number, y: number) {
+    if (phase === 'over' || isGhost(myId) || performance.now() - lastPingSent < 1000) return;
+    lastPingSent = performance.now();
+    const near = (px: number, py: number) => Math.hypot(px - x, py - y) <= 22;
+    const trap = !hideSeek() && ([...placed.values()].some((t) => here(t.deck) && revealed.has(t.id) && t.kind !== 'fakeLoot' && near(t.x, t.y)) || traps.some((t) => !isPlate(t) && near(t.x, t.y)));
+    const gem = !trap && diamonds.some((d) => d.place.at === 'floor' && here(d.place.deck) && near(d.place.x, d.place.y));
+    net.send({ t: 'ping', x, y, label: trap ? 'TRAP' : gem ? 'DIAMOND' : 'LOOK HERE' });
+  }
+
+  /** Teammates' pings: a ring that pulses where they pinged, with what and who; one that's
+   *  off screen sits on the screen's edge, pointing the way. Screen space. */
+  function drawPings(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = pings.length - 1; i >= 0; i--) {
+      const p = pings[i];
+      const t = (now - p.at) / PING_MS;
+      if (t >= 1) {
+        pings.splice(i, 1);
+        continue;
+      }
+      if (p.deck !== deckId) continue;
+      const color = p.label === 'TRAP' ? '#ff4d6a' : p.label === 'DIAMOND' ? '#5ad8ff' : '#ffe39a';
+      const pad = 28 * dpr;
+      const rx = (p.x - camX) * scale;
+      const ry = (p.y - camY) * scale;
+      const x = Math.max(pad, Math.min(canvas.width - pad, rx));
+      const y = Math.max(pad, Math.min(canvas.height - pad, ry));
+      const off = x !== rx || y !== ry;
+      ctx.save();
+      ctx.globalAlpha = t > 0.8 ? (1 - t) / 0.2 : 1;
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 2 * dpr;
+      // Two rings rippling out, and a dot.
+      for (const k of [0, 0.5]) {
+        const q = ((now - p.at) / 900 + k) % 1;
+        ctx.globalAlpha *= 1;
+        ctx.beginPath();
+        ctx.arc(x, y, (4 + q * 18) * dpr, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(x, y, 3 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+      if (off) {
+        // An arrow from the edge towards the real spot.
+        const a = Math.atan2(ry - y, rx - x);
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * 16 * dpr, y + Math.sin(a) * 16 * dpr);
+        ctx.lineTo(x + Math.cos(a + 2.5) * 9 * dpr, y + Math.sin(a + 2.5) * 9 * dpr);
+        ctx.lineTo(x + Math.cos(a - 2.5) * 9 * dpr, y + Math.sin(a - 2.5) * 9 * dpr);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+      textTag(`${p.label} · ${p.name}`, x, y - 14 * dpr, color, Math.round(7 * dpr));
     }
   }
 
@@ -2622,6 +2774,43 @@ async function boot() {
         }
         ctx.restore();
       }
+    }
+    // Knocked-out teammates: a pulsing HELP cross over them, so the crew knows to come.
+    if (!match?.saboteur && phase === 'live') {
+      for (const o of remotes.values()) {
+        if (o.state.hp !== 0 || !here(o.state.deck)) continue;
+        const x = o.bandit.x - camX;
+        const y = o.bandit.y - DRAW_H - 10 - camY + Math.sin(frame / 7) * 2;
+        ctx.save();
+        ctx.globalAlpha = 0.65 + 0.35 * Math.sin(frame / 5);
+        ctx.fillStyle = '#ff4d6a';
+        ctx.fillRect(x - 2, y - 6, 4, 12);
+        ctx.fillRect(x - 6, y - 2, 12, 4);
+        ctx.font = '5px "Press Start 2P"';
+        ctx.textAlign = 'center';
+        ctx.fillText('HELP', x, y - 9);
+        ctx.restore();
+      }
+    }
+    if (reviving) {
+      // The revive ring over my head fills as E is held.
+      const p = Math.min(1, (now - reviving.since) / REVIVE_MS);
+      const x = me.x - camX;
+      const y = me.y - DRAW_H - 8 - camY;
+      ctx.save();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(14,10,26,0.8)';
+      ctx.beginPath();
+      ctx.arc(x, y, 7, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = '#6fe07a';
+      ctx.beginPath();
+      ctx.arc(x, y, 7, -Math.PI / 2, -Math.PI / 2 + p * Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#6fe07a';
+      ctx.fillRect(x - 0.5, y - 3, 2, 6);
+      ctx.fillRect(x - 2.5, y - 1, 6, 2);
+      ctx.restore();
     }
     if (searching) {
       // The search ring over my head fills as E is held.

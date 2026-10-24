@@ -104,6 +104,10 @@ export type ClientMsg =
   | { t: 'trapHit'; trap: string; area: string; x?: number; y?: number }
   /** Latch heals another Runner (First Aid). */
   | { t: 'heal'; target: string }
+  /** Held E long enough beside a knocked-out teammate. */
+  | { t: 'revive'; target: string }
+  /** A quick ping on the map for my teammates (TRAP / DIAMOND / LOOK HERE). */
+  | { t: 'ping'; x: number; y: number; label: string }
   /** An ability was used (for effects others should see). */
   | { t: 'ability'; ability: AbilityId }
   | { t: 'leave' };
@@ -164,7 +168,7 @@ export type ServerMsg =
       hunt?: { caught: string[]; escaped: string[]; survived: string[] };
     }
   /** The match is over: everyone's totals, and what happened each round. */
-  | { t: 'final'; standings: Standing[]; rounds: { map: MapId; saboteur: string; winner: 'runners' | 'saboteur' | 'none' }[]; mode?: GameMode }
+  | { t: 'final'; standings: Standing[]; rounds: { map: MapId; saboteur: string; winner: 'runners' | 'saboteur' | 'none' }[]; mode?: GameMode; awards?: Award[] }
   /** The round moved on (setup -> live -> over); `ms` is how long this phase lasts. */
   | { t: 'phase'; phase: Phase; ms: number }
   | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
@@ -221,10 +225,23 @@ export type ServerMsg =
   | { t: 'trapAlert'; id: string; name: string; trap: string; area: string; x: number; y: number; deck: MapId }
   /** Another Runner healed you to full (First Aid). */
   | { t: 'healed'; by: string }
+  /** A knocked-out Runner was got back up by a teammate. */
+  | { t: 'revived'; id: string; name: string; by: string; byName: string }
+  /** A teammate pinged a spot. */
+  | { t: 'ping'; x: number; y: number; label: string; id: string; name: string; deck: string }
   /** Someone in your match left. */
   | { t: 'left'; id: string };
 
 /** A player's place in the match. */
+/** An end-of-match award: who did the most of something. */
+export interface Award {
+  key: string;
+  title: string;
+  id: string;
+  name: string;
+  detail: string;
+}
+
 export interface Standing {
   id: string;
   name: string;

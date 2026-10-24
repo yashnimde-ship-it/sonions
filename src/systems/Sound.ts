@@ -4,7 +4,7 @@
 
 import type { TrapKindId } from '../data/trapKinds';
 
-export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen';
+export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen' | 'award' | 'revive' | 'coin' | 'combo' | 'ping';
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -199,6 +199,25 @@ export function play(id: SoundId) {
       tone(a, 'sawtooth', 90, 180, 0.7, 0, 0.12);
       [660, 880, 1320].forEach((f, i) => tone(a, 'square', f, f, 0.12, 0.6 + i * 0.12, 0.15));
       break
+    case 'award':
+      // A bright sparkle.
+      [1320, 1760, 2640].forEach((f, i) => tone(a, 'triangle', f, f, 0.12, i * 0.06, 0.2));
+      break;
+    case 'revive':
+      // A rising heal: up a major arpeggio.
+      [523, 659, 784, 1047].forEach((f, i) => tone(a, 'triangle', f, f, 0.14, i * 0.08, 0.25));
+      break;
+    case 'coin':
+      tone(a, 'square', 988, 988, 0.06, 0, 0.18);
+      tone(a, 'square', 1319, 1319, 0.18, 0.06, 0.18);
+      break;
+    case 'combo':
+      [784, 988, 1175, 1568].forEach((f, i) => tone(a, 'square', f, f * 1.02, 0.09, i * 0.05, 0.16));
+      break;
+    case 'ping':
+      tone(a, 'sine', 1568, 1568, 0.08, 0, 0.25);
+      tone(a, 'sine', 2093, 2093, 0.14, 0.08, 0.2);
+      break;
     case 'alert':
       tone(a, 'square', 660, 660, 0.08, 0, 0.15);
       tone(a, 'square', 880, 880, 0.08, 0.1, 0.15);

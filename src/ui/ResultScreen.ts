@@ -15,6 +15,8 @@ export class ResultScreen {
   private nextAt = 0;
   private last = false;
   private hideSeek = false;
+  /** Awards on the final screen (main.ts plays a chime for each as it pops in). */
+  awardCount = 0;
 
   constructor(onBack: () => void) {
     this.root.id = 'result';
@@ -59,6 +61,7 @@ export class ResultScreen {
         <p class="next"></p>
         <button type="button" class="result-back">LEAVE MATCH</button>
       </div>`;
+    if (won) confetti(this.root);
     this.countdown = this.root.querySelector('.next');
     this.nextAt = performance.now() + r.nextMs;
     this.last = r.last;
@@ -93,6 +96,12 @@ export class ResultScreen {
           ? 'YOU WIN THE MATCH'
           : `${esc(winners[0].name)} WINS`;
     const hs = f.mode === 'hideSeek';
+    // Awards pop in one by one after the podium.
+    const portrait = (id: string) => f.standings.find((s) => s.id === id)?.character;
+    const awards = (f.awards ?? [])
+      .map((a, i) => `<div class="award ${a.key}${a.id === me ? ' me' : ''}" style="animation-delay:${0.8 + i * 0.35}s"><i class="award-icon"></i><span class="award-title">${esc(a.title)}</span>${portrait(a.id) ? `<img src="/assets/characters/${portrait(a.id)}-portrait.png" alt="">` : ''}<b>${esc(a.name)}</b><span class="award-detail">${esc(a.detail)}</span></div>`)
+      .join('');
+    this.awardCount = f.awards?.length ?? 0;
     const rounds = f.rounds.map((r, i) => `<li>Round ${i + 1} · ${MAP_NAMES[r.map] ?? r.map} · ${hs ? 'Seeker' : 'Saboteur'} ${esc(r.saboteur)} · <b>${r.winner === 'none' ? 'called off' : r.winner === 'runners' ? (hs ? 'Hiders won' : 'Runners won') : hs ? 'Seeker won' : 'Saboteur won'}</b></li>`).join('');
     this.root.className = iWon ? 'win final' : 'final';
     this.root.innerHTML = `
@@ -100,10 +109,12 @@ export class ResultScreen {
         <span class="kicker">MATCH OVER · ${f.rounds.length} ROUND${f.rounds.length === 1 ? '' : 'S'}</span>
         <h1>${title}</h1>
         <div class="podium">${podium}</div>
+        ${awards ? `<div class="awards">${awards}</div>` : ''}
         ${table(f.standings, me)}
         <ol class="round-list">${rounds}</ol>
         <button type="button" class="result-back">BACK TO SAFEHOUSE</button>
       </div>`;
+    if (iWon) confetti(this.root, 120);
     this.countdown = null;
     this.root.hidden = false;
   }
@@ -130,4 +141,23 @@ function table(standings: Standing[], me: string) {
     .map((s) => `<tr class="${s.id === me ? 'me' : ''}${s.here ? '' : ' gone'}"><td>${standings.findIndex((o) => o.total === s.total) + 1}</td><td class="who">${esc(s.name)}${s.here ? '' : ' (left)'}</td>${Array.from({ length: rounds }, (_, r) => `<td>${s.perRound[r] ?? '-'}</td>`).join('')}<td class="total">${s.total}</td></tr>`)
     .join('');
   return `<table class="scores"><thead><tr><th>#</th><th>PLAYER</th>${head}<th>TOTAL</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+/** A shower of pixel confetti over the result screen (it removes itself). */
+function confetti(root: HTMLElement, count = 70) {
+  const colors = ['#ffc94a', '#5ad8ff', '#6fe07a', '#ff4d6a', '#c77dff', '#ffffff'];
+  const box = document.createElement('div');
+  box.className = 'confetti';
+  for (let i = 0; i < count; i++) {
+    const bit = document.createElement('i');
+    bit.style.left = `${Math.random() * 100}%`;
+    bit.style.background = colors[i % colors.length];
+    bit.style.animationDelay = `${Math.random() * 0.9}s`;
+    bit.style.animationDuration = `${1.8 + Math.random() * 1.6}s`;
+    bit.style.setProperty('--drift', `${(Math.random() - 0.5) * 160}px`);
+    bit.style.setProperty('--spin', `${(Math.random() - 0.5) * 1080}deg`);
+    box.append(bit);
+  }
+  root.append(box);
+  setTimeout(() => box.remove(), 4000);
 }

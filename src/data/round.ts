@@ -53,3 +53,9 @@ export function placementRefusal(placedKinds: Iterable<TrapKindId>, kind: TrapKi
   if (all.filter((k) => k === kind).length >= limit) return `${trapKind(kind)!.name}: ${limit} per round at most`;
   return null;
 }
+
+/** Reviving: a Runner holds E this long beside a knocked-out teammate to get them back up
+ *  where they fell (with REVIVE_HP), skipping the respawn wait. Reach in art px. */
+export const REVIVE_MS = 3000;
+export const REVIVE_REACH = 26;
+export const REVIVE_HP = 50;

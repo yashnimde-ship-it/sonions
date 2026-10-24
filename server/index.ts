@@ -14,11 +14,11 @@ import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from 
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
-import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
+import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
-import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Standing, type Taken } from '../src/net/protocol.ts';
+import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.PORT ?? 3001);
@@ -46,6 +46,9 @@ const LOBBY_SPAWN = { x: lobbyMap.spawn.x * TILE, y: lobbyMap.spawn.y * TILE };
 interface Client {
   ws: WebSocket;
   state: PlayerState;
+  /** When this player last revived a teammate, and last pinged (ms). */
+  lastRevive?: number;
+  lastPing?: number;
   /** 'lobby' or the id of the match the player is in. */
   room: string;
   /** When the player stepped into the portal they are standing in (ms), keyed by portal size. */
@@ -320,13 +323,54 @@ interface Vault {
 const vaults = new Map<string, Vault>();
 
 /** Per match: the rounds. Each round has its own Saboteur (in `order`) and map (in `maps`). */
+/** What each player did over the match, for the end-of-match awards. */
+interface Stats {
+  banked: number;
+  trapped: number;
+  knockouts: number;
+  runnerRounds: number;
+  sabHits: number;
+  catches: number;
+  escapes: number;
+  survived: number;
+  hiderRounds: number;
+  revives: number;
+}
+const newStats = (): Stats => ({ banked: 0, trapped: 0, knockouts: 0, runnerRounds: 0, sabHits: 0, catches: 0, escapes: 0, survived: 0, hiderRounds: 0, revives: 0 });
+const statsOf = (matchId: string, id: string) => series.get(matchId)?.players.get(id)?.stats;
+
+/** The match's awards: each goes to whoever did the most of something (ties share it). */
+function awardsFor(sr: Series, hideSeek: boolean): Award[] {
+  const all = [...sr.players].map(([id, p]) => ({ id, name: p.name, st: p.stats }));
+  const out: Award[] = [];
+  const best = (key: string, title: string, value: (st: Stats) => number, detail: (n: number) => string) => {
+    const top = Math.max(0, ...all.map((p) => value(p.st)));
+    const winners = all.filter((q) => value(q.st) === top);
+    // Nobody stands out if everyone shares it.
+    if (top <= 0 || (winners.length === all.length && all.length > 1)) return;
+    for (const p of winners) out.push({ key, title, id: p.id, name: p.name, detail: detail(top) });
+  };
+  if (hideSeek) {
+    best('sharpshooter', 'SHARPSHOOTER', (st) => st.catches, (n) => `caught ${n} hider${n === 1 ? '' : 's'} as the Seeker`);
+    best('escape', 'ESCAPE ARTIST', (st) => st.escapes, (n) => `got off the ship ${n} time${n === 1 ? '' : 's'}`);
+    best('shadow', 'SHADOW', (st) => st.survived, (n) => `never found in ${n} round${n === 1 ? '' : 's'}`);
+  } else {
+    best('diamonds', 'MOST DIAMONDS', (st) => st.banked, (n) => `banked ${n} diamond${n === 1 ? '' : 's'}`);
+    best('saboteur', 'BEST SABOTEUR', (st) => st.sabHits, (n) => `caught Runners ${n} time${n === 1 ? '' : 's'} with traps`);
+    best('lifesaver', 'LIFESAVER', (st) => st.revives, (n) => `revived teammates ${n} time${n === 1 ? '' : 's'}`);
+    best('magnet', 'TRAP MAGNET', (st) => st.trapped, (n) => `walked into ${n} trap${n === 1 ? '' : 's'}`);
+    best('untouchable', 'UNTOUCHABLE', (st) => (st.runnerRounds && !st.trapped && !st.knockouts ? st.runnerRounds : 0), () => 'never caught by a trap');
+  }
+  return out;
+}
+
 interface Series {
   order: string[];
   maps: MapId[];
   round: number;
   rounds: number;
   /** Everyone who started the match, with their points per round (kept if they leave). */
-  players: Map<string, { name: string; character: CharacterId; perRound: number[] }>;
+  players: Map<string, { name: string; character: CharacterId; perRound: number[]; stats: Stats }>;
   history: { map: MapId; saboteur: string; winner: 'runners' | 'saboteur' | 'none' }[];
   /** When the break after a round ends (next round, or the final results). */
   nextAt: number | null;
@@ -533,7 +577,7 @@ function startMatch(size: number, crew: Client[]) {
     maps,
     round: 0,
     rounds,
-    players: new Map(crew.map((c) => [c.state.id, { name: c.state.name, character: c.state.character, perRound: [] }])),
+    players: new Map(crew.map((c) => [c.state.id, { name: c.state.name, character: c.state.character, perRound: [], stats: newStats() }])),
     history: [],
     nextAt: null,
     done: false,
@@ -625,7 +669,7 @@ function finishSeries(matchId: string) {
   sr.nextAt = null;
   const round = phases.get(matchId);
   if (round) round.phase = 'over';
-  const msg: ServerMsg = { t: 'final', standings: standings(matchId), rounds: sr.history, mode: matchModes.get(matchId) };
+  const msg: ServerMsg = { t: 'final', standings: standings(matchId), rounds: sr.history, mode: matchModes.get(matchId), awards: awardsFor(sr, isHideSeek(matchId)) };
   for (const id of matches.get(matchId) ?? []) {
     const c = clients.get(id);
     if (c) send(c, msg);
@@ -828,7 +872,12 @@ function handle(c: Client, msg: ClientMsg) {
       // The server knows who holds a diamond; a Runner knocked out drops theirs.
       const held = c.room !== 'lobby' ? carrierOf(vaults.get(c.room), s.id) : undefined;
       s.carrying = !!held;
+      const hpBefore = s.hp;
       s.hp = Math.max(0, Math.min(MAX_HP, Number(msg.hp) || 0));
+      if (c.room !== 'lobby' && hpBefore > 0 && s.hp === 0 && !isHideSeek(c.room)) {
+        const st = statsOf(c.room, s.id);
+        if (st) st.knockouts++;
+      }
       s.stunned = !!msg.stunned;
       if (held && s.hp === 0) dropDiamond(c.room, s.id, s.x, s.y);
       const hunt = hunts.get(c.room);
@@ -1143,6 +1192,8 @@ function handle(c: Client, msg: ClientMsg) {
       lastTrapHit.set(s.id, now);
       const vault = vaults.get(c.room);
       if (vault) vault.hits++;
+      const st = statsOf(c.room, s.id);
+      if (st) st.trapped++;
       // Where it happened: where the Runner says, if that's close to where we last saw them.
       const close = Number.isFinite(msg.x) && Number.isFinite(msg.y) && Math.hypot(msg.x! - s.x, msg.y! - s.y) <= 48;
       const [ax, ay] = close ? [Math.round(msg.x!), Math.round(msg.y!)] : [Math.round(s.x), Math.round(s.y)];
@@ -1150,6 +1201,37 @@ function handle(c: Client, msg: ClientMsg) {
       for (const id of matches.get(c.room) ?? []) {
         const member = clients.get(id);
         if (member) send(member, alert);
+      }
+      break;
+    }
+    case 'ping': {
+      // A Runner (or Hider) marks a spot: only their own side hears it, at most one a second.
+      const sab = saboteurs.get(c.room);
+      const now = Date.now();
+      if (!sab || sab === s.id || !Number.isFinite(msg.x) || !Number.isFinite(msg.y) || now - (c.lastPing ?? 0) < 1000) break;
+      c.lastPing = now;
+      const label = ['TRAP', 'DIAMOND', 'LOOK HERE'].includes(msg.label) ? msg.label : 'LOOK HERE';
+      for (const id of matches.get(c.room) ?? []) {
+        const m = clients.get(id);
+        if (m && id !== sab) send(m, { t: 'ping', x: Math.round(msg.x), y: Math.round(msg.y), label, id: s.id, name: s.name, deck: deckOf(c) });
+      }
+      break;
+    }
+    case 'revive': {
+      // A Runner got a knocked-out teammate back up (their game timed the hold; we check reach).
+      const sab = saboteurs.get(c.room);
+      const target = clients.get(msg.target);
+      const now = Date.now();
+      if (!sab || isHideSeek(c.room) || sab === s.id || !target || target.room !== c.room || msg.target === sab || target === c) break;
+      if (phases.get(c.room)?.phase !== 'live' || s.hp <= 0 || target.state.hp > 0 || deckOf(target) !== deckOf(c)) break;
+      if (Math.hypot(target.state.x - s.x, target.state.y - s.y) > REVIVE_REACH + 24 || now - (c.lastRevive ?? 0) < REVIVE_MS - 500) break;
+      c.lastRevive = now;
+      target.state.hp = REVIVE_HP;
+      const st = statsOf(c.room, s.id);
+      if (st) st.revives++;
+      for (const id of matches.get(c.room) ?? []) {
+        const m = clients.get(id);
+        if (m) send(m, { t: 'revived', id: target.state.id, name: target.state.name, by: s.id, byName: s.name });
       }
       break;
     }
@@ -1449,6 +1531,21 @@ function finish(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
         pts = vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).length * SCORE.bank + (winner === 'runners' ? SCORE.runnersWin : 0);
       }
       p.perRound[sr.round] = pts;
+      // The awards' tally for this round.
+      const st = p.stats;
+      if (!matches.get(matchId)?.has(id) || winner === 'none') continue;
+      if (hunt) {
+        if (id === sab) st.catches += hunt.caught.size;
+        else {
+          st.hiderRounds++;
+          if (hunt.escaped.has(id)) st.escapes++;
+          else if (!hunt.caught.has(id)) st.survived++;
+        }
+      } else if (id === sab) st.sabHits += vault.hits;
+      else {
+        st.runnerRounds++;
+        st.banked += vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).length;
+      }
     }
     sr.history[sr.round] = { map: matchMaps.get(matchId) ?? 'estate', saboteur: sr.players.get(sab ?? '')?.name ?? '?', winner };
     const last = sr.round + 1 >= sr.rounds;

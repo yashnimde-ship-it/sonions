@@ -53,7 +53,8 @@ for (let i = 0; i < count; i++) {
     if (msg.t === 'match') {
       inMatch = true;
       saboteur = msg.role === 'saboteur';
-      hp = 40;
+      // BOT_DOWN=1 (testing revives): Runner bots lie knocked out until a teammate revives them.
+      hp = process.env.BOT_DOWN === '1' ? 0 : 40;
       const meThere = msg.players.find((p) => p.id === myId);
       if (meThere) spot = { x: meThere.x, y: meThere.y };
       console.log(`Bot ${i + 1} entered ${msg.matchId} as ${saboteur ? 'SABOTEUR' : 'runner'}`);
@@ -70,6 +71,10 @@ for (let i = 0; i < count; i++) {
     if (msg.t === 'ability') console.log(`Bot ${i + 1} saw player ${msg.by} use ${msg.ability}`);
     // When a crewmate leaves the heist, head back to the safehouse and queue again.
     if (msg.t === 'left') send({ t: 'leave' });
+    if (msg.t === 'revived' && msg.id === myId) {
+      hp = 50;
+      console.log(`Bot ${i + 1} revived by ${msg.byName}`);
+    }
     if (msg.t === 'healed') {
       hp = 100;
       console.log(`Bot ${i + 1} was healed to full by player ${msg.by}`);
