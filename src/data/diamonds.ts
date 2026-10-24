@@ -39,13 +39,42 @@ export type DiamondPlace =
   | { at: 'floor'; x: number; y: number; deck?: string } // dropped (deck: on the ship, which deck)
   | { at: 'banked'; by: string };
 
+/**
+ * Most diamonds are plain (worth 1). A red one is worth 3 but heavy to carry. A cursed one is a
+ * fake: it looks like any other until it's banked, then it's worth nothing and sets off the alarm.
+ */
+export type DiamondKind = 'red' | 'cursed';
+export const DIAMOND_VALUE = { plain: 1, red: 3, cursed: 0 } as const;
+export const valueOf = (d: Diamond) => DIAMOND_VALUE[d.kind ?? 'plain'];
+/** A red diamond slows its carrier this much more than a plain one. */
+export const RED_EXTRA_SLOW = 0.15;
+
+/** Which diamonds are special, shuffled: one red and one cursed from 5 diamonds, two of each from 9. */
+export function diamondKinds(total: number): (DiamondKind | undefined)[] {
+  const n = total >= 9 ? 2 : total >= 5 ? 1 : 0;
+  const kinds = Array.from({ length: total }, (_, i): DiamondKind | undefined => (i < n ? 'red' : i < 2 * n ? 'cursed' : undefined));
+  for (let i = kinds.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [kinds[i], kinds[j]] = [kinds[j], kinds[i]];
+  }
+  return kinds;
+}
+
 export interface Diamond {
   id: string;
   place: DiamondPlace;
+  /** Absent for a plain diamond. */
+  kind?: DiamondKind;
 }
 
-/** What a Runner may know: hidden diamonds don't say where they are. */
-export const runnerView = (d: Diamond): Diamond => (d.place.at === 'spot' || d.place.at === 'tray' ? { id: d.id, place: { at: 'tray' } } : d);
+/** What a Runner may know: hidden diamonds don't say where (or what) they are, and a cursed one
+ *  passes for plain until it's banked. */
+export const runnerView = (d: Diamond): Diamond =>
+  d.place.at === 'spot' || d.place.at === 'tray'
+    ? { id: d.id, place: { at: 'tray' } }
+    : d.kind === 'cursed' && d.place.at !== 'banked'
+      ? { id: d.id, place: d.place }
+      : d;
 
 /** A spot's box in art px. */
 export const spotBox = (s: HidingSpot) => ({ x0: s.rect[0] * TILE, y0: s.rect[1] * TILE, x1: (s.rect[2] + 1) * TILE, y1: (s.rect[3] + 1) * TILE });

@@ -5,10 +5,10 @@ import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
 import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
-import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
+import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, RED_EXTRA_SLOW, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { cleanName } from './data/names';
 import { BOOST, FLARE, HS_SCORE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, isGameMode, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
-import { CUSTOM_MIN, CUSTOM_PAD, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
+import { CUSTOM_MIN, CUSTOM_PAD, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
@@ -82,10 +82,6 @@ interface Remote {
 // Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
 // that). Bank it by walking into the GETAWAY zone on the street, in tiles.
 const CARRY_SLOW = 0.35;
-// A knocked-out Runner respawns at the map entrance. The wait grows with every knockout this
-// round and with the loot they're worth: the diamond in their hands, and each one they've banked.
-const KO_RESPAWN = { baseMs: 3000, perKnockoutMs: 2500, carryingMs: 4000, perBankedMs: 1000, maxMs: 20000 };
-const KO_HP = 50;
 const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#ff4fb0' };
 // ---------- This tab's player, across reloads and dropped connections ----------
 // The key is per tab (sessionStorage): it survives a reload, and two tabs on one laptop are two
@@ -177,7 +173,7 @@ async function boot() {
   const isGhost = (id: string) => caught.has(id) || escaped.has(id);
   /** The hiding place I'm in, if any; sprint noises the Seeker heard; when I last searched. */
   let hiddenIn: string | null = null;
-  const noises: { x: number; y: number; at: number }[] = [];
+  const noises: { x: number; y: number; at: number; kind: 'step' | 'door' | 'search'; deck?: MapId }[] = [];
   let lastSeek = 0;
   /** This deck's hiding places (Hide & Seek only). */
   const hidePlaces = (): HideSpot[] => (hideSeek() ? estateData.hiding ?? [] : []);
@@ -347,6 +343,8 @@ async function boot() {
   const searched = new Set<string>();
   let glints = new Set<string>();
   let bankedN = 0;
+  /** The red diamond I was last told I'm holding (to say so once). */
+  let lastRedId = '';
   let needN = 0;
   let totalN = 0;
   /** The furniture I'm searching (holding E), and since when. */
@@ -388,8 +386,7 @@ async function boot() {
   let hp = MAX_HP;
   let knockedOut = false;
   let respawnAt = 0;
-  /** This round's knockouts so far, and why the current wait is as long as it is. */
-  let knockouts = 0;
+  /** When I went down, and why the wait (from the server, which times it) is as long as it is. */
   let koStartedAt = 0;
   let koReasons: string[] = [];
   const trapFiredAt = new Map<string, number>();
@@ -620,7 +617,6 @@ async function boot() {
     hp = MAX_HP;
     knockedOut = false;
     respawnAt = 0;
-    knockouts = 0;
     me.stunFrames = 0;
     trapFiredAt.clear();
     trapHits.clear();
@@ -813,7 +809,12 @@ async function boot() {
         bankedN = msg.banked;
         needN = msg.need;
         totalN = msg.total;
-        if (!myDiamond()) hud.setCarrying(null);
+        {
+          const mine = myDiamond();
+          if (!mine) hud.setCarrying(null);
+          else if (mine.kind === 'red' && mine.id !== lastRedId) hud.setCarrying('RED DIAMOND · WORTH 3 · HEAVY · TAKE IT TO THE GETAWAY');
+          lastRedId = mine?.kind === 'red' ? mine.id : '';
+        }
         break;
       }
       case 'glints':
@@ -838,6 +839,18 @@ async function boot() {
       }
       case 'diamondEvent': {
         const who = msg.id === myId ? 'You' : esc(msg.name);
+        if (msg.kind === 'alarm') {
+          // A cursed diamond banked: worth nothing, and every trap is ready again.
+          sfx('alert');
+          const by = msg.id === myId ? me : remotes.get(msg.id)?.bandit;
+          if (by) {
+            particles.burst(by.x, by.y - 14, '#9b6bff', 36, 2.4);
+            particles.pop(by.x, by.y - 36, 'FAKE!', '#c9a6ff');
+          }
+          trapImpact('#9b6bff', 4, 500);
+          hud.alert(`<span class="who">${who}</span> <b>banked a FAKE diamond!</b><span class="where">ALARM · every trap is ready again</span>`, 'danger');
+          break;
+        }
         const what = msg.kind === 'found' ? 'found a diamond' : msg.kind === 'banked' ? `banked a diamond · ${bankedN}/${needN}` : 'dropped a diamond';
         if (msg.kind === 'banked') {
           sfx('banked');
@@ -987,8 +1000,11 @@ async function boot() {
         break;
       }
       case 'noise':
-        noises.push({ x: msg.x, y: msg.y, at: performance.now() });
-        sfx('footstep');
+        noises.push({ x: msg.x, y: msg.y, at: performance.now(), kind: msg.kind ?? 'step', deck: msg.deck });
+        if (hideSeek() || msg.kind !== 'step') sfx('footstep');
+        break;
+      case 'knockout':
+        knockoutTimed(msg.ms, msg.reasons);
         break;
       case 'hsAbility':
         hsReady[msg.ability] = msg.readyMs < 0 ? Infinity : performance.now() + msg.readyMs;
@@ -1220,7 +1236,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1345,20 +1361,26 @@ async function boot() {
     hud.setHealth(hp);
   }
 
+  /** Down: the server times the wait (a 'knockout' message says how long). Until it does, wait. */
   function beginKnockout() {
-    // Read what I'm worth now, before the server takes the diamond out of my hands.
-    const carrying = !!myDiamond();
-    const banked = diamonds.filter((d) => d.place.at === 'banked' && d.place.by === myId).length;
-    const ms = Math.min(KO_RESPAWN.maxMs, KO_RESPAWN.baseMs + knockouts * KO_RESPAWN.perKnockoutMs + (carrying ? KO_RESPAWN.carryingMs : 0) + banked * KO_RESPAWN.perBankedMs);
-    koReasons = [];
-    if (knockouts) koReasons.push(`+${(knockouts * KO_RESPAWN.perKnockoutMs) / 1000}s knocked out ${knockouts} time${knockouts > 1 ? 's' : ''} before`);
-    if (carrying) koReasons.push(`+${KO_RESPAWN.carryingMs / 1000}s carrying a diamond`);
-    if (banked) koReasons.push(`+${(banked * KO_RESPAWN.perBankedMs) / 1000}s ${banked} diamond${banked > 1 ? 's' : ''} banked`);
-    knockouts++;
     knockedOut = true;
     koStartedAt = performance.now();
+    respawnAt = Infinity;
+    koReasons = [];
+    me.stun(Math.ceil((KO_RESPAWN.maxMs / 1000) * 60));
+  }
+
+  function knockoutTimed(ms: number, reasons: string[]) {
+    if (!knockedOut) {
+      // Rejoined while down.
+      hp = 0;
+      hud.setHealth(hp);
+      knockedOut = true;
+    }
+    koStartedAt = performance.now();
     respawnAt = koStartedAt + ms;
-    me.stun(Math.ceil((ms / 1000) * 60));
+    koReasons = reasons;
+    me.stunFrames = Math.ceil((ms / 1000) * 60);
   }
 
   function respawnRunner() {
@@ -1685,6 +1707,8 @@ async function boot() {
       return;
     }
     if (knockedOut) {
+      // No word from the server (it shouldn't happen): the longest wait.
+      if (respawnAt === Infinity && performance.now() - koStartedAt > 3000) respawnAt = koStartedAt + KO_RESPAWN.maxMs;
       if (performance.now() >= respawnAt) respawnRunner();
       else {
         me.update({ dx: 0, dy: 0, sprint: false }, estate);
@@ -1698,7 +1722,7 @@ async function boot() {
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
       const now = performance.now();
-      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (myDiamond() ? 1 - CARRY_SLOW * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1);
+      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (myDiamond() ? 1 - (CARRY_SLOW + (myDiamond()!.kind === 'red' ? RED_EXTRA_SLOW : 0)) * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1);
       // Confusion Gas: left is right and up is down.
       // (In a hiding place you can't move.)
       const move = hiddenIn ? { ...input, dx: 0, dy: 0, sprint: false } : input;
@@ -1740,8 +1764,9 @@ async function boot() {
     const mine = myDiamond();
     const order = { banked: 0, mine: 1, carried: 2, floor: 3, hidden: 4 } as const;
     const gems = diamonds
-      .map((d) => (d.place.at === 'banked' ? 'banked' : d.place.at === 'carried' ? (d === mine ? 'mine' : 'carried') : d.place.at === 'floor' ? 'floor' : 'hidden') as keyof typeof order)
-      .sort((a, b) => order[a] - order[b]);
+      .map((d) => ({ state: (d.place.at === 'banked' ? 'banked' : d.place.at === 'carried' ? (d === mine ? 'mine' : 'carried') : d.place.at === 'floor' ? 'floor' : 'hidden') as keyof typeof order, kind: d.kind }))
+      .sort((a, b) => order[a.state] - order[b.state])
+      .map((g) => (g.kind ? `${g.state} ${g.kind}` : g.state));
     const sab = !!match?.saboteur;
     const text =
       phase === 'setup'
@@ -1749,8 +1774,8 @@ async function boot() {
           ? `Hide all ${totalN}, then guard them with traps`
           : `The Saboteur is hiding ${totalN} diamonds...`
         : sab
-          ? `Stop them banking ${needN} · ${bankedN}/${needN} banked`
-          : `Bank ${needN} of ${totalN} at the GETAWAY · ${bankedN}/${needN}`;
+          ? `Stop them banking ${needN} pts · ${bankedN}/${needN} banked`
+          : `Bank ${needN} pts at the GETAWAY · ${bankedN}/${needN} · red = 3`;
     hud.setObjective(sab ? 'GUARD THE DIAMONDS' : 'FIND THE DIAMONDS', gems, text);
   }
 
@@ -2040,11 +2065,12 @@ async function boot() {
     drawFloorDiamonds(camX, camY);
     drawDiamondFx(camX, camY);
     particles.draw(ctx, camX, camY);
-    if (myDiamond()) carriedGem(me, camX, camY);
-    for (const r of remotes.values()) if (r.state.carrying) carriedGem(r.bandit, camX, camY);
+    if (myDiamond()) carriedGem(me, camX, camY, myDiamond());
+    for (const [id, r] of remotes) if (r.state.carrying) carriedGem(r.bandit, camX, camY, diamonds.find((d) => d.place.at === 'carried' && d.place.by === id));
     ctx.restore();
     drawGetawayLabel(camX, camY);
     if (hideSeek() && !result && !isGhost(myId)) drawDarkness(camX, camY);
+    if (!result) drawNoises(camX, camY);
     if (hideSeek() && !result) drawHideSeekMarks(camX, camY);
     if (settings.values.nameTags && !result) drawNameTags(camX, camY);
     if (!result) drawPings(camX, camY);
@@ -2304,25 +2330,56 @@ async function boot() {
     if (html !== hsBarHtml) hsBar.innerHTML = hsBarHtml = html;
   }
 
-  /** Hide & Seek over the dark: the Seeker sees noise rings; everyone sees the open exit. */
-  function drawHideSeekMarks(camX: number, camY: number) {
+  /**
+   * Noises only the Saboteur (or Seeker) hears: a ring where it happened. Heists: sprinting
+   * (yellow), a door (orange) or a search (red), for 2 s, with an arrow at the edge if off screen.
+   */
+  function drawNoises(camX: number, camY: number) {
     const now = performance.now();
+    const life = hideSeek() ? 700 : 2000;
     for (let i = noises.length - 1; i >= 0; i--) {
       const n = noises[i];
-      const t = (now - n.at) / 700;
+      const t = (now - n.at) / life;
       if (t >= 1) {
         noises.splice(i, 1);
         continue;
       }
+      if (n.deck && !here(n.deck)) continue;
+      const color = n.kind === 'search' ? '#ff6b6b' : n.kind === 'door' ? '#ffb02e' : '#ffe39a';
+      const size = n.kind === 'step' ? 22 : 34;
+      const pad = 24 * dpr;
+      const rx = (n.x - camX) * scale;
+      const ry = (n.y - 6 - camY) * scale;
+      const x = Math.max(pad, Math.min(canvas.width - pad, rx));
+      const y = Math.max(pad, Math.min(canvas.height - pad, ry));
       ctx.save();
-      ctx.globalAlpha = 0.8 * (1 - t);
-      ctx.strokeStyle = '#ffe39a';
+      ctx.globalAlpha = 0.85 * (1 - t);
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
       ctx.lineWidth = 2 * dpr;
-      ctx.beginPath();
-      ctx.arc((n.x - camX) * scale, (n.y - 6 - camY) * scale, (6 + t * 22) * scale, 0, Math.PI * 2);
-      ctx.stroke();
+      // Two rings rippling out.
+      for (const k of [0, 0.5]) {
+        const q = ((now - n.at) / 700 + k) % 1;
+        ctx.beginPath();
+        ctx.arc(x, y, (6 + q * size) * (x === rx && y === ry ? scale : dpr), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (x !== rx || y !== ry) {
+        const a = Math.atan2(ry - y, rx - x);
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * 14 * dpr, y + Math.sin(a) * 14 * dpr);
+        ctx.lineTo(x + Math.cos(a + 2.5) * 8 * dpr, y + Math.sin(a + 2.5) * 8 * dpr);
+        ctx.lineTo(x + Math.cos(a - 2.5) * 8 * dpr, y + Math.sin(a - 2.5) * 8 * dpr);
+        ctx.closePath();
+        ctx.fill();
+      }
       ctx.restore();
     }
+  }
+
+  /** Hide & Seek over the dark: the Seeker sees noise rings; everyone sees the open exit. */
+  function drawHideSeekMarks(camX: number, camY: number) {
+    const now = performance.now();
     // The Seeker's heartbeat scan: occupied hiding places near them pulse red.
     if (now < scan.until) {
       for (const sp of estate.data.hiding ?? []) {
@@ -2635,10 +2692,13 @@ async function boot() {
   }
 
   /** The diamond a bandit carries, held up over their head. */
-  function carriedGem(b: Bandit, camX: number, camY: number) {
+  /** A diamond's colour: red ones red, a cursed one purple (only the Saboteur knows which). */
+  const gemColor = (d: Diamond | undefined) => (d?.kind === 'red' ? '#ff4b5c' : d?.kind === 'cursed' ? '#9b6bff' : '#7ceaff');
+
+  function carriedGem(b: Bandit, camX: number, camY: number, d?: Diamond) {
     const x = b.x - camX;
     const y = b.y - DRAW_H - 6 - camY + Math.sin(frame / 10) * 1.5;
-    gem(x, y, 5);
+    gem(x, y, d?.kind === 'red' ? 6 : 5, gemColor(d));
     if (frame % 40 < 10) twinkle(x + 4, y - 4, 2);
   }
 
@@ -2673,7 +2733,7 @@ async function boot() {
         }
         if (d) {
           // The Saboteur sees each hidden diamond, and a shield when a trap guards it.
-          gem(c.x - camX, c.y - camY + Math.sin(frame / 14 + c.x) * 1, 4, '#7ceaff', phase === 'setup' ? 1 : 0.8);
+          gem(c.x - camX, c.y - camY + Math.sin(frame / 14 + c.x) * 1, 4, gemColor(d), phase === 'setup' ? 1 : 0.8);
           if (guarded(sp)) shield(c.x - camX + 7, c.y - camY - 7);
         }
       } else if (phase === 'live') {
@@ -2732,7 +2792,7 @@ async function boot() {
       ctx.ellipse(x, y + 2, 9, 4, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
-      gem(x, y - 3 - Math.abs(Math.sin(frame / 12)) * 2, 4);
+      gem(x, y - 3 - Math.abs(Math.sin(frame / 12)) * 2, 4, gemColor(d));
     }
   }
 
@@ -3083,13 +3143,14 @@ async function boot() {
   /** While I'm knocked out: the countdown to respawning, and what made it that long. */
   function drawKnockout() {
     if (!knockedOut || scene !== 'match' || result) return;
-    const left = Math.max(0, respawnAt - performance.now());
-    const total = Math.max(1, respawnAt - koStartedAt);
+    const timed = respawnAt !== Infinity;
+    const left = timed ? Math.max(0, respawnAt - performance.now()) : 1;
+    const total = timed ? Math.max(1, respawnAt - koStartedAt) : 1;
     const cx = canvas.width / 2;
     const cy = canvas.height * 0.3; // above my head, below the round timer
     const big = Math.round(14 * dpr);
     const small = Math.round(7 * dpr);
-    const lines = koReasons.length ? koReasons : ['first knockout this round'];
+    const lines = koReasons.length ? koReasons : [timed ? 'first knockout this round' : '...'];
     const w = 300 * dpr;
     const h = (54 + lines.length * 12) * dpr;
     ctx.save();
@@ -3102,7 +3163,7 @@ async function boot() {
     ctx.textBaseline = 'top';
     ctx.font = `${big}px "Press Start 2P"`;
     ctx.fillStyle = '#ff8a8a';
-    ctx.fillText(`KNOCKED OUT · ${Math.ceil(left / 1000)}`, cx, cy - h / 2 + 10 * dpr);
+    ctx.fillText(timed ? `KNOCKED OUT · ${Math.ceil(left / 1000)}` : 'KNOCKED OUT', cx, cy - h / 2 + 10 * dpr);
     // The bar drains to the respawn.
     const bw = w - 32 * dpr;
     ctx.fillStyle = '#2a2236';

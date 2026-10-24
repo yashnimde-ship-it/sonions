@@ -11,10 +11,10 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
-import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom } from '../src/data/diamonds.ts';
+import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
-import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
+import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, KO_HP, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
@@ -49,6 +49,16 @@ interface Client {
   /** When this player last revived a teammate, and last pinged (ms). */
   lastRevive?: number;
   lastPing?: number;
+  /** Heist knockouts this round; when this knockout's wait ends (0: not down) and why. */
+  koCount?: number;
+  koUntil?: number;
+  koReasons?: string[];
+  /** Health the game may claim above what we last heard (a heal), until when. */
+  hpGrant?: number;
+  hpGrantUntil?: number;
+  /** When First Aid was last spent (a heal for a teammate must follow it), and the last noise. */
+  firstAidAt?: number;
+  lastNoise?: number;
   /** 'lobby' or the id of the match the player is in. */
   room: string;
   /** When the player stepped into the portal they are standing in (ms), keyed by portal size. */
@@ -617,6 +627,9 @@ function startRound(matchId: string) {
     c.state.carrying = false;
     c.state.hp = MAX_HP;
     c.state.stunned = false;
+    c.koCount = 0;
+    c.koUntil = 0;
+    c.hpGrant = 0;
   });
   saboteurs.set(matchId, saboteur);
   const hs = isHideSeek(matchId);
@@ -634,7 +647,9 @@ function startRound(matchId: string) {
   placedTraps.set(matchId, new Map());
   // The diamonds start in the Saboteur's hands; they hide them during setup.
   const total = hs ? 0 : diamondCount(size);
-  vaults.set(matchId, { diamonds: Array.from({ length: total }, (_, i) => ({ id: `d${i + 1}`, place: { at: 'tray' } })), searched: new Set(), banked: 0, need: diamondsToWin(total), winner: null, hits: 0, glints: new Map(), lastSearch: new Map() });
+  const kinds = diamondKinds(total);
+  const gems: Diamond[] = kinds.map((kind, i) => ({ id: `d${i + 1}`, place: { at: 'tray' }, ...(kind ? { kind } : {}) }));
+  vaults.set(matchId, { diamonds: gems, searched: new Set(), banked: 0, need: diamondsToWin(gems.reduce((n, d) => n + valueOf(d), 0)), winner: null, hits: 0, glints: new Map(), lastSearch: new Map() });
   phases.set(matchId, { phase: 'setup', endsAt: Date.now() + (hs ? HIDE_TIME : SETUP_TIME) });
   trapState.set(matchId, new Map(MAPS[map].traps.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
@@ -873,11 +888,16 @@ function handle(c: Client, msg: ClientMsg) {
       const held = c.room !== 'lobby' ? carrierOf(vaults.get(c.room), s.id) : undefined;
       s.carrying = !!held;
       const hpBefore = s.hp;
-      s.hp = Math.max(0, Math.min(MAX_HP, Number(msg.hp) || 0));
-      if (c.room !== 'lobby' && hpBefore > 0 && s.hp === 0 && !isHideSeek(c.room)) {
+      const claimedHp = Math.max(0, Math.min(MAX_HP, Number(msg.hp) || 0));
+      const heistRunner = c.room !== 'lobby' && !isHideSeek(c.room) && saboteurs.get(c.room) !== s.id;
+      s.hp = heistRunner ? checkedHp(c, claimedHp, fromX, fromY) : claimedHp;
+      if (heistRunner && hpBefore > 0 && s.hp === 0) {
         const st = statsOf(c.room, s.id);
         if (st) st.knockouts++;
+        knockOut(c, held);
       }
+      // Heists: sprinting is loud. The Saboteur sees a ring where it happened.
+      if (heistRunner && s.hp > 0 && msg.sprint && msg.moving && phases.get(c.room)?.phase === 'live') makeNoise(c, 'step');
       s.stunned = !!msg.stunned;
       if (held && s.hp === 0) dropDiamond(c.room, s.id, s.x, s.y);
       const hunt = hunts.get(c.room);
@@ -975,7 +995,7 @@ function handle(c: Client, msg: ClientMsg) {
     case 'search': {
       // A Runner who held E next to a piece of furniture: is a diamond in there?
       const vault = vaults.get(c.room);
-      if (!vault || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || carrierOf(vault, s.id)) break;
+      if (!vault || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || carrierOf(vault, s.id) || s.hp <= 0) break;
       const spot = spotsOf(c.room).find((x) => x.id === msg.spot && spotDeck(c.room, x) === deckOf(c));
       const now = Date.now();
       // A Fake Loot chest looks like somewhere to search. It isn't.
@@ -986,6 +1006,7 @@ function handle(c: Client, msg: ClientMsg) {
       }
       if (!spot || distToSpot(spot, s.x, s.y) > SEARCH_REACH + 10 || now - (vault.lastSearch.get(s.id) ?? 0) < 900) break;
       vault.lastSearch.set(s.id, now);
+      makeNoise(c, 'search');
       const d = vault.diamonds.find((x) => x.place.at === 'spot' && x.place.spot === spot.id);
       if (d) {
         d.place = { at: 'carried', by: s.id };
@@ -998,7 +1019,7 @@ function handle(c: Client, msg: ClientMsg) {
     case 'pickup': {
       const vault = vaults.get(c.room);
       const d = vault?.diamonds.find((x) => x.id === msg.id);
-      if (!vault || !d || d.place.at !== 'floor' || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || carrierOf(vault, s.id)) break;
+      if (!vault || !d || d.place.at !== 'floor' || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || carrierOf(vault, s.id) || s.hp <= 0) break;
       if (onDeck(c.room, d.place.deck) !== deckOf(c) || Math.hypot(d.place.x - s.x, d.place.y - s.y) > PICKUP_REACH + 10) break;
       d.place = { at: 'carried', by: s.id };
       sendDiamonds(c.room);
@@ -1009,10 +1030,20 @@ function handle(c: Client, msg: ClientMsg) {
       const vault = vaults.get(c.room);
       const d = vault && carrierOf(vault, s.id);
       const g = MAPS[deckOf(c)].getaway;
-      if (!vault || !d || phases.get(c.room)?.phase !== 'live') break;
+      if (!vault || !d || phases.get(c.room)?.phase !== 'live' || s.hp <= 0) break;
       if (s.x < g.x * TILE || s.x > (g.x + g.w) * TILE || s.y < g.y * TILE || s.y > (g.y + g.h) * TILE) break;
       d.place = { at: 'banked', by: s.id };
-      vault.banked++;
+      if (d.kind === 'cursed') {
+        // A fake. It's worth nothing, and the alarm goes off: every trap is ready again.
+        for (const [id, trap] of trapState.get(c.room) ?? []) {
+          if (trap.firedAt == null || (trap.activeUntil !== undefined && Date.now() < trap.activeUntil)) continue;
+          resetTrap(c.room, id, trap);
+        }
+        sendDiamonds(c.room);
+        announce(c.room, 'alarm', c, 'the getaway');
+        break;
+      }
+      vault.banked += valueOf(d);
       // The new count first, so the pop-up that follows shows it.
       sendDiamonds(c.room);
       announce(c.room, 'banked', c, 'the getaway');
@@ -1227,6 +1258,7 @@ function handle(c: Client, msg: ClientMsg) {
       if (Math.hypot(target.state.x - s.x, target.state.y - s.y) > REVIVE_REACH + 24 || now - (c.lastRevive ?? 0) < REVIVE_MS - 500) break;
       c.lastRevive = now;
       target.state.hp = REVIVE_HP;
+      target.koUntil = 0;
       const st = statsOf(c.room, s.id);
       if (st) st.revives++;
       for (const id of matches.get(c.room) ?? []) {
@@ -1239,7 +1271,9 @@ function handle(c: Client, msg: ClientMsg) {
       // Runner to Runner, in the same heist; the healer's game checks reach and cooldown.
       const sab = saboteurs.get(c.room);
       const target = clients.get(msg.target);
-      if (!sab || sab === s.id || !target || target.room !== c.room || msg.target === sab || !spendUse(c, 'firstAid')) break;
+      if (!sab || sab === s.id || !target || target.room !== c.room || msg.target === sab || Date.now() - (c.firstAidAt ?? 0) > 2000) break;
+      c.firstAidAt = 0;
+      grantHp(target, MAX_HP);
       send(target, { t: 'healed', by: s.id });
       break;
     }
@@ -1386,6 +1420,12 @@ function handle(c: Client, msg: ClientMsg) {
         break;
       }
       if (msg.ability === 'overclock') break;
+      if (msg.ability === 'firstAid') {
+        // First Aid heals me (or, just after, a teammate: see 'heal'). Spent here, once.
+        if (!spendUse(c, 'firstAid')) break;
+        c.firstAidAt = Date.now();
+        grantHp(c, MAX_HP);
+      }
       const out: ServerMsg = { t: 'ability', ability: msg.ability, by: s.id };
       for (const id of match) {
         const other = clients.get(id);
@@ -1403,6 +1443,7 @@ function handle(c: Client, msg: ClientMsg) {
         break;
       }
       if (lockUntil) doorLocks.get(c.room)?.delete(msg.id);
+      if (doorStates.get(c.room)?.get(msg.id) !== !!msg.open && !isHideSeek(c.room) && saboteurs.get(c.room) !== s.id && phases.get(c.room)?.phase === 'live') makeNoise(c, 'door');
       doorStates.get(c.room)?.set(msg.id, !!msg.open);
       for (const id of match) {
         const other = clients.get(id);
@@ -1449,7 +1490,70 @@ function sendDiamonds(matchId: string) {
   }
 }
 
-function announce(matchId: string, kind: 'found' | 'banked' | 'dropped', c: Client, area: string) {
+/**
+ * A heist Runner's health as we allow it. It only goes up by a heal or a revive, or by
+ * respawning at the entrance once the knockout wait is over; a knocked-out Runner stays put.
+ */
+function checkedHp(c: Client, claimed: number, fromX: number, fromY: number) {
+  const s = c.state;
+  const now = Date.now();
+  if (s.hp === 0 && c.koUntil) {
+    const spawn = mapData[deckOf(c)].spawn;
+    if (claimed > 0 && now >= c.koUntil - 250 && Math.hypot(s.x - spawn.x * TILE, s.y - spawn.y * TILE) <= 48) {
+      c.koUntil = 0;
+      return Math.min(claimed, KO_HP);
+    }
+    s.x = fromX;
+    s.y = fromY;
+    return 0;
+  }
+  if (claimed <= s.hp) return claimed;
+  const grant = now < (c.hpGrantUntil ?? 0) ? c.hpGrant ?? 0 : 0;
+  c.hpGrant = 0;
+  return Math.min(claimed, Math.max(s.hp, grant));
+}
+
+/** A heal: the Runner's game may claim up to `hp` in the next few seconds, even from a knockout. */
+function grantHp(c: Client, hp: number) {
+  c.hpGrant = hp;
+  c.hpGrantUntil = Date.now() + 3000;
+  c.koUntil = 0;
+}
+
+/** A Runner just went down: how long they stay down is ours to say. */
+function knockOut(c: Client, held: Diamond | undefined) {
+  const vault = vaults.get(c.room);
+  const banked = (vault?.diamonds ?? []).filter((d) => d.place.at === 'banked' && d.place.by === c.state.id).reduce((n, d) => n + valueOf(d), 0);
+  const { ms, reasons } = respawnWait(c.koCount ?? 0, held ? (held.kind === 'red' ? 'red' : 'plain') : null, banked);
+  c.koCount = (c.koCount ?? 0) + 1;
+  c.koUntil = Date.now() + ms;
+  c.koReasons = reasons;
+  send(c, { t: 'knockout', ms, reasons });
+}
+
+/** Heists: a noise only the Saboteur hears (a ring where it happened). Sprinting at most every 600 ms. */
+function makeNoise(c: Client, kind: 'step' | 'door' | 'search') {
+  const now = Date.now();
+  if (kind === 'step' && now - (c.lastNoise ?? 0) < 600) return;
+  if (kind === 'step') c.lastNoise = now;
+  const sab = clients.get(saboteurs.get(c.room) ?? '');
+  if (sab && sab !== c) send(sab, { t: 'noise', x: Math.round(c.state.x), y: Math.round(c.state.y), kind, deck: deckOf(c) });
+}
+
+/** A trap that's cooling down is ready again, for everyone. */
+function resetTrap(matchId: string, id: string, trap: NonNullable<ReturnType<typeof trapState.get>> extends Map<string, infer T> ? T : never) {
+  trap.firedAt = null;
+  trap.tripwired = false;
+  trap.activeFrom = undefined;
+  trap.activeUntil = undefined;
+  trap.pendingLaser = undefined;
+  for (const mid of matches.get(matchId) ?? []) {
+    const member = clients.get(mid);
+    if (member) send(member, { t: 'trapRefreshed', id });
+  }
+}
+
+function announce(matchId: string, kind: 'found' | 'banked' | 'dropped' | 'alarm', c: Client, area: string) {
   for (const id of matches.get(matchId) ?? []) {
     const member = clients.get(id);
     if (member) send(member, { t: 'diamondEvent', kind, id: c.state.id, name: c.state.name, area });
@@ -1526,9 +1630,9 @@ function finish(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
         if (id === sab) pts = hunt.caught.size * HS_SCORE.catch + (winner === 'saboteur' ? HS_SCORE.seekerWin : 0);
         else if (matches.get(matchId)?.has(id) && !hunt.caught.has(id) && winner !== 'none') pts = HS_SCORE.survive + (hunt.escaped.has(id) ? HS_SCORE.escape : 0);
       } else if (id === sab) {
-        pts = vault.hits * SCORE.trapHit + (vault.diamonds.length - vault.banked) * SCORE.unbanked + (winner === 'saboteur' ? SCORE.saboteurWin : 0);
+        pts = vault.hits * SCORE.trapHit + Math.max(0, vault.diamonds.reduce((n, d) => n + valueOf(d), 0) - vault.banked) * SCORE.unbanked + (winner === 'saboteur' ? SCORE.saboteurWin : 0);
       } else if (matches.get(matchId)?.has(id)) {
-        pts = vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).length * SCORE.bank + (winner === 'runners' ? SCORE.runnersWin : 0);
+        pts = vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).reduce((n, d) => n + valueOf(d), 0) * SCORE.bank + (winner === 'runners' ? SCORE.runnersWin : 0);
       }
       p.perRound[sr.round] = pts;
       // The awards' tally for this round.
@@ -1544,7 +1648,7 @@ function finish(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
       } else if (id === sab) st.sabHits += vault.hits;
       else {
         st.runnerRounds++;
-        st.banked += vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).length;
+        st.banked += vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id && d.kind !== 'cursed').length;
       }
     }
     sr.history[sr.round] = { map: matchMaps.get(matchId) ?? 'estate', saboteur: sr.players.get(sab ?? '')?.name ?? '?', winner };
@@ -1630,6 +1734,7 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
     send(known, { t: 'lobby', x: known.state.x, y: known.state.y, character: known.state.character });
   } else {
     send(known, matchMsg(known, known.room, true));
+    if (known.state.hp === 0 && (known.koUntil ?? 0) > Date.now()) send(known, { t: 'knockout', ms: known.koUntil! - Date.now(), reasons: known.koReasons ?? [] });
     send(known, resyncMsg(known.room, known));
     send(known, diamondsMsg(known, known.room));
     if (phases.get(known.room)?.phase === 'over') send(known, resultMsg(known.room));

@@ -145,7 +145,9 @@ export type ServerMsg =
   /** Your search finished: the diamond you found, or null if the furniture was empty. */
   | { t: 'searchResult'; spot: string; found: string | null }
   /** Someone found, banked or dropped a diamond: a pop-up for everyone. */
-  | { t: 'diamondEvent'; kind: 'found' | 'banked' | 'dropped'; id: string; name: string; area: string }
+  | { t: 'diamondEvent'; kind: 'found' | 'banked' | 'dropped' | 'alarm'; id: string; name: string; area: string }
+  /** You're knocked out: the server's wait before you may respawn, and why it's that long. */
+  | { t: 'knockout'; ms: number; reasons: string[] }
   /** The heist is over: who won, and where every diamond and trap really was. */
   | {
       t: 'result';
@@ -213,7 +215,8 @@ export type ServerMsg =
   /** Hide & Seek: the Seeker opened a hiding place; `found` is who was in it, if anyone. */
   | { t: 'searched'; spot: string; found: string | null; name: string }
   /** Hide & Seek (Seeker): someone sprinting, heard at (x, y). */
-  | { t: 'noise'; x: number; y: number }
+  /** A noise only the Saboteur/Seeker hears: sprinting, a door, a search (heists), on `deck`. */
+  | { t: 'noise'; x: number; y: number; kind?: 'step' | 'door' | 'search'; deck?: MapId }
   /** Your ability went off: ready again in readyMs; `left` uses (the Flare). */
   | { t: 'hsAbility'; ability: 'flare' | 'scan' | 'boost'; readyMs: number; left?: number }
   /** The Seeker fired a flare: this deck is lit for ms. */

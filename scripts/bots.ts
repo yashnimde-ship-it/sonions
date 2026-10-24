@@ -128,6 +128,8 @@ for (let i = 0; i < count; i++) {
     if (!inMatch || saboteur || ws.readyState !== WebSocket.OPEN) return;
     const hurt = others.find((o) => o.hp < 100);
     if (hurt) {
+      // First Aid is spent first (as the game does); the server then allows the heal.
+      send({ t: 'ability', ability: 'firstAid' });
       send({ t: 'heal', target: hurt.id });
       console.log(`Bot ${i + 1} sends First Aid to player ${hurt.id} (hp ${hurt.hp})`);
     }

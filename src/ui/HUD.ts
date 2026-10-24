@@ -18,7 +18,8 @@ export class HUD {
   private lastTimer = '';
 
   /** The heist's goal, always on screen: one gem per diamond (banked, carried, dropped, hidden). */
-  setObjective(title: string, gems: ('banked' | 'carried' | 'mine' | 'floor' | 'hidden')[], text: string) {
+  /** `gems`: each diamond's state class, plus 'red' or 'cursed' when it's special. */
+  setObjective(title: string, gems: string[], text: string) {
     const key = title + gems.join() + text;
     if (key === this.lastObjective) return;
     this.lastObjective = key;

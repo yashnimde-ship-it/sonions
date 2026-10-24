@@ -59,3 +59,32 @@ export function placementRefusal(placedKinds: Iterable<TrapKindId>, kind: TrapKi
 export const REVIVE_MS = 3000;
 export const REVIVE_REACH = 26;
 export const REVIVE_HP = 50;
+
+/**
+ * A knocked-out heist Runner's wait before respawning at the entrance, timed by the server. It
+ * grows with every knockout this round and with the loot they're worth: the diamond in their
+ * hands (a heavy red one more) and every point they've banked. They respawn with KO_HP.
+ */
+export const KO_RESPAWN = { baseMs: 3000, perKnockoutMs: 2500, carryingMs: 4000, redExtraMs: 2000, perBankedMs: 1000, maxMs: 20000 };
+export const KO_HP = 50;
+
+/** How long this knockout keeps a Runner down, and why (shown on their countdown). A cursed
+ *  diamond in their hands counts as plain, so the wait doesn't give it away. */
+export function respawnWait(knockouts: number, carrying: 'plain' | 'red' | null, bankedPoints: number) {
+  const reasons: string[] = [];
+  let ms = KO_RESPAWN.baseMs;
+  if (knockouts) {
+    ms += knockouts * KO_RESPAWN.perKnockoutMs;
+    reasons.push(`+${(knockouts * KO_RESPAWN.perKnockoutMs) / 1000}s knocked out ${knockouts} time${knockouts > 1 ? 's' : ''} before`);
+  }
+  if (carrying) {
+    const extra = KO_RESPAWN.carryingMs + (carrying === 'red' ? KO_RESPAWN.redExtraMs : 0);
+    ms += extra;
+    reasons.push(`+${extra / 1000}s carrying a ${carrying === 'red' ? 'red ' : ''}diamond`);
+  }
+  if (bankedPoints) {
+    ms += bankedPoints * KO_RESPAWN.perBankedMs;
+    reasons.push(`+${(bankedPoints * KO_RESPAWN.perBankedMs) / 1000}s ${bankedPoints} point${bankedPoints > 1 ? 's' : ''} banked`);
+  }
+  return { ms: Math.min(KO_RESPAWN.maxMs, ms), reasons };
+}

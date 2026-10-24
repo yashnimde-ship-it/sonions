@@ -1561,6 +1561,10 @@ kbd {
 .obj-gems { display: flex; flex-wrap: wrap; gap: 3px; padding: 2px 0; }
 .obj-gems .gem { width: 11px; height: 11px; }
 .obj-gems .gem.hidden { background: #39455e; }
+/* Special diamonds: a red one (worth 3), a cursed fake (purple once known). */
+.gem.red { box-shadow: 0 0 0 2px #ff4b5c; }
+.gem.red.banked, .gem.red.carried, .gem.red.mine, .gem.red.floor { background: #ff4b5c; }
+.gem.cursed, .obj-gems .gem.cursed { background: #9b6bff; opacity: 0.6; }
 .obj-text { font-size: 8px; color: #e8e4f4; line-height: 1.5; }
 
 #setup-panel {
