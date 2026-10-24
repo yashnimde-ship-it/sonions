@@ -10,7 +10,7 @@ export interface SettingsValues {
   pixelPerfect: boolean;
   /** Trap, diamond and round sound effects. */
   sound: boolean;
-  /** The lobby's waiting music. */
+  /** The lobby's waiting music and the heist soundtrack. */
   music: boolean;
 }
 
@@ -22,7 +22,7 @@ export const SETTING_LABELS: Record<keyof SettingsValues, [string, string]> = {
   lighting: ['Lighting effects', 'Lamplight and dusk shading'],
   pixelPerfect: ['Sharp pixels', 'Whole-number scaling; the camera follows you'],
   sound: ['Sound effects', 'Traps, diamonds and round results'],
-  music: ['Lobby music', 'A theme while you wait in the lobby'],
+  music: ['Music', 'The lobby theme and the heist soundtrack'],
 };
 
 export class Settings {

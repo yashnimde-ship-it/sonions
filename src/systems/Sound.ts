@@ -2,6 +2,7 @@
 // quiet: a few oscillator notes and noise bursts per effect. Browsers only start audio after
 // the player has clicked or pressed a key, so the context is created on the first sound.
 
+import type { Surface } from '../data/surfaces';
 import type { TrapKindId } from '../data/trapKinds';
 
 export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen' | 'award' | 'revive' | 'coin' | 'combo' | 'ping';
@@ -20,6 +21,11 @@ export function unlockSound() {
   if (a?.state === 'suspended') void a.resume();
 }
 
+/** The audio context for the soundtrack (it has its own volume and setting), or null. */
+export function audioOut() {
+  return audio();
+}
+
 function audio() {
   if (!ctx) {
     const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -34,7 +40,7 @@ function audio() {
 }
 
 /** One note: a wave sliding from `from` to `to` Hz over `dur` seconds, starting `at` seconds in. */
-function tone(a: AudioContext, type: OscillatorType, from: number, to: number, dur: number, at = 0, vol = 0.5) {
+function tone(a: AudioContext, type: OscillatorType, from: number, to: number, dur: number, at = 0, vol = 0.5, out: AudioNode = master!) {
   const t = a.currentTime + at;
   const o = a.createOscillator();
   const g = a.createGain();
@@ -44,13 +50,13 @@ function tone(a: AudioContext, type: OscillatorType, from: number, to: number, d
   g.gain.setValueAtTime(0.0001, t);
   g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g).connect(master!);
+  o.connect(g).connect(out);
   o.start(t);
   o.stop(t + dur + 0.02);
 }
 
 /** A burst of noise through a filter (thuds, hisses, crackles). */
-function noise(a: AudioContext, dur: number, at = 0, vol = 0.5, filter: BiquadFilterType = 'lowpass', freq = 800) {
+function noise(a: AudioContext, dur: number, at = 0, vol = 0.5, filter: BiquadFilterType = 'lowpass', freq = 800, out: AudioNode = master!) {
   const t = a.currentTime + at;
   const buf = a.createBuffer(1, Math.ceil(a.sampleRate * dur), a.sampleRate);
   const data = buf.getChannelData(0);
@@ -63,8 +69,51 @@ function noise(a: AudioContext, dur: number, at = 0, vol = 0.5, filter: BiquadFi
   const g = a.createGain();
   g.gain.setValueAtTime(vol, t);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  src.connect(f).connect(g).connect(master!);
+  src.connect(f).connect(g).connect(out);
   src.start(t);
+}
+
+/**
+ * One footstep on `surface`. `vol` is 0..1 (quieter far away, louder sprinting); `pan` puts it
+ * left (-1) or right (1). Wood knocks, metal rings, carpet thuds softly, stone and tile click,
+ * grass rustles.
+ */
+export function footstep(surface: Surface, vol: number, pan = 0) {
+  if (!enabled || vol < 0.01) return;
+  const a = audio();
+  if (!a) return;
+  const out = a.createStereoPanner();
+  out.pan.value = Math.max(-1, Math.min(1, pan));
+  out.connect(master!);
+  const v = vol * (0.85 + Math.random() * 0.3);
+  const p = 0.92 + Math.random() * 0.16; // a little pitch wobble, so steps don't repeat exactly
+  switch (surface) {
+    case 'wood':
+      tone(a, 'triangle', 170 * p, 90, 0.07, 0, 0.5 * v, out);
+      noise(a, 0.06, 0, 0.3 * v, 'bandpass', 900 * p, out);
+      break;
+    case 'metal':
+      tone(a, 'sine', 110 * p, 60, 0.06, 0, 0.3 * v, out);
+      tone(a, 'square', 820 * p, 780 * p, 0.12, 0, 0.06 * v, out);
+      tone(a, 'sine', 1240 * p, 1200 * p, 0.18, 0, 0.12 * v, out);
+      noise(a, 0.05, 0, 0.25 * v, 'highpass', 3000, out);
+      break;
+    case 'carpet':
+      noise(a, 0.08, 0, 0.35 * v, 'lowpass', 260 * p, out);
+      break;
+    case 'stone':
+      noise(a, 0.04, 0, 0.35 * v, 'highpass', 2200 * p, out);
+      tone(a, 'sine', 140 * p, 70, 0.05, 0, 0.25 * v, out);
+      break;
+    case 'tile':
+      noise(a, 0.035, 0, 0.35 * v, 'bandpass', 2600 * p, out);
+      tone(a, 'triangle', 420 * p, 300, 0.04, 0, 0.15 * v, out);
+      break;
+    case 'grass':
+      noise(a, 0.09, 0, 0.22 * v, 'bandpass', 3200 * p, out);
+      break;
+  }
+  setTimeout(() => out.disconnect(), 400);
 }
 
 export function play(id: SoundId) {

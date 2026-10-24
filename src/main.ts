@@ -22,8 +22,10 @@ import { Particles } from './systems/Particles';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
 import { drawTrap } from './systems/TrapArt';
+import { heistMusicLevel, setHeistMusic, setHeistMusicEnabled } from './systems/HeistMusic';
 import { setLobbyMusic, setMusicEnabled } from './systems/Music';
-import { play as sfx, setSoundEnabled, unlockSound } from './systems/Sound';
+import { surfaceAt } from './data/surfaces';
+import { footstep, play as sfx, setSoundEnabled, unlockSound } from './systems/Sound';
 import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
 import { HUD } from './ui/HUD';
 import { LobbyUI, type MapInfo, type StartState } from './ui/LobbyUI';
@@ -870,6 +872,7 @@ async function boot() {
         const who = msg.id === myId ? 'You' : esc(msg.name);
         if (msg.kind === 'alarm') {
           // A cursed diamond banked: worth nothing, and every trap is ready again.
+          alarmAt = performance.now();
           sfx('alert');
           const by = msg.id === myId ? me : remotes.get(msg.id)?.bandit;
           if (by) {
@@ -1186,6 +1189,7 @@ async function boot() {
   };
   setSoundEnabled(settings.values.sound);
   setMusicEnabled(settings.values.music);
+  setHeistMusicEnabled(settings.values.music);
   // Web Audio must be started during a real user gesture; most game sounds arrive later via WS.
   window.addEventListener('pointerdown', unlockSound, { once: true });
   window.addEventListener('keydown', unlockSound, { once: true });
@@ -1193,6 +1197,7 @@ async function boot() {
     setSoundEnabled(settings.values.sound);
     if (settings.values.sound) unlockSound();
     setMusicEnabled(settings.values.music);
+    setHeistMusicEnabled(settings.values.music);
     frameCamera(true);
   });
 
@@ -1265,7 +1270,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1806,6 +1811,95 @@ async function boot() {
           ? `Stop them banking ${needN} pts · ${bankedN}/${needN} banked`
           : `Bank ${needN} pts at the GETAWAY · ${bankedN}/${needN} · red = 3`;
     hud.setObjective(sab ? 'GUARD THE DIAMONDS' : 'FIND THE DIAMONDS', gems, text, vaultLine(sab));
+  }
+
+  /** Footsteps: one every STEP_PX walked, on whatever the floor is in that room. Mine are a
+   *  little quieter than close-by teammates' would be; others fade with distance and pan. */
+  const STEP_PX = 30;
+  const HEAR_PX = 170;
+  const walked = new Map<string, { x: number; y: number; d: number }>();
+  /** My recent steps' floors (for playtests). */
+  const stepLog: string[] = [];
+  function footsteps() {
+    const inMatch = scene === 'match';
+    if (scene !== 'lobby' && !inMatch) return;
+    // The heist Saboteur watches from above: no body, no feet, and nobody's steps to hear.
+    const overseer = inMatch && !!match?.saboteur && !hideSeek();
+    const floor = (x: number, y: number) => (inMatch ? surfaceAt(deckId, estate.areaAt(x, y - 4)) : surfaceAt('lobby', ''));
+    const stepOf = (id: string, b: Bandit, sprint: boolean) => {
+      const w = walked.get(id);
+      if (!w) {
+        walked.set(id, { x: b.x, y: b.y, d: 0 });
+        return;
+      }
+      const moved = Math.hypot(b.x - w.x, b.y - w.y);
+      w.x = b.x;
+      w.y = b.y;
+      if (moved > 40) {
+        // A teleport (respawn, stairs): not a step.
+        w.d = 0;
+        return;
+      }
+      w.d += moved;
+      if (w.d < STEP_PX) return;
+      w.d -= STEP_PX;
+      const mine = id === myId;
+      const dx = b.x - me.x;
+      const far = Math.hypot(dx, b.y - me.y);
+      const vol = (mine ? 0.45 : 0.6 * Math.max(0, 1 - far / HEAR_PX)) * (sprint ? 1.4 : 1);
+      const surface = floor(b.x, b.y);
+      footstep(surface, vol, mine ? 0 : dx / HEAR_PX);
+      if (mine) stepLog.push(surface);
+    };
+    if (overseer) return;
+    if (!knockedOut && hiddenIn === null) stepOf(myId, me, lastSprint);
+    for (const [id, r] of remotes) {
+      if (r.state.offline || (inMatch && !here(r.state.deck))) continue;
+      stepOf(id, r.bandit, r.state.sprint);
+    }
+  }
+
+  /** When I last lost health, and when the alarm last went off (both raise the music). */
+  let dangerAt = -1e9;
+  let alarmAt = -1e9;
+  let lastHpSeen = MAX_HP;
+  /** Danger in the last 45 s of a heist: the "alarm phase", when the music is at its most tense. */
+  const ALARM_PHASE_MS = 45_000;
+
+  /**
+   * How tense the soundtrack is, 0 (calm sneaking) to 1 (frantic), or null for none. Heists:
+   * the last 45 s, the cursed-diamond alarm, getting hurt and carrying loot. Hide & Seek: how
+   * close the Seeker is (or, for the Seeker, the nearest Hider they can see).
+   */
+  function musicIntensity(): number | null {
+    if (scene !== 'match' || result || phase === 'over') return null;
+    const now = performance.now();
+    if (hp < lastHpSeen) dangerAt = now;
+    lastHpSeen = hp;
+    if (phase === 'setup') return 0.05;
+    const clamp = (v: number) => Math.max(0, Math.min(1, v));
+    const left = phaseEndsAt - now;
+    let i = 0.15;
+    if (left < ALARM_PHASE_MS) i += 0.15 + 0.4 * clamp(1 - left / ALARM_PHASE_MS);
+    if (now - alarmAt < 12_000) i += 0.45;
+    if (hideSeek()) {
+      if (match?.saboteur) {
+        const near = Math.min(Infinity, ...[...remotes.values()].filter((r) => here(r.state.deck)).map((r) => Math.hypot(r.bandit.x - me.x, r.bandit.y - me.y)));
+        i += 0.6 * clamp(1 - near / 200);
+      } else {
+        const seeker = remotes.get(seekerId() ?? '');
+        if (seeker && here(seeker.state.deck)) i += 0.75 * clamp(1 - Math.hypot(seeker.bandit.x - me.x, seeker.bandit.y - me.y) / 220);
+      }
+      if (now - dangerAt < 5000) i += 0.3;
+    } else if (match?.saboteur) {
+      i += 0.12 * diamonds.filter((d) => d.place.at === 'carried').length;
+    } else {
+      if (knockedOut) return 0.08;
+      if (myDiamond()) i += 0.15;
+      if (keycard?.holder === myId) i += 0.1;
+      if (now - dangerAt < 5000) i += 0.1 + 0.35 * (1 - (now - dangerAt) / 5000);
+    }
+    return clamp(i);
   }
 
   /** A vault door that the keycard hasn't opened yet. */
@@ -3453,8 +3547,10 @@ async function boot() {
     last = now;
     while (acc >= 1000 / 60) {
       update();
+      footsteps();
       acc -= 1000 / 60;
     }
+    setHeistMusic(musicIntensity());
     draw();
   }
   requestAnimationFrame(tick);
