@@ -5,7 +5,7 @@
 import type { Surface } from '../data/surfaces';
 import type { TrapKindId } from '../data/trapKinds';
 
-export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen' | 'award' | 'revive' | 'coin' | 'combo' | 'ping';
+export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen' | 'award' | 'revive' | 'coin' | 'combo' | 'ping' | 'count' | 'go';
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -266,6 +266,14 @@ export function play(id: SoundId) {
     case 'ping':
       tone(a, 'sine', 1568, 1568, 0.08, 0, 0.25);
       tone(a, 'sine', 2093, 2093, 0.14, 0.08, 0.2);
+      break;
+    case 'count':
+      tone(a, 'square', 523, 523, 0.14, 0, 0.22);
+      break;
+    case 'go':
+      // A bright chord with a whoosh: the round is on.
+      [523, 659, 784, 1047].forEach((f) => tone(a, 'square', f, f, 0.45, 0, 0.12));
+      noise(a, 0.35, 0, 0.3, 'highpass', 2500);
       break;
     case 'alert':
       tone(a, 'square', 660, 660, 0.08, 0, 0.15);

@@ -10,7 +10,7 @@ import { cleanName } from './data/names';
 import { BOOST, FLARE, HS_SCORE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, isGameMode, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
 import { CUSTOM_MIN, CUSTOM_PAD, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
-import { Bandit, DRAW_H } from './entities/Bandit';
+import { Bandit, DRAW_H, DRAW_W } from './entities/Bandit';
 import { keyPressed, pollInput, readControls } from './input/Controls';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
 import { type EstateJson, TileMap, type Stairwell } from './map/TileMap';
@@ -313,7 +313,10 @@ async function boot() {
     (e) => {
       if (scene !== 'match' || !match?.saboteur) return;
       e.preventDefault();
-      sabScale = (sabScale || fitScale()) * (e.deltaY < 0 ? 1.15 : 1 / 1.15);
+      // Zoom by how far the wheel actually turned: a mouse notch (~100 px) is about 20%, while a
+      // trackpad sends lots of tiny events per swipe, so a light swipe only nudges it.
+      const px = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+      sabScale = (sabScale || fitScale()) * Math.exp(-Math.max(-120, Math.min(120, px)) * 0.002);
     },
     { passive: false },
   );
@@ -361,6 +364,30 @@ async function boot() {
   let reviving: { id: string; since: number } | null = null;
   /** Little animations: a diamond dropping into furniture, popping out, an empty search. */
   const particles = new Particles();
+  // The round's start: 3-2-1 in the last seconds of setup, then GO!, and a Runner's camera
+  // zooms from the whole map into their character.
+  const countEl = document.createElement('div');
+  countEl.id = 'countdown';
+  countEl.hidden = true;
+  document.getElementById('hud')!.append(countEl);
+  let countShown = 0;
+  let zoomInFrom = 0;
+  const ZOOM_IN_MS = 1400;
+  // Hidden again once it has played, or showing the HUD again would replay it.
+  countEl.addEventListener('animationend', () => (countEl.hidden = true));
+  function resetCount() {
+    countEl.hidden = true;
+    countEl.className = '';
+    countShown = 0;
+    zoomInFrom = 0;
+  }
+  function showCount(text: string, kind = '') {
+    countEl.textContent = text;
+    countEl.className = '';
+    void countEl.offsetWidth; // restart the animation
+    countEl.className = kind;
+    countEl.hidden = false;
+  }
   /** Teammates' pings: where, what, who, on which deck, and when (they last PING_MS). */
   const pings: { x: number; y: number; label: string; name: string; deck: string; at: number }[] = [];
   const PING_MS = 4000;
@@ -463,6 +490,13 @@ async function boot() {
     } else if (phase === 'setup' && !hideSeek()) {
       scale = fitScale();
       [tx, ty] = [w / 2, h / 2];
+    } else if (performance.now() - zoomInFrom < ZOOM_IN_MS && !hideSeek()) {
+      // GO!: swoop from the whole map down to me (ease in-out).
+      const t = (performance.now() - zoomInFrom) / ZOOM_IN_MS;
+      const e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+      scale = fitScale() + (ZOOM * dpr - fitScale()) * e;
+      [tx, ty] = [w / 2 + (tx - w / 2) * e, h / 2 + (ty - h / 2) * e];
+      snap = true;
     } else scale = ZOOM * dpr;
     camera.resize(canvas.width / scale, canvas.height / scale);
     if (scene === 'title') {
@@ -582,6 +616,8 @@ async function boot() {
   }
 
   function startMatch(msg: Extract<ServerMsg, { t: 'match' }>) {
+    resetCount();
+    me.resetPose();
     modeNow = msg.mode ?? 'heist';
     seekerNow = msg.seeker ?? '';
     if (!msg.resume) {
@@ -719,6 +755,8 @@ async function boot() {
         updateTrapBar();
         break;
       case 'lobby':
+        resetCount();
+        me.resetPose();
         match = null;
         sentPortal = null;
         result = null;
@@ -896,6 +934,7 @@ async function boot() {
           // Banked: gold everywhere at the getaway, and the points.
           const by = msg.id === myId ? me : remotes.get(msg.id)?.bandit;
           if (by) {
+            by.celebrate();
             particles.burst(by.x, by.y - 14, '#ffc94a', 40, 2.6);
             particles.burst(by.x, by.y - 14, '#ffffff', 12, 1.4);
             particles.pop(by.x, by.y - 36, msg.id === myId ? `+${SCORE.bank}` : 'BANKED!', '#ffc94a');
@@ -933,9 +972,15 @@ async function boot() {
         setupPanel.show(false);
         searching = null;
         if (phase === 'live') {
-          banner.innerHTML = `<span class="kicker">SETUP OVER</span><span>THE HEIST IS ON</span><span class="crew-list">${match?.saboteur ? 'Watch them. Right-click an unused trap to move it once.' : `Search the furniture (hold E), find the diamonds, bank ${needN || 'them'} at the GETAWAY.`}</span>`;
+          banner.innerHTML = hideSeek()
+            ? `<span class="kicker">READY OR NOT</span><span>THE HUNT IS ON</span><span class="crew-list">${match?.saboteur ? 'Find them in the dark. Q Flare, C Heartbeat, click to shoot.' : 'Stay hidden, or run. The main entrance opens near the end.'}</span>`
+            : `<span class="kicker">SETUP OVER</span><span>THE HEIST IS ON</span><span class="crew-list">${match?.saboteur ? 'Watch them. Right-click an unused trap to move it once.' : `Search the furniture (hold E), find the diamonds, bank ${needN || 'them'} at the GETAWAY.`}</span>`;
           banner.hidden = false;
           bannerUntil = performance.now() + BANNER_MS;
+          showCount(hideSeek() ? 'HUNT!' : 'GO!', hideSeek() ? 'go hunt' : 'go');
+          if (!hideSeek()) sfx('go'); // Hide & Seek plays its own hunt-start cue
+          countShown = 0;
+          if (!match?.saboteur && !hideSeek()) zoomInFrom = performance.now();
         }
         break;
       case 'unplace':
@@ -1277,7 +1322,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1653,7 +1698,13 @@ async function boot() {
       return;
     }
 
-    for (const r of remotes.values()) r.bandit.follow(r.state.x, r.state.y, r.state.facing, r.state.moving, r.state.sprint, r.state.stunned);
+    // Knocked-out Runners lie on the floor (and get back up with a hop when they're up again).
+    const heistLive = scene === 'match' && !hideSeek() && phase === 'live' && !result;
+    me.downed = heistLive && knockedOut;
+    for (const r of remotes.values()) {
+      r.bandit.downed = heistLive && r.state.hp === 0;
+      r.bandit.follow(r.state.x, r.state.y, r.state.facing, r.state.moving, r.state.sprint, r.state.stunned);
+    }
 
     if (scene === 'lobby') {
       if (lobby.panelOpen) {
@@ -1698,6 +1749,15 @@ async function boot() {
     const left = Math.max(0, phaseEndsAt - performance.now());
     const stage = hideSeek() ? (phase === 'setup' ? 'HIDE' : left <= ESCAPE_MS ? 'ESCAPE' : 'HUNT') : phase === 'setup' ? 'SETUP' : 'HEIST';
     hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${stage}`, left);
+    // 3, 2, 1 at the end of setup (the counting Seeker already has a big count on screen).
+    const tens = Math.ceil(left / 1000);
+    if (phase === 'setup' && !result && tens >= 1 && tens <= 3 && tens !== countShown) {
+      countShown = tens;
+      if (!(hideSeek() && match?.saboteur)) {
+        showCount(String(tens), 'num');
+        sfx('count');
+      }
+    }
     // Hide & Seek: a cue when the hunt starts and when the main entrance opens.
     if (hideSeek() && phase !== 'over' && stage !== lastStage) {
       if (stage === 'HUNT' && lastStage === 'HIDE') sfx('huntStart');
@@ -2783,14 +2843,41 @@ async function boot() {
     const y = getaway.y * ART_TILE - camY;
     const w = getaway.w * ART_TILE;
     const h = getaway.h * ART_TILE;
+    const carrying = !!myDiamond();
     ctx.save();
     ctx.fillStyle = '#6fe07a';
-    ctx.globalAlpha = myDiamond() ? 0.22 + 0.15 * Math.sin(frame / 8) : 0.12;
+    ctx.globalAlpha = carrying ? 0.22 + 0.15 * Math.sin(frame / 8) : 0.12 + 0.05 * Math.sin(frame / 20);
     ctx.fillRect(x, y, w, h);
     ctx.globalAlpha = 0.9;
     ctx.strokeStyle = '#6fe07a';
     ctx.setLineDash([4, 3]);
+    // The dashes march round the edge.
+    ctx.lineDashOffset = -frame / 4;
     ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    ctx.setLineDash([]);
+    if (phase === 'live' && !match?.saboteur && !result) {
+      // Chevrons on every side sliding in towards the zone; brighter while I've a diamond.
+      const slide = (frame / 3) % 8;
+      ctx.globalAlpha = carrying ? 0.95 : 0.45;
+      ctx.lineWidth = 2;
+      const chevron = (cx: number, cy: number, dx: number, dy: number) => {
+        const px = -dy;
+        const py = dx;
+        ctx.beginPath();
+        ctx.moveTo(cx - dx * 3 + px * 4, cy - dy * 3 + py * 4);
+        ctx.lineTo(cx + dx * 2, cy + dy * 2);
+        ctx.lineTo(cx - dx * 3 - px * 4, cy - dy * 3 - py * 4);
+        ctx.stroke();
+      };
+      for (const k of [0, 1]) {
+        const d = 18 - slide - k * 9;
+        if (d < 4) continue;
+        chevron(x + w / 2, y - d, 0, 1);
+        chevron(x + w / 2, y + h + d, 0, -1);
+        chevron(x - d, y + h / 2, 1, 0);
+        chevron(x + w + d, y + h / 2, -1, 0);
+      }
+    }
     ctx.restore();
   }
 
@@ -2922,9 +3009,18 @@ async function boot() {
 
   function carriedGem(b: Bandit, camX: number, camY: number, d?: Diamond) {
     const x = b.x - camX;
-    const y = b.y - DRAW_H - 6 - camY + Math.sin(frame / 10) * 1.5;
+    const y = b.y - DRAW_H - 6 - camY + Math.sin(frame / 10) * 1.5 - b.hop;
+    // It turns slowly (like a coin on its edge), with a glint each time it faces us.
+    const turn = Math.cos(frame / 14);
+    ctx.save();
+    ctx.translate(Math.round(x), 0);
+    ctx.scale(Math.max(0.25, Math.abs(turn)), 1);
+    ctx.translate(-Math.round(x), 0);
     gem(x, y, d?.kind === 'red' ? 6 : 5, gemColor(d));
-    if (frame % 40 < 10) twinkle(x + 4, y - 4, 2);
+    ctx.restore();
+    if (Math.abs(turn) > 0.96 || frame % 40 < 8) twinkle(x + 4, y - 4, 2);
+    // A trail of sparkles behind whoever's carrying it while they move.
+    if (b.moving && frame % 3 === 0) particles.sparkle(b.x - Math.sign(b.vx) * 4, b.y - DRAW_H - 4, Math.random() < 0.5 ? '#ffffff' : gemColor(d));
   }
 
   /** Hiding spots: outlined for the Saboteur in setup, with their diamonds; glints and searched marks for Runners. */
@@ -3061,11 +3157,13 @@ async function boot() {
       }
     }
     // Knocked-out teammates: a pulsing HELP cross over them, so the crew knows to come.
-    if (!match?.saboteur && phase === 'live') {
+    if (!match?.saboteur && phase === 'live' && !hideSeek()) {
       for (const o of remotes.values()) {
         if (o.state.hp !== 0 || !here(o.state.deck)) continue;
         const x = o.bandit.x - camX;
-        const y = o.bandit.y - DRAW_H - 10 - camY + Math.sin(frame / 7) * 2;
+        const bob = Math.sin(frame / 7) * 2;
+        // The cross just above the body (lying down, or still toppling), the word above the name tag.
+        const y = o.bandit.y - (o.bandit.downed ? DRAW_W : DRAW_H) - 12 - camY + bob;
         ctx.save();
         ctx.globalAlpha = 0.65 + 0.35 * Math.sin(frame / 5);
         ctx.fillStyle = '#ff4d6a';
@@ -3073,7 +3171,7 @@ async function boot() {
         ctx.fillRect(x - 6, y - 2, 12, 4);
         ctx.font = '5px "Press Start 2P"';
         ctx.textAlign = 'center';
-        ctx.fillText('HELP', x, y - 9);
+        ctx.fillText('HELP', x, o.bandit.y - DRAW_H - 20 - camY + bob);
         ctx.restore();
       }
     }

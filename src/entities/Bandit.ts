@@ -60,9 +60,23 @@ export class Bandit {
   rootFrames = 0;
   /** Frames left on an oil slick: hardly any grip, so speeding up and stopping both slide. */
   slipFrames = 0;
-  /** A spring's launch: frames of hop left, and how long the hop lasts. */
+  /** Knocked out (lying on the floor); the game sets it every frame. */
+  downed = false;
+  /** A spring's launch, or a little jump: frames of hop left, how long it lasts, how high. */
   private hopFrames = 0;
   private hopTotal = 1;
+  private hopHeight = 18;
+  /** Squash and stretch: >0 squashed flat (a landing, a footfall), <0 stretched tall. Eases back to 0. */
+  private squash = 0;
+  /** Frames of a celebration spin left. */
+  private spinFrames = 0;
+  /** 0 standing .. 1 flat on the floor (the fall and the getting up are animated). */
+  private fall = 0;
+  private fallDir = 1;
+  private wasMoving = false;
+  private lastVx = 0;
+  /** Frames stood still (a reversal passes through zero for a frame; that isn't stopping). */
+  private still = 0;
   private sprinting = false;
   private step = 0;
   /** Walk cycle phase, for the sprint hop. */
@@ -96,7 +110,9 @@ export class Bandit {
     this.vx = this.vy = 0;
     this.bumped = this.moving = this.sprinting = false;
     this.stunFrames = this.rootFrames = this.slipFrames = 0;
-    this.hopFrames = this.dashFrames = this.knockFrames = 0;
+    this.hopFrames = this.dashFrames = this.knockFrames = this.spinFrames = 0;
+    this.squash = this.fall = 0;
+    this.downed = false;
     this.dashVx = this.dashVy = this.knockVx = this.knockVy = 0;
     this.trailFrames = 0;
     this.trail.length = 0;
@@ -122,7 +138,7 @@ export class Bandit {
       this.dashFrames = 0;
       input = { dx: 0, dy: 0, sprint: false };
     }
-    if (this.hopFrames > 0) this.hopFrames--;
+    this.tickHop();
     const slipping = this.slipFrames > 0;
     if (slipping) this.slipFrames--;
     const { dx, dy } = input;
@@ -168,8 +184,59 @@ export class Bandit {
     this.sprinting = input.sprint && this.moving;
     if (this.moving) this.animate(moved, this.sprinting);
     else this.rest();
+    this.settle();
     this.updatePuffs();
     this.updateTrail();
+  }
+
+  /** Back to standing straight, with nothing in progress (entering or leaving a match). */
+  resetPose() {
+    this.downed = false;
+    this.fall = this.squash = this.spinFrames = this.hopFrames = 0;
+    this.lastVx = 0;
+  }
+
+  /** A little jump on the spot (getting back up, a celebration), with a squash on landing.
+   *  Not while already in the air (a spring launch): that arc carries on. */
+  jump(height = 10, frames = 22) {
+    if (this.hopFrames > 0) return;
+    this.hopFrames = this.hopTotal = frames;
+    this.hopHeight = height;
+    this.squash = -0.18;
+  }
+
+  /** Banked a diamond: a hop and a spin. */
+  celebrate() {
+    this.jump(12, 26);
+    this.spinFrames = 26;
+  }
+
+  private tickHop() {
+    if (this.hopFrames > 0 && --this.hopFrames === 0) this.squash = 0.28;
+    if (this.spinFrames > 0) this.spinFrames--;
+  }
+
+  /** Per-frame squash, fall and dust: called after moving. */
+  private settle() {
+    // Start running: lean into it (stretch). Stop: a little squash. Sharp turn while running: dust.
+    if (this.moving && !this.wasMoving) this.squash = Math.min(this.squash, -0.08);
+    if (!this.moving && this.wasMoving) this.squash = Math.max(this.squash, 0.1);
+    // lastVx is the last *fast* sideways speed, so easing through zero still counts as a turn.
+    if (this.moving && Math.abs(this.vx) > 1.2 && Math.sign(this.vx) !== Math.sign(this.lastVx) && Math.abs(this.lastVx) > 1.2)
+      for (let i = 0; i < 3; i++) this.puffs.push({ x: this.x + (i - 1) * 3, y: this.y - 1, age: i * 2 });
+    this.wasMoving = this.moving;
+    this.still = this.moving ? 0 : this.still + 1;
+    if (this.still > 8) this.lastVx = 0;
+    else if (Math.abs(this.vx) > 1.2) this.lastVx = this.vx;
+    this.squash *= 0.78;
+    if (Math.abs(this.squash) < 0.005) this.squash = 0;
+    // Topple over (fast, with a bounce) or get back up.
+    if (this.downed && this.fall === 0) this.fallDir = this.facing === 'left' ? -1 : 1;
+    if (this.downed) this.fall = Math.min(1, this.fall + 0.12);
+    else if (this.fall > 0) {
+      this.fall = Math.max(0, this.fall - 0.15);
+      if (this.fall === 0) this.jump(9, 18);
+    }
   }
 
   /**
@@ -199,11 +266,12 @@ export class Bandit {
   launch(dx: number, dy: number, distance: number, frames: number) {
     this.shove(dx, dy, distance, frames);
     this.hopFrames = this.hopTotal = frames;
+    this.hopHeight = 18;
   }
 
   /** How high off the ground a launch has thrown him right now, art px. */
   get hop() {
-    return this.hopFrames > 0 ? Math.sin((1 - this.hopFrames / this.hopTotal) * Math.PI) * 18 : 0;
+    return this.hopFrames > 0 ? Math.sin((1 - this.hopFrames / this.hopTotal) * Math.PI) * this.hopHeight : 0;
   }
 
   /** Knocked silly for `frames` frames. */
@@ -237,7 +305,11 @@ export class Bandit {
     // The walk frame follows distance travelled, not time, so the feet don't skate.
     this.walked += distance;
     const step = Math.floor(this.walked / STRIDE) % 4;
-    if (step !== this.step && step % 2 === 0 && sprint) this.puffs.push({ x: this.x - Math.sign(this.vx) * 4, y: this.y - 1, age: 0 });
+    if (step !== this.step && step % 2 === 0 && sprint) {
+      this.puffs.push({ x: this.x - Math.sign(this.vx) * 4, y: this.y - 1, age: 0 });
+      // Each sprinting footfall lands with a tiny squash.
+      this.squash = Math.max(this.squash, 0.06);
+    }
     this.step = step;
   }
 
@@ -263,14 +335,18 @@ export class Bandit {
     const nx = far ? x : this.x + (x - this.x) * 0.35;
     const ny = far ? y : this.y + (y - this.y) * 0.35;
     const moved = Math.hypot(nx - this.x, ny - this.y);
-    this.vx = nx - this.x;
+    // A snap (respawn, lag) is a teleport, not a run.
+    this.vx = far ? 0 : nx - this.x;
+    if (far) this.lastVx = 0;
     this.x = nx;
     this.y = ny;
     this.facing = facing;
     this.moving = moving;
     this.sprinting = moving && sprint;
+    this.tickHop();
     if (moving) this.animate(Math.max(moved, 1), this.sprinting);
     else this.rest();
+    this.settle();
     this.updatePuffs();
     this.updateTrail();
   }
@@ -353,7 +429,7 @@ export class Bandit {
       // Soft shadow under the feet; it shrinks a touch as he hops.
       ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
       ctx.beginPath();
-      ctx.ellipse(Math.round(this.x - camX), Math.round(this.y - camY), Math.max(4, 9 - bob * 0.3), Math.max(1.5, 3.5 - bob * 0.1), 0, 0, Math.PI * 2);
+      ctx.ellipse(Math.round(this.x - camX), Math.round(this.y - camY), Math.max(4, 9 - bob * 0.3) + this.fall * 8, Math.max(1.5, 3.5 - bob * 0.1), 0, 0, Math.PI * 2);
       ctx.fill();
     }
     // Quickstep after-images, fading behind him.
@@ -365,8 +441,34 @@ export class Bandit {
         this.blit(ctx, t.frame, Math.round(t.x - DRAW_W / 2 - camX), Math.round(t.y - DRAW_H + 1 - camY));
         ctx.restore();
       });
-    this.blit(ctx, this.frame, px, py);
-    if (shadow && this.stunned) this.drawStars(ctx, px + DRAW_W / 2, py + 2);
+    // Squash/stretch and the celebration spin scale about the feet; a knockout tips him over.
+    const sq = this.squash;
+    const spin = this.spinFrames > 0 ? Math.cos((1 - this.spinFrames / 26) * Math.PI * 4) : 1;
+    const fx = Math.round(this.x - camX);
+    const fy = Math.round(this.y - camY);
+    if (sq || spin !== 1 || this.fall) {
+      ctx.save();
+      if (this.fall) {
+        // Pivot on the body's middle, sink so he lies on the floor, rotate a quarter turn.
+        // Toppling overshoots a little and settles (ease-out-back); getting up is a plain ease.
+        const t = this.fall - 1;
+        const f = this.downed ? 1 + 2.70158 * t * t * t + 1.70158 * t * t : this.fall;
+        const cy = fy - DRAW_H / 2 - bob;
+        ctx.translate(fx, cy + (DRAW_H / 2 - DRAW_W / 2) * Math.min(1, f));
+        ctx.rotate(this.fallDir * (Math.PI / 2) * f);
+        ctx.translate(-fx, -cy);
+      } else {
+        ctx.translate(fx, fy);
+        ctx.scale((1 + sq * 0.6) * spin, 1 - sq);
+        ctx.translate(-fx, -fy);
+      }
+      this.blit(ctx, this.frame, px, py);
+      ctx.restore();
+    } else this.blit(ctx, this.frame, px, py);
+    // Stars round a knocked-out head in both passes (the second, over the lighting, is the one
+    // you see); the upright stun stars only while standing.
+    if (this.fall > 0.5) this.drawStars(ctx, fx + this.fallDir * (DRAW_H / 2 - 4), fy - DRAW_W / 2 - 2 - bob);
+    else if (shadow && this.stunned && !this.fall) this.drawStars(ctx, px + DRAW_W / 2, py + 2);
   }
 
   /** Stars circling a stunned bandit's head. */

@@ -37,6 +37,12 @@ export class Particles {
     if (this.bits.length > 600) this.bits.splice(0, this.bits.length - 600);
   }
 
+  /** One glinting speck that drifts up and fades (a carried diamond's trail). */
+  sparkle(x: number, y: number, color: string) {
+    const max = 18 + Math.random() * 14;
+    this.bits.push({ x: x + (Math.random() - 0.5) * 6, y: y + (Math.random() - 0.5) * 4, vx: (Math.random() - 0.5) * 0.3, vy: -0.25 - Math.random() * 0.3, life: max, max, color, size: Math.random() < 0.3 ? 2 : 1 });
+  }
+
   /** Text that pops up from (x, y), floats and fades. */
   pop(x: number, y: number, text: string, color = '#ffe39a') {
     this.pops.push({ x, y, text, color, at: performance.now() });
