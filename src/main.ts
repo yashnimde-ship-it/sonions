@@ -8,10 +8,10 @@ import { Profile } from './data/profile';
 import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, RED_EXTRA_SLOW, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { cleanName } from './data/names';
 import { BOOST, FLARE, HS_SCORE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, isGameMode, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
-import { CUSTOM_MIN, CUSTOM_PAD, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
+import { CUSTOM_MIN, CUSTOM_PAD, HANDOFF_REACH, type PingLabel, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H, DRAW_W } from './entities/Bandit';
-import { keyPressed, pollInput, readControls } from './input/Controls';
+import { keyHeld, keyPressed, pollInput, readControls } from './input/Controls';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
 import { type EstateJson, TileMap, type Stairwell } from './map/TileMap';
 import { NetClient } from './net/NetClient';
@@ -224,7 +224,14 @@ async function boot() {
   // The Saboteur clicks to place the selected trap (right-click picks one up), or, with none
   // selected, to fire a trap plate.
   const toWorld = (e: PointerEvent | MouseEvent): [number, number] => [(e.clientX * dpr) / scale + camera.x, (e.clientY * dpr) / scale + camera.y];
-  canvas.addEventListener('pointermove', (e) => ([mouseX, mouseY] = toWorld(e)));
+  canvas.addEventListener('pointermove', (e) => {
+    [mouseX, mouseY] = toWorld(e);
+    [screenX, screenY] = [e.clientX * dpr, e.clientY * dpr];
+  });
+  // Letting go of the middle button picks from the ping wheel.
+  window.addEventListener('pointerup', (e) => {
+    if (e.button === 1 && pingWheel?.by === 'mouse') closePingWheel();
+  });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   // No middle-click autoscroll: middle-click pings.
   canvas.addEventListener('mousedown', (e) => {
@@ -234,7 +241,7 @@ async function boot() {
     // Middle-click: ping the spot for my teammates (not the Saboteur or Seeker).
     if (e.button === 1) {
       e.preventDefault();
-      if (scene === 'match' && !match?.saboteur) sendPing(...toWorld(e));
+      if (scene === 'match' && !match?.saboteur) openPingWheel(...toWorld(e), 'mouse');
       return;
     }
     if (e.button === 0 && spectated()) {
@@ -461,6 +468,9 @@ async function boot() {
   let impactShake = 0;
   /** The mouse in world (art) pixels, for the Saboteur picking traps. */
   let mouseX = -1;
+  /** The mouse in canvas pixels (for the ping wheel). */
+  let screenX = 0;
+  let screenY = 0;
   let mouseY = -1;
   let sendTimer = 0;
   let lastSprint = false;
@@ -714,7 +724,7 @@ async function boot() {
     // Abilities are heist tools (traps, diamonds): Hide & Seek plays without them.
     document.getElementById('ability')!.style.display = hs ? 'none' : '';
     const help = document.querySelector<HTMLElement>('#hud .help');
-    if (help) help.textContent = hs ? (msg.role === 'saboteur' ? 'WASD move · Click shoot · R reload · Q Flare · C Heartbeat · E search · Esc safehouse' : 'WASD move · Shift sprint · E hide · Q Boost · Esc safehouse') : 'WASD move · Shift sprint · E action · Q ability · Esc safehouse';
+    if (help) help.textContent = hs ? (msg.role === 'saboteur' ? 'WASD move · Click shoot · R reload · Q Flare · C Heartbeat · E search · Esc safehouse' : 'WASD move · Shift sprint · E hide · Q Boost · G ping · Esc safehouse') : msg.role === 'saboteur' ? 'WASD move · Shift sprint · E action · Q ability · Esc safehouse' : 'WASD move · Shift sprint · E action · Q ability · G ping · H pass diamond · Esc safehouse';
     const role = hs
       ? msg.role === 'saboteur' ? '<b class="saboteur">THE SEEKER</b>' : '<b class="runner">A HIDER</b>'
       : msg.role === 'saboteur' ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
@@ -1135,6 +1145,19 @@ async function boot() {
       case 'doorJammed':
         toast('Door jammed');
         break;
+      case 'handoff': {
+        const from = msg.from === myId ? me : remotes.get(msg.from)?.bandit;
+        const to = msg.to === myId ? me : remotes.get(msg.to)?.bandit;
+        if (from && to) {
+          particles.burst((from.x + to.x) / 2, (from.y + to.y) / 2 - 20, '#5ad8ff', 14, 1.4);
+          particles.pop(to.x, to.y - 34, msg.to === myId ? 'CAUGHT IT!' : 'PASS!', '#5ad8ff');
+        }
+        sfx('coin');
+        if (msg.to === myId) hud.setCarrying('CARRYING A DIAMOND · TAKE IT TO THE GETAWAY');
+        if (msg.from === myId) hud.setCarrying(null);
+        hud.alert(`<span class="who">${msg.from === myId ? 'You' : esc(msg.fromName)}</span> <b>passed a diamond to ${msg.to === myId ? 'you' : esc(msg.toName)}</b>`, 'good');
+        break;
+      }
       case 'ping':
         pings.push({ x: msg.x, y: msg.y, label: msg.label, name: msg.id === myId ? 'you' : msg.name, deck: msg.deck, at: performance.now() });
         sfx('ping');
@@ -1322,7 +1345,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get pings() { return pings; }, get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1780,8 +1803,15 @@ async function boot() {
     // A finished reload: the gun is full again (the server agrees on its next shot).
     if (hs && sab && gun.ammo === 0 && gun.reloadEnd && performance.now() >= gun.reloadEnd) gun = { ...gun, ammo: GUN.ammo, reloadEnd: 0 };
     if (input.ability && !hud.messageOpen && phase === 'live' && !hs) abilities.use(abilityContext());
-    // G (or middle-click): ping where the mouse is, for my teammates.
-    if (!sab && !hud.messageOpen && keyPressed('KeyG')) sendPing(mouseX, mouseY);
+    // G (or middle-click): tap to ping where the mouse is; hold for the wheel to pick what.
+    if (!sab && !hud.messageOpen && keyPressed('KeyG')) openPingWheel(mouseX, mouseY, 'key');
+    if (pingWheel?.by === 'key' && !keyHeld('KeyG')) closePingWheel();
+    // H: hand my diamond to the teammate next to me.
+    if (!sab && !hs && phase === 'live' && !knockedOut && keyPressed('KeyH')) {
+      const to = handoffTarget();
+      if (to) net.send({ t: 'handoff', target: to.id });
+      else if (myDiamond()) toast('Get next to an empty-handed teammate to hand it over');
+    }
     // Hide & Seek abilities: Seeker Q flare, C heartbeat scan; Hider Q boost (the server checks).
     if (hs && phase === 'live' && !hud.messageOpen && !isGhost(myId) && performance.now() - hsSentAt > 300) {
       const want: HsAbility | null = keyPressed('KeyQ') ? (sab ? 'flare' : hiddenIn ? null : 'boost') : sab && keyPressed('KeyC') ? 'scan' : null;
@@ -2087,6 +2117,9 @@ async function boot() {
         }
       }
     }
+    // Carrying, next to a teammate with free hands: H passes it (when nothing else is on offer).
+    const passTo = holding && (!prompt || prompt.startsWith('Hands full')) ? handoffTarget() : null;
+    if (passTo) prompt = `H  Pass the diamond to ${passTo.name}`;
     if (!input.actionHeld || me.moving || !spot || searching?.spot !== spot.id) searching = null;
     if (!input.actionHeld || me.moving || !downed || reviving?.id !== downed.state.id) reviving = null;
     hud.setPrompt(now < trapNoticeUntil ? trapNotice : now < toastUntil ? hud.promptText : prompt);
@@ -2297,6 +2330,7 @@ async function boot() {
     if (!result) drawPings(camX, camY);
     drawKnockout();
     drawTrapMinimap();
+    drawPingWheel();
     if (phase === 'setup' && !match?.saboteur && !hideSeek()) drawBlueprint(camX, camY);
     if (match?.saboteur && !result) drawTrapMarkers(camX, camY);
     if (match?.saboteur && phase === 'setup') drawSpotLabel(camX, camY);
@@ -2473,13 +2507,99 @@ async function boot() {
 
   /** A ping at (x, y): it says TRAP or DIAMOND when there's one I know about right there. */
   let lastPingSent = 0;
-  function sendPing(x: number, y: number) {
+  function sendPing(x: number, y: number, label?: PingLabel) {
     if (phase === 'over' || isGhost(myId) || performance.now() - lastPingSent < 1000) return;
     lastPingSent = performance.now();
-    const near = (px: number, py: number) => Math.hypot(px - x, py - y) <= 22;
-    const trap = !hideSeek() && ([...placed.values()].some((t) => here(t.deck) && revealed.has(t.id) && t.kind !== 'fakeLoot' && near(t.x, t.y)) || traps.some((t) => !isPlate(t) && near(t.x, t.y)));
-    const gem = !trap && diamonds.some((d) => d.place.at === 'floor' && here(d.place.deck) && near(d.place.x, d.place.y));
-    net.send({ t: 'ping', x, y, label: trap ? 'TRAP' : gem ? 'DIAMOND' : 'LOOK HERE' });
+    net.send({ t: 'ping', x, y, label: label ?? autoPingLabel(x, y) });
+  }
+
+  /** What a quick ping means, from what's there: a trap, a diamond, the keycard, the Seeker. */
+  function autoPingLabel(x: number, y: number): PingLabel {
+    const near = (px: number, py: number, r = 22) => Math.hypot(px - x, py - y) <= r;
+    if (!hideSeek() && ([...placed.values()].some((t) => here(t.deck) && revealed.has(t.id) && t.kind !== 'fakeLoot' && near(t.x, t.y)) || traps.some((t) => !isPlate(t) && near(t.x, t.y)))) return 'TRAP';
+    if (diamonds.some((d) => d.place.at === 'floor' && here(d.place.deck) && near(d.place.x, d.place.y))) return 'DIAMOND';
+    if (keycard?.floor && here(keycard.deck) && near(keycard.floor.x, keycard.floor.y)) return 'KEYCARD';
+    const seeker = hideSeek() ? remotes.get(seekerId()) : undefined;
+    if (seeker && here(seeker.state.deck) && near(seeker.bandit.x, seeker.bandit.y - 12, 34)) return 'SEEKER';
+    return 'LOOK HERE';
+  }
+
+  /**
+   * The ping wheel: held middle button (or G) opens four choices round the spot; moving the
+   * mouse that way and letting go picks one. A quick tap pings straight away with the label
+   * that fits what's there.
+   */
+  let pingWheel: { x: number; y: number; sx: number; sy: number; at: number; by: 'mouse' | 'key' } | null = null;
+  const WHEEL_TAP_MS = 220;
+  const WHEEL_R = 46;
+  const wheelChoices = (): PingLabel[] => ['TRAP', 'DIAMOND', 'LOOK HERE', hideSeek() ? 'SEEKER' : 'DANGER']; // up, right, down, left
+  function openPingWheel(x: number, y: number, by: 'mouse' | 'key') {
+    if (phase === 'over' || isGhost(myId) || pingWheel) return;
+    pingWheel = { x, y, sx: screenX, sy: screenY, at: performance.now(), by };
+  }
+  /** The choice the mouse points at, or null while it's still near the middle. */
+  function wheelPick(): PingLabel | null {
+    if (!pingWheel) return null;
+    const dx = screenX - pingWheel.sx;
+    const dy = screenY - pingWheel.sy;
+    if (Math.hypot(dx, dy) < 14 * dpr) return null;
+    const a = Math.atan2(dy, dx); // 0 = right, pi/2 = down
+    const k = Math.round(((a + Math.PI / 2) / (Math.PI / 2) + 4)) % 4; // 0 up, 1 right, 2 down, 3 left
+    return wheelChoices()[k];
+  }
+  function closePingWheel() {
+    const w = pingWheel;
+    if (!w) return;
+    const pick = wheelPick();
+    pingWheel = null;
+    if (performance.now() - w.at < WHEEL_TAP_MS && !pick) sendPing(w.x, w.y);
+    else if (pick) sendPing(w.x, w.y, pick);
+  }
+  function drawPingWheel() {
+    const w = pingWheel;
+    if (!w || performance.now() - w.at < WHEEL_TAP_MS) return;
+    const pick = wheelPick();
+    const R = WHEEL_R * dpr;
+    ctx.save();
+    ctx.fillStyle = 'rgba(8, 6, 16, 0.55)';
+    ctx.beginPath();
+    ctx.arc(w.sx, w.sy, R + 26 * dpr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    wheelChoices().forEach((label, k) => {
+      const a = -Math.PI / 2 + (k * Math.PI) / 2;
+      const x = w.sx + Math.cos(a) * R;
+      const y = w.sy + Math.sin(a) * R;
+      const on = label === pick;
+      ctx.font = `${Math.round((on ? 8 : 7) * dpr)}px "Press Start 2P"`;
+      const tw = ctx.measureText(label).width + 12 * dpr;
+      ctx.fillStyle = on ? pingColor(label) : 'rgba(20, 16, 34, 0.92)';
+      ctx.fillRect(x - tw / 2, y - 9 * dpr, tw, 18 * dpr);
+      ctx.strokeStyle = pingColor(label);
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.strokeRect(x - tw / 2, y - 9 * dpr, tw, 18 * dpr);
+      ctx.fillStyle = on ? '#0e0a1a' : pingColor(label);
+      ctx.fillText(label, x, y + 1 * dpr);
+    });
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(w.sx, w.sy, 3 * dpr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  const pingColor = (label: string) => (label === 'TRAP' ? '#ff4d6a' : label === 'DIAMOND' ? '#5ad8ff' : label === 'SEEKER' || label === 'DANGER' ? '#ff8a3d' : label === 'KEYCARD' ? '#ffd84a' : '#ffe39a');
+
+  /** The teammate I'd hand my diamond to: the nearest Runner up, with free hands, in reach. */
+  function handoffTarget() {
+    if (!myDiamond() || hideSeek() || match?.saboteur) return null;
+    let best: { id: string; name: string; d: number } | null = null;
+    for (const [id, r] of remotes) {
+      if (r.state.hp <= 0 || r.state.carrying || r.state.offline || !here(r.state.deck)) continue;
+      const d = Math.hypot(r.bandit.x - me.x, r.bandit.y - me.y);
+      if (d <= HANDOFF_REACH && (!best || d < best.d)) best = { id, name: r.state.name, d };
+    }
+    return best;
   }
 
   /** Teammates' pings: a ring that pulses where they pinged, with what and who; one that's
@@ -2494,7 +2614,7 @@ async function boot() {
         continue;
       }
       if (p.deck !== deckId) continue;
-      const color = p.label === 'TRAP' ? '#ff4d6a' : p.label === 'DIAMOND' ? '#5ad8ff' : '#ffe39a';
+      const color = pingColor(p.label);
       const pad = 28 * dpr;
       const rx = (p.x - camX) * scale;
       const ry = (p.y - camY) * scale;

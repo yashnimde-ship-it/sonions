@@ -59,6 +59,11 @@ export function placementRefusal(placedKinds: Iterable<TrapKindId>, kind: TrapKi
 export const REVIVE_MS = 3000;
 export const REVIVE_REACH = 26;
 export const REVIVE_HP = 50;
+/** A Runner carrying a diamond can hand it to an empty-handed teammate this close (art px). */
+export const HANDOFF_REACH = 30;
+/** The labels a ping can carry. */
+export const PING_LABELS = ['TRAP', 'DIAMOND', 'LOOK HERE', 'SEEKER', 'DANGER', 'KEYCARD'] as const;
+export type PingLabel = (typeof PING_LABELS)[number];
 
 /**
  * A knocked-out heist Runner's wait before respawning at the entrance, timed by the server. It

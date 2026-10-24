@@ -14,7 +14,7 @@ import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from 
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
-import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, KO_HP, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
+import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
@@ -1307,10 +1307,29 @@ function handle(c: Client, msg: ClientMsg) {
       const now = Date.now();
       if (!sab || sab === s.id || !Number.isFinite(msg.x) || !Number.isFinite(msg.y) || now - (c.lastPing ?? 0) < 1000) break;
       c.lastPing = now;
-      const label = ['TRAP', 'DIAMOND', 'LOOK HERE'].includes(msg.label) ? msg.label : 'LOOK HERE';
+      const label = (PING_LABELS as readonly string[]).includes(msg.label) ? msg.label : 'LOOK HERE';
       for (const id of matches.get(c.room) ?? []) {
         const m = clients.get(id);
         if (m && id !== sab) send(m, { t: 'ping', x: Math.round(msg.x), y: Math.round(msg.y), label, id: s.id, name: s.name, deck: deckOf(c) });
+      }
+      break;
+    }
+    case 'handoff': {
+      // A Runner passes their diamond to an empty-handed teammate right next to them.
+      const vault = vaults.get(c.room);
+      const target = clients.get(msg.target);
+      const sab = saboteurs.get(c.room);
+      const d = carrierOf(vault, s.id);
+      if (!vault || !d || !target || target === c || target.room !== c.room || !sab || sab === s.id || msg.target === sab || isHideSeek(c.room)) break;
+      if (phases.get(c.room)?.phase !== 'live' || s.hp <= 0 || target.state.hp <= 0 || carrierOf(vault, target.state.id) || deckOf(target) !== deckOf(c)) break;
+      if (Math.hypot(target.state.x - s.x, target.state.y - s.y) > HANDOFF_REACH + 16) break;
+      d.place = { at: 'carried', by: target.state.id };
+      s.carrying = false;
+      target.state.carrying = true;
+      sendDiamonds(c.room);
+      for (const id of matches.get(c.room) ?? []) {
+        const m = clients.get(id);
+        if (m) send(m, { t: 'handoff', from: s.id, fromName: s.name, to: target.state.id, toName: target.state.name });
       }
       break;
     }

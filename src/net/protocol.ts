@@ -108,6 +108,8 @@ export type ClientMsg =
   | { t: 'revive'; target: string }
   /** The keycard: pick it up off the floor; use it on a vault door. */
   | { t: 'pickupKey' }
+  /** Hand the diamond I'm carrying to a teammate next to me. */
+  | { t: 'handoff'; target: string }
   | { t: 'unlock'; door: string }
   /** A quick ping on the map for my teammates (TRAP / DIAMOND / LOOK HERE). */
   | { t: 'ping'; x: number; y: number; label: string }
@@ -151,6 +153,8 @@ export type ServerMsg =
    *  Saboteur), who holds it or where it was dropped, and whether the vault is open. */
   | { t: 'keycard'; deck: MapId; vaultRoom: string; doors: string[]; hintRoom: string; spot?: string; holder: string | null; holderName?: string; floor: { x: number; y: number } | null; unlocked: boolean }
   | { t: 'keycardEvent'; kind: 'found' | 'dropped' | 'unlocked'; id: string; name: string }
+  /** A diamond passed from one Runner to another. */
+  | { t: 'handoff'; from: string; fromName: string; to: string; toName: string }
   /** Someone found, banked or dropped a diamond: a pop-up for everyone. */
   | { t: 'diamondEvent'; kind: 'found' | 'banked' | 'dropped' | 'alarm'; id: string; name: string; area: string }
   /** You're knocked out: the server's wait before you may respawn, and why it's that long. */
