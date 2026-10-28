@@ -7,7 +7,7 @@ import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
 import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, RED_EXTRA_SLOW, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { cleanName } from './data/names';
-import { BOOST, FLARE, HS_SCORE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
+import { BOOST, FLARE, HIDE_SEEK_MAP, HS_SCORE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
 import { HANDOFF_REACH, type PingLabel, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H, DRAW_W } from './entities/Bandit';
@@ -125,13 +125,11 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 const BANNER_MS = 4000;
 
 async function boot() {
-  const loadWorld = async (id: MapId) => {
-    const d = MAPS[id];
-    const [data, tiles, doors] = await Promise.all([fetchJson<EstateJson>(d.json), loadImage(d.tileset), loadImage(d.doors)]);
-    return { data, tiles, doors };
-  };
-  const [worldList, lobbyData, lobbyImage, ...sheetList] = await Promise.all([
-    Promise.all(MAP_IDS.map(loadWorld)),
+  // Each map's data is small and loaded up front; its images are big (a few MB) and only
+  // loaded when a room picks the map (or a game on it starts), so phones start quickly.
+  const [dataList, blank, lobbyData, lobbyImage, ...sheetList] = await Promise.all([
+    Promise.all(MAP_IDS.map((id) => fetchJson<EstateJson>(MAPS[id].json))),
+    loadImage('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'),
     fetchJson<LobbyJson>('/assets/lobby/lobby.json'),
     loadImage('/assets/lobby/lobby.png'),
     ...CHARACTERS.map((id) => loadImage(characterSheet(id))),
@@ -139,7 +137,26 @@ async function boot() {
   const sheets = Object.fromEntries(CHARACTERS.map((id, i) => [id, sheetList[i]])) as Record<CharacterId, HTMLImageElement>;
 
   const lobbyMap = new LobbyMap(lobbyData, lobbyImage);
-  const worlds = Object.fromEntries(MAP_IDS.map((id, i) => [id, worldList[i]])) as Record<MapId, (typeof worldList)[number]>;
+  const worlds = Object.fromEntries(MAP_IDS.map((id, i) => [id, { data: dataList[i], tiles: blank, doors: blank, ready: false }])) as Record<MapId, { data: EstateJson; tiles: HTMLImageElement; doors: HTMLImageElement; ready: boolean }>;
+  const worldLoads = new Map<MapId, Promise<void>>();
+  /** A map's tileset and doors, loaded once (tried again if a download fails). */
+  function loadWorldImages(id: MapId): Promise<void> {
+    let p = worldLoads.get(id);
+    if (!p) {
+      p = Promise.all([loadImage(MAPS[id].tileset), loadImage(MAPS[id].doors)]).then(([tiles, doors]) => {
+        worlds[id].tiles = tiles;
+        worlds[id].doors = doors;
+        worlds[id].ready = true;
+      });
+      p.catch(() => worldLoads.delete(id));
+      worldLoads.set(id, p);
+    }
+    return p;
+  }
+  /** Every map's images, one after another, in the background (rounds rotate through them). */
+  async function prefetchWorlds() {
+    for (const id of MAP_IDS) await loadWorldImages(id).catch(() => {});
+  }
   // The heist's map (`estate` is whichever map the crew is playing, the mansion or the
   // museum). It's rebuilt for every heist, so doors and loot start fresh.
   let mapId: MapId = 'estate';
@@ -808,7 +825,7 @@ async function boot() {
     setScene('match');
   }
 
-  net.onMessage = (msg) => {
+  function onServerMessage(msg: ServerMsg) {
     switch (msg.t) {
       case 'welcome':
         myId = msg.id;
@@ -818,6 +835,7 @@ async function boot() {
       case 'room':
         myRoom = msg.room;
         if (msg.room) {
+          for (const d of decksOf(msg.room.mode === 'hideSeek' ? HIDE_SEEK_MAP : msg.room.map)) void loadWorldImages(d).catch(() => {});
           session.set('playing', '1');
           // The address bar shows the room's invite link.
           history.replaceState(null, '', `?room=${msg.room.code}`);
@@ -1293,6 +1311,35 @@ async function boot() {
         remotes.delete(msg.id);
         break;
     }
+  }
+
+  /**
+   * A heist on a map whose images haven't arrived yet: show "Loading the map", hold this and
+   * every later message until they're in, then play them all in order.
+   */
+  let heldMessages: ServerMsg[] | null = null;
+  const loadingEl = document.getElementById('loading-map')!;
+  net.onMessage = (msg) => {
+    if (heldMessages) {
+      heldMessages.push(msg);
+      return;
+    }
+    const decks = msg.t === 'match' ? decksOf(msg.map ?? 'estate') : [];
+    if (decks.some((d) => !worlds[d].ready)) {
+      heldMessages = [msg];
+      loadingEl.hidden = false;
+      const attempt = (): Promise<void> => Promise.all(decks.map(loadWorldImages)).then(() => undefined, () => new Promise((r) => setTimeout(r, 2000)).then(attempt));
+      void attempt().then(() => {
+        const queue = heldMessages ?? [];
+        heldMessages = null;
+        loadingEl.hidden = true;
+        for (const m of queue) onServerMessage(m);
+        void prefetchWorlds();
+      });
+      return;
+    }
+    if (msg.t === 'match') void prefetchWorlds();
+    onServerMessage(msg);
   };
   net.onClose = () => {
     if (scene === 'title' || serverFull) return;

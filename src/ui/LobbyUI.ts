@@ -399,7 +399,7 @@ export class LobbyUI {
     const cards = this.maps
       .map(
         (x) => `<button type="button" class="map-card${x.id === m.id ? ' selected' : ''}" data-map="${x.id}">
-          <img src="${x.preview}" alt="">
+          <img src="${x.preview}" alt="" loading="lazy">
           <span class="map-card-name">${esc(x.name)}</span>
           <span class="map-card-stars" title="Difficulty">${stars(x.difficulty)}</span>
         </button>`,
@@ -409,7 +409,7 @@ export class LobbyUI {
       <div class="map-cards">${cards}</div>
       <p class="map-desc">${esc(m.description)}</p>
       <div class="map-info">
-        <img class="map-preview" src="${m.preview}" alt="Map of ${esc(m.name)}">
+        <img class="map-preview" src="${m.preview}" alt="Map of ${esc(m.name)}" loading="lazy">
         <div class="map-facts">
           <h3>${esc(m.name)}</h3>
           <dl>

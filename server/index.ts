@@ -2098,6 +2098,7 @@ const DIST = path.join(ROOT, 'dist');
 const TYPES: Record<string, string> = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.png': 'image/png', '.svg': 'image/svg+xml', '.woff': 'font/woff', '.woff2': 'font/woff2',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.mp3': 'audio/mpeg', '.ico': 'image/x-icon',
 };
 
 const server = http.createServer((req, res) => {
@@ -2111,7 +2112,10 @@ const server = http.createServer((req, res) => {
     res.writeHead(404).end('Not found. Run `npm run build` to serve the game from here.');
     return;
   }
-  res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] ?? 'application/octet-stream' });
+  // Build files have a hash in their name, so they can be kept forever; everything else for
+  // an hour (the page itself is always checked, so a new deploy shows up on the next visit).
+  const cache = url.pathname === '/' || url.pathname.endsWith('.html') ? 'no-cache' : /\/assets\/[^/]+-[\w-]{8}\.(js|css|woff2?)$/.test(url.pathname) ? 'public, max-age=31536000, immutable' : 'public, max-age=3600';
+  res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': cache });
   fs.createReadStream(file).pipe(res);
 });
 

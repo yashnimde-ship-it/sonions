@@ -38,7 +38,7 @@ export const MAPS: Record<MapId, MapDef> = {
     json: '/assets/map/estate.json',
     tileset: '/assets/tiles/tileset.png',
     doors: '/assets/map/doors.png',
-    preview: '/assets/map/preview.png',
+    preview: '/assets/map/preview.jpg',
     getaway: { x: 39.5, y: 55.6, w: 12, h: 3.8 },
     vault: { room: 'Master Bedroom', doors: ['door-master'] },
     // The Estate's traps are all the Saboteur's own now (the early placeholder plates are gone).
@@ -52,7 +52,7 @@ export const MAPS: Record<MapId, MapDef> = {
     json: '/assets/maps/museum/map.json',
     tileset: '/assets/maps/museum/tileset.png',
     doors: '/assets/maps/museum/doors.png',
-    preview: '/assets/maps/museum/preview.png',
+    preview: '/assets/maps/museum/preview.jpg',
     getaway: { x: 34, y: 61.2, w: 24, h: 2.6 },
     vault: { room: 'Restricted Vault', doors: ['vault-door'] },
     traps: MUSEUM_TRAPS,
@@ -65,7 +65,7 @@ export const MAPS: Record<MapId, MapDef> = {
     json: '/assets/maps/cruise-b1/map.json',
     tileset: '/assets/maps/cruise-b1/tileset.png',
     doors: '/assets/maps/cruise-b1/doors.png',
-    preview: '/assets/maps/cruise-b1/preview.png',
+    preview: '/assets/maps/cruise-b1/preview.jpg',
     // Bank loot at the cargo loading ramp in the bow.
     getaway: { x: 1.6, y: 28.4, w: 4.4, h: 5.2 },
     vault: { room: 'Fuel Storage', doors: ['door-fuel'] },
@@ -79,7 +79,7 @@ export const MAPS: Record<MapId, MapDef> = {
     json: '/assets/maps/cruise-f1/map.json',
     tileset: '/assets/maps/cruise-f1/tileset.png',
     doors: '/assets/maps/cruise-f1/doors.png',
-    preview: '/assets/maps/cruise-f1/preview.png',
+    preview: '/assets/maps/cruise-f1/preview.jpg',
     // Bank loot at the gangway landing below the main entrance.
     getaway: { x: 55.4, y: 48, w: 7.4, h: 2.2 },
     vault: { room: 'Staff Room', doors: ['door-staff'] },

@@ -15,7 +15,8 @@
     "bots": "node scripts/bots.ts",
     "museum": "node scripts/generate-museum.mjs",
     "cruise": "node scripts/generate-museum.mjs map/cruiseB1Layout.mjs public/assets/maps/cruise-b1",
-    "cruise-f1": "node scripts/generate-museum.mjs map/cruiseF1Layout.mjs public/assets/maps/cruise-f1"
+    "cruise-f1": "node scripts/generate-museum.mjs map/cruiseF1Layout.mjs public/assets/maps/cruise-f1",
+    "previews": "python3 scripts/make-previews.py"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
