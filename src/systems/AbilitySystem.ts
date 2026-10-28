@@ -7,7 +7,7 @@ import type { ClientMsg } from '../net/protocol';
 // Quickstep: a dash of 64 art px (4 tiles, about 3-4 steps) in 14 frames (under a quarter second).
 export const QUICKSTEP_FRAMES = 14;
 const QUICKSTEP_DISTANCE = 64;
-const NEEDS_LABEL = { traps: 'traps', energy: 'energy', loot: 'loot carrying', stuns: 'trap stuns', health: 'health', doors: 'door locks' };
+const NEEDS_LABEL = { traps: 'traps', energy: 'energy', loot: 'loot carrying', stuns: 'trap stuns', health: 'health', doors: 'door locks', abilities: 'a unique ability' };
 
 /** What an ability can act on. */
 export interface AbilityContext {

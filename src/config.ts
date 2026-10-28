@@ -7,7 +7,7 @@ export const SCREEN_TILE = ART_TILE * ZOOM;
 // One row of frames, each CHAR_FRAME_W x CHAR_FRAME_H sheet pixels, in this order: stand down,
 // stand up, stand left, walk down x2, walk up x2, walk left x2. Facing right mirrors the left
 // frames. The feet sit on the frame's bottom row.
-export const CHARACTERS = ['maya', 'dev', 'zoya', 'rex', 'iris'] as const;
+export const CHARACTERS = ['maya', 'dev', 'zoya', 'rex', 'iris', 'theo', 'elise', 'felix', 'clara', 'miles'] as const;
 export type CharacterId = (typeof CHARACTERS)[number];
 export const characterSheet = (id: CharacterId) => `/assets/characters/${id}.png`;
 export const CHAR_FRAME_W = 48;

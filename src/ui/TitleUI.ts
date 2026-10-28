@@ -1,4 +1,4 @@
-import { CHARACTERS, characterSheet, CHAR_FRAME_H, CHAR_FRAME_W, CHAR_FRAMES } from '../config';
+import { CHARACTERS } from '../config';
 import { CHARACTER_INFO } from '../data/characters';
 import type { GameMode } from '../data/hideSeek';
 import { QUICK_PLAY_SIZE, ROOM_MAX, ROOM_MIN, type RoomSummary } from '../data/rooms';
@@ -12,7 +12,6 @@ export interface CreateOptions {
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-const LINEUP_SCALE = 2.5;
 const NAME_KEY = 'vault-breakers-name';
 
 /**
@@ -43,31 +42,14 @@ export class TitleUI {
 
   constructor() {
     const lineup = document.getElementById('lineup')!;
-    const crew: HTMLDivElement[] = [];
-    const fitLineup = () => {
-      const gap = Math.min(28, Math.max(4, window.innerWidth * 0.02));
-      const available = Math.max(0, window.innerWidth - 32 - gap * (CHARACTERS.length - 1));
-      const scale = Math.min(LINEUP_SCALE, available / (CHAR_FRAME_W * CHARACTERS.length));
-      crew.forEach((el) => {
-        const sprite = el.querySelector<HTMLDivElement>('.sprite')!;
-        sprite.style.width = `${CHAR_FRAME_W * scale}px`;
-        sprite.style.height = `${CHAR_FRAME_H * scale}px`;
-        sprite.style.backgroundSize = `${CHAR_FRAME_W * CHAR_FRAMES * scale}px ${CHAR_FRAME_H * scale}px`;
-      });
-    };
     CHARACTERS.forEach((id, i) => {
       const info = CHARACTER_INFO[id];
       const el = document.createElement('div');
       el.className = 'crew';
       el.style.setProperty('--delay', `${i * 0.15}s`);
-      el.innerHTML = `<div class="sprite"></div><span style="color:${info.color}">${info.nick}</span>`;
-      const sprite = el.querySelector<HTMLDivElement>('.sprite')!;
-      sprite.style.backgroundImage = `url(${characterSheet(id)})`;
+      el.innerHTML = `<img class="crew-portrait" src="/assets/characters/${id}-portrait.png" alt="" loading="eager"><span style="--crew-color:${info.color}">${info.nick}</span>`;
       lineup.append(el);
-      crew.push(el);
     });
-    fitLineup();
-    window.addEventListener('resize', fitLineup);
 
     try {
       this.nameInput.value = localStorage.getItem(NAME_KEY) ?? '';
@@ -141,6 +123,7 @@ export class TitleUI {
 
   showHowTo(open: boolean) {
     this.howto.hidden = !open;
+    this.root.classList.toggle('howto-open', open);
   }
 
   /** A ?room= link or a pasted code: show it in the box. */

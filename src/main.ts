@@ -788,7 +788,6 @@ async function boot() {
     hud.setHealth(msg.role === 'saboteur' && msg.mode !== 'hideSeek' ? null : hp);
     hud.setCarrying(null);
     hud.hideMessage();
-    profile.recordHeist();
     lobby.setMe(myName, myCharacter, profile);
     remotes.clear();
     for (const p of msg.players) {
@@ -1078,6 +1077,8 @@ async function boot() {
         break;
       }
       case 'final':
+        profile.recordHeist();
+        lobby.setMe(myName, myCharacter, profile);
         resultScreen.showFinal(msg, myId);
         sfx(msg.standings[0]?.id === myId ? 'win' : 'alert');
         // A chime as each award card pops in (matches the cards' animation delays).

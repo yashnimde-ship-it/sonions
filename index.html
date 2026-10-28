@@ -10,7 +10,7 @@
   <body>
     <canvas id="game"></canvas>
     <div id="rotate" aria-live="polite"><div class="rotate-phone"></div><p>Turn your phone sideways to play</p></div>
-    <div id="title" class="screen">
+    <div id="title" class="screen title-screen">
       <div class="title-top">
         <h1 class="logo"><span>VAULT</span><span>BREAKERS</span></h1>
         <p class="tagline">Hide. Hunt. Steal. Escape.</p>
@@ -43,6 +43,7 @@
         <div class="actions"><button id="browse-quick" type="button" class="btn primary">QUICK PLAY</button><button type="button" class="btn" data-close>CLOSE</button></div>
       </div>
       <div id="howto" class="modal" hidden>
+        <div id="howto-content">
         <h2>How to play</h2>
         <h3>Heist · 2 or more players</h3>
         <p><b class="saboteur">The Saboteur</b> owns the house. During setup they hide the diamonds inside furniture (a fridge, a bed, a display case) and guard them with traps. Traps stay invisible until someone sets one off.</p>
@@ -52,7 +53,7 @@
         <p>Choose <b>Hide &amp; Seek</b> in the safehouse and join a crew of at least 3. One Seeker counts for 30 seconds while the Hiders find a place to hide on the cruise ship. Then the Seeker hunts with a flashlight and six shots; missed shots cost the Seeker health. Hiders caught become ghosts and watch the rest of the round.</p>
         <p>Hiders win by surviving the hunt. The main entrance opens for the final 45 seconds: escape for a bonus. The Seeker can use <kbd>Q</kbd> for a flare and <kbd>C</kbd> to scan nearby hiding places; Hiders can use <kbd>Q</kbd> for a speed boost.</p>
         <h3>The safehouse</h3>
-        <p><b>Quick Play</b> drops you into an open public room (or makes one). <b>Create Room</b> gives you a 6-letter code to share: private rooms are joined only with the code, public ones also show in <b>Browse Rooms</b>. Your room meets in its own safehouse: everyone presses <b>READY</b>, then the host presses <b>START</b>. Hide &amp; Seek needs at least 3 players; smaller crews play Heist. Change character at the wardrobe; each crew member has Runner and Saboteur abilities.</p>
+        <p><b>Quick Play</b> joins an open public room or creates one. <b>Create Room</b> gives you a room code to share: private rooms are joined only with the code, public ones also show in <b>Browse Rooms</b>. In a room, everyone presses <b>READY</b>, then the host presses <b>START</b>. Hide &amp; Seek needs at least 3 players; smaller crews play Heist. Change character at the wardrobe; each crew member has Runner and Saboteur abilities.</p>
         <h3>Controls</h3>
         <ul>
           <li><kbd>WASD</kbd> or <kbd>Arrows</kbd> move, <kbd>Shift</kbd> sprint</li>
@@ -63,7 +64,8 @@
           <li><kbd>Esc</kbd> leave the match, back to the safehouse</li>
           <li>Gamepad: stick move, <kbd>RT</kbd> sprint, <kbd>A</kbd> action</li>
         </ul>
-        <button id="howto-close" class="btn">GOT IT</button>
+        </div>
+        <footer class="howto-footer"><button id="howto-close" class="btn">GOT IT</button></footer>
       </div>
     </div>
     <div id="lobby" class="screen" hidden>

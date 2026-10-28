@@ -13,7 +13,8 @@ export type AbilityId =
   | 'shakeItOff'
   | 'trapRefresh'
   | 'firstAid'
-  | 'doorJam';
+  | 'doorJam'
+  | 'comingSoon';
 
 export interface Ability {
   id: AbilityId;
@@ -28,7 +29,7 @@ export interface Ability {
    * The game system the ability acts on. Abilities whose system isn't in yet show as
    * "coming soon" instead of doing nothing silently.
    */
-  needs?: 'traps' | 'energy' | 'loot' | 'stuns' | 'health' | 'doors';
+  needs?: 'traps' | 'energy' | 'loot' | 'stuns' | 'health' | 'doors' | 'abilities';
 }
 
 /** Every character has one ability per role, so any pick works whichever role you get. */
@@ -43,6 +44,7 @@ export const ABILITIES: Record<AbilityId, Ability> = {
   trapRefresh: { id: 'trapRefresh', name: 'Trap Refresh', blurb: 'Aim at a trap that just went off to make it ready again.', cooldown: 0, perRound: 1 },
   firstAid: { id: 'firstAid', name: 'First Aid', blurb: 'Heals herself or the most hurt Runner nearby to full HP, even from a knockout.', cooldown: 30, perRound: 3 },
   doorJam: { id: 'doorJam', name: 'Door Jam', blurb: 'Aim at a door to slam it shut and lock it for 8s.', cooldown: 15, perRound: 3 },
+  comingSoon: { id: 'comingSoon', name: 'Coming Soon', blurb: 'This character’s unique ability is still in development.', cooldown: 0, needs: 'abilities' },
 };
 
 export interface CharacterInfo {
@@ -61,6 +63,11 @@ export const CHARACTER_INFO: Record<CharacterId, CharacterInfo> = {
   zoya: { id: 'zoya', name: 'Zoya Khan', nick: 'Mule', runner: 'steadyCarry', saboteur: 'deepPockets', color: '#ffc94a' },
   rex: { id: 'rex', name: 'Rex Malhotra', nick: 'Rattle', runner: 'shakeItOff', saboteur: 'trapRefresh', color: '#e0409a' },
   iris: { id: 'iris', name: 'Iris Iyer', nick: 'Latch', runner: 'firstAid', saboteur: 'doorJam', color: '#8f7cff' },
+  theo: { id: 'theo', name: 'Theo Bennett', nick: 'Switch', runner: 'comingSoon', saboteur: 'comingSoon', color: '#a2c66e' },
+  elise: { id: 'elise', name: 'Elise Hart', nick: 'Scout', runner: 'comingSoon', saboteur: 'comingSoon', color: '#55b8ae' },
+  felix: { id: 'felix', name: 'Felix Morgan', nick: 'Fuse', runner: 'comingSoon', saboteur: 'comingSoon', color: '#f0b94e' },
+  clara: { id: 'clara', name: 'Clara Weiss', nick: 'Beacon', runner: 'comingSoon', saboteur: 'comingSoon', color: '#6d9ff0' },
+  miles: { id: 'miles', name: 'Miles Laurent', nick: 'Velvet', runner: 'comingSoon', saboteur: 'comingSoon', color: '#b95b76' },
 };
 
 export const abilityFor = (id: CharacterId, role: Role) => ABILITIES[CHARACTER_INFO[id][role]];

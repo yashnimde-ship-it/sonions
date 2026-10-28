@@ -6,6 +6,7 @@
 const KEY = 'bandit-profile';
 
 interface Saved {
+  version: number;
   tag: string;
   heists: number;
 }
@@ -28,9 +29,14 @@ export class Profile {
     } catch {
       // Storage blocked: a fresh profile for this visit.
     }
+    // Earlier builds counted a heist as soon as a match started, which gave players
+    // inflated levels even when they never finished a match. Keep their tag, but reset
+    // that unreliable development count once when upgrading the profile format.
+    const currentVersion = saved.version === 2;
     this.saved = {
+      version: 2,
       tag: typeof saved.tag === 'string' && /^\d{4}$/.test(saved.tag) ? saved.tag : String(1000 + Math.floor(Math.random() * 9000)),
-      heists: typeof saved.heists === 'number' && saved.heists >= 0 ? saved.heists : 0,
+      heists: currentVersion && typeof saved.heists === 'number' && saved.heists >= 0 ? saved.heists : 0,
     };
     this.save();
   }

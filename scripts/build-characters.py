@@ -11,14 +11,14 @@ bobs). Run: python3 scripts/build-characters.py
 """
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from walk_cycle import narrow_stance, walk_frames
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / 'art' / 'characters'
 OUT = ROOT / 'public' / 'assets' / 'characters'
-IDS = ['maya', 'dev', 'zoya', 'rex', 'iris']
+IDS = ['maya', 'dev', 'zoya', 'rex', 'iris', 'theo', 'elise', 'felix', 'clara', 'miles']
 
 # Keep in sync with CHAR_FRAME_W / CHAR_FRAME_H in src/config.ts.
 FRAME_W, FRAME_H = 48, 72
@@ -54,10 +54,10 @@ def divider_y(im):
 
 def bottom_y(im):
     """The panels' bottom border (it differs slightly between sheets)."""
-    for y in range(1100, im.height):
-        if is_dark(im.getpixel((200, y))):
-            return y
-    return im.height
+    # Find the full-width panel rule rather than one pixel in the front-view character: newer
+    # concept sheets put a boot or coat at x=200 near the bottom.
+    start = max(0, round(im.height * 0.86))
+    return max(range(start, im.height), key=lambda y: sum(is_dark(im.getpixel((x, y))) for x in range(12, im.width - 12, 4)))
 
 
 def near_paper(p, tol):
@@ -79,11 +79,51 @@ def cut_out(panel):
     return rgba.crop(rgba.getbbox())
 
 
+def remove_floating_art(img):
+    """Drop tiny disconnected marks and ground shadows left around generated figures."""
+    alpha = img.getchannel('A')
+    w, h = alpha.size
+    px = alpha.load()
+    seen = bytearray(w * h)
+    components = []
+    for y in range(h):
+        for x in range(w):
+            i = y * w + x
+            if not px[x, y] or seen[i]:
+                continue
+            stack = [i]
+            seen[i] = 1
+            component = []
+            while stack:
+                n = stack.pop()
+                component.append(n)
+                xx, yy = n % w, n // w
+                for nx, ny in ((xx - 1, yy), (xx + 1, yy), (xx, yy - 1), (xx, yy + 1)):
+                    if 0 <= nx < w and 0 <= ny < h:
+                        ni = ny * w + nx
+                        if not seen[ni] and px[nx, ny]:
+                            seen[ni] = 1
+                            stack.append(ni)
+            components.append(component)
+    largest = max(map(len, components), default=0)
+    keep = bytearray(w * h)
+    for component in components:
+        if len(component) >= max(24, largest * 0.02):
+            for i in component:
+                keep[i] = 1
+    mask = Image.frombytes('L', (w, h), bytes(255 if value else 0 for value in keep))
+    img.putalpha(Image.composite(alpha, Image.new('L', (w, h), 0), mask))
+    return img.crop(img.getbbox())
+
+
 def shrink(img, scale):
     w, h = img.size
     size = (max(1, round(w * scale)), max(1, round(h * scale)))
     # Premultiplied resize so no cream fringe bleeds in, then hard alpha for crisp pixel edges.
     small = img.convert('RGBa').resize(size, Image.LANCZOS).convert('RGBA')
+    # Generated concept sheets contain soft, anti-aliased edges. After shrinking to a
+    # 48px game sprite those edges read as blur, so restore a little local contrast.
+    small = small.filter(ImageFilter.UnsharpMask(radius=0.7, percent=150, threshold=2))
     small.putdata([(r, g, b, 255 if a >= 110 else 0) for r, g, b, a in small.get_flattened_data()])
     return small
 
@@ -101,7 +141,10 @@ def frame(view, squash=1.0, lift=0):
 def build(char_id):
     sheet = Image.open(SRC / f'{char_id}.png').convert('RGB')
     top = divider_y(sheet)
-    views = [cut_out(sheet.crop((x0 + INSET, top + INSET, x1 - INSET, bottom_y(sheet) - INSET))) for x0, x1 in PANELS_X]
+    sx = sheet.width / 1312
+    views = [cut_out(sheet.crop((round(x0 * sx) + INSET, top + INSET, round(x1 * sx) - INSET, bottom_y(sheet) - INSET))) for x0, x1 in PANELS_X]
+    if char_id in {'theo', 'elise', 'felix', 'clara', 'miles'}:
+        views = [remove_floating_art(view) for view in views]
     front, side, back = views
     side = side.transpose(Image.FLIP_LEFT_RIGHT)  # concepts face right; the sheet's side frames face left
 
