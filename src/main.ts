@@ -7,15 +7,16 @@ import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
 import { Profile } from './data/profile';
 import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, RED_EXTRA_SLOW, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { cleanName } from './data/names';
-import { BOOST, FLARE, HS_SCORE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, isGameMode, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
-import { CUSTOM_MIN, CUSTOM_PAD, HANDOFF_REACH, type PingLabel, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
+import { BOOST, FLARE, HS_SCORE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
+import { HANDOFF_REACH, type PingLabel, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H, DRAW_W } from './entities/Bandit';
 import { keyHeld, keyPressed, pollInput, readControls } from './input/Controls';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
 import { type EstateJson, TileMap, type Stairwell } from './map/TileMap';
 import { NetClient } from './net/NetClient';
-import { type ClientMsg, NET_HZ, type PlayerState, type PortalState, type ServerMsg } from './net/protocol';
+import { type ClientMsg, NET_HZ, type PlayerState, type ServerMsg } from './net/protocol';
+import { normalizeCode, ROOM_ERRORS, type RoomInfo } from './data/rooms';
 import { CameraSystem } from './systems/CameraSystem';
 import { InteractionSystem } from './systems/InteractionSystem';
 import { Particles } from './systems/Particles';
@@ -30,7 +31,7 @@ import { audioOut, footstep, play as sfx, setSoundEnabled, unlockSound } from '.
 const audioOutState = () => audioOut()?.state ?? 'none';
 import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
 import { HUD } from './ui/HUD';
-import { LobbyUI, type MapInfo, type StartState } from './ui/LobbyUI';
+import { LobbyUI, type MapInfo } from './ui/LobbyUI';
 import { Settings } from './ui/Settings';
 import { TrapBar } from './ui/TrapBar';
 import { ResultScreen } from './ui/ResultScreen';
@@ -86,7 +87,6 @@ interface Remote {
 // Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
 // that). Bank it by walking into the GETAWAY zone on the street, in tiles.
 const CARRY_SLOW = 0.35;
-const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#ff4fb0' };
 // ---------- This tab's player, across reloads and dropped connections ----------
 // The key is per tab (sessionStorage): it survives a reload, and two tabs on one laptop are two
 // players. Sent with hello, it lets the server give a dropped player their seat back.
@@ -147,14 +147,6 @@ async function boot() {
   let getaway = MAPS.estate.getaway;
   /** The map I'd like to play next (the crew's majority decides). */
   let myMap: MapId = 'estate';
-  /** The game mode I'd like next: a heist, or Hide & Seek. */
-  let myMode: GameMode = 'heist';
-  try {
-    const saved = localStorage.getItem('bandit-mode');
-    if (isGameMode(saved)) myMode = saved;
-  } catch {
-    // Storage blocked: a heist.
-  }
   /** The mode of the match I'm in (set as soon as a round starts). */
   let modeNow: GameMode = 'heist';
   /** Hide & Seek: who the Seeker is this round. */
@@ -342,13 +334,13 @@ async function boot() {
   let myCharacter: CharacterId = 'maya';
   const me = new Bandit(sheets.maya, 0, 0, 'down');
   const remotes = new Map<string, Remote>();
-  let portals: PortalState[] = [];
   let online = 0;
-  /** The portal under the mouse, and until when START HEIST's "pick a portal" flash runs. */
-  let hoverPortal: number | null = null;
-  /** The party size last told to the server, so it hears when we step on or off a pad. */
-  let sentPortal: number | null = null;
-  let flashUntil = 0;
+  /** My room (from the server), or null on the menu. */
+  let myRoom: RoomInfo | null = null;
+  /** Shown on the title screen once we're back there (e.g. the host removed us). */
+  let titleNote = '';
+  /** Resolves when the server welcomes us (after a hello). */
+  let onWelcome: (() => void) | null = null;
   let viewX = 0;
   let viewY = 0;
   /** The heist you're in; `saboteur` is whether *you* are it (nobody is told who else is). */
@@ -549,21 +541,32 @@ async function boot() {
     lobby.setMe(myName, id, profile);
   }
 
-  async function play() {
-    if (net.connected) return;
+  /** Connected and introduced to the server (once). False if it can't be reached. */
+  async function ensureOnline(): Promise<boolean> {
+    if (net.connected && myId) return true;
     serverFull = false;
     title.setBusy(true);
     try {
       await net.connect();
-    } catch (err) {
-      title.setBusy(false, (err as Error).message);
-      return;
+    } catch {
+      title.setBusy(false, "Can't reach the game server. Check your internet connection and try again.");
+      return false;
     }
-    myName = cleanName(session.get('name') ?? title.name, `Bandit${Math.floor(100 + Math.random() * 900)}`);
+    myName = cleanName(title.name, `Bandit${Math.floor(100 + Math.random() * 900)}`);
     session.set('name', myName);
-    session.set('playing', '1');
     setCharacter(myCharacter);
+    const welcomed = new Promise<void>((resolve) => (onWelcome = resolve));
     sayHello();
+    await welcomed;
+    title.setBusy(false);
+    return true;
+  }
+
+  /** A room request from the menu: online first, then busy until the room (or an error) comes back. */
+  async function roomRequest(msg: ClientMsg) {
+    if (!(await ensureOnline())) return;
+    title.setBusy(true);
+    net.send(msg);
   }
 
   function sayHello() {
@@ -747,6 +750,34 @@ async function boot() {
     switch (msg.t) {
       case 'welcome':
         myId = msg.id;
+        onWelcome?.();
+        onWelcome = null;
+        break;
+      case 'room':
+        myRoom = msg.room;
+        if (msg.room) {
+          session.set('playing', '1');
+          // The address bar shows the room's invite link.
+          history.replaceState(null, '', `?room=${msg.room.code}`);
+          lobby.setRoom(msg.room, myId, online);
+        } else {
+          session.set('playing', null);
+          history.replaceState(null, '', location.pathname);
+          if (scene !== 'title') {
+            setScene('title');
+            remotes.clear();
+          }
+          title.setBusy(false, titleNote);
+          titleNote = '';
+        }
+        break;
+      case 'roomError':
+        if (msg.reason === 'kicked') titleNote = ROOM_ERRORS.kicked;
+        else if (scene === 'title') title.setBusy(false, ROOM_ERRORS[msg.reason]);
+        else lobby.nudgeStart(ROOM_ERRORS[msg.reason]);
+        break;
+      case 'rooms':
+        title.showRooms(msg.list);
         break;
       case 'replaced':
         // The same player opened in another tab; that one plays now.
@@ -770,7 +801,6 @@ async function boot() {
         resetCount();
         me.resetPose();
         match = null;
-        sentPortal = null;
         result = null;
         resultScreen.hide();
         remotes.clear();
@@ -782,11 +812,7 @@ async function boot() {
         setScene('lobby');
         const help = document.querySelector<HTMLElement>('#hud .help');
         if (help) help.textContent = 'WASD move · Shift sprint · E action · Q ability · Esc safehouse';
-        // The server forgets nothing between heists, but tell it again after (re)joining.
-        lobby.setMap(myMap);
-        net.send({ t: 'map', map: myMap });
-        lobby.setMode(myMode);
-        net.send({ t: 'mode', mode: myMode });
+        // The room's host picks the map and mode (the room message says which).
         modeNow = 'heist';
         break;
       case 'match':
@@ -818,7 +844,6 @@ async function boot() {
         break;
       case 'snapshot': {
         if ((msg.room === 'match') !== (scene === 'match')) break;
-        portals = msg.portals;
         online = msg.online;
         if (msg.room === 'lobby') lobby.setTaken(msg.taken, myCharacter);
         const seen = new Set<string>();
@@ -1213,15 +1238,34 @@ async function boot() {
     else void reconnect();
   };
 
-  title.onPlay = play;
+  // The menu: Quick Play, Create Room, Join with a code, Browse Rooms.
+  title.mapName = (id) => (isMapId(id) ? MAPS[id].name : id);
+  title.onPlay = () => void roomRequest({ t: 'quickPlay' });
+  title.onCreate = (o) => void roomRequest({ t: 'createRoom', private: o.private, size: o.size, mode: o.mode, map: myMap });
+  title.onJoin = (raw) => {
+    const code = normalizeCode(raw);
+    if (!code) title.setBusy(false, ROOM_ERRORS.badCode);
+    else void roomRequest({ t: 'joinRoom', code });
+  };
+  title.onBrowse = async (open) => {
+    if (open && !(await ensureOnline())) return;
+    net.send({ t: 'browse', on: open });
+  };
   // A reload while playing goes straight back in: the server still holds this tab's seat.
-  if (session.get('playing')) void play();
+  // An invite link (?room=CODE) fills in the code and joins.
+  const invite = new URLSearchParams(location.search).get('room');
+  if (session.get('playing')) void ensureOnline();
+  else if (invite) {
+    // Someone who's played before joins straight away; someone new types a name first.
+    if (title.hasSavedName) {
+      title.setCode(invite.toUpperCase());
+      title.onJoin(invite);
+    } else title.askNameFor(invite.toUpperCase());
+  }
   // The server confirms (or refuses) the pick with a 'character' message.
   lobby.onPick = (id) => net.send({ t: 'character', character: id });
   lobby.onLoadout = () => lobby.openPicker(myCharacter);
-  lobby.setPadSizes(lobbyData.portals.map((p) => p.size).filter((size) => size !== CUSTOM_PAD));
-  lobby.onPortal = (size) => joinPortal(size);
-  // The map picker: tell the server (it goes with the crew's majority when a portal fills).
+  // The room's host picks the map (in the map picker) and the mode; others are told so.
   lobby.onMap = (id) => {
     myMap = id;
     try {
@@ -1229,41 +1273,16 @@ async function boot() {
     } catch {
       // Not remembered; still applies now.
     }
-    net.send({ t: 'map', map: id });
+    if (myRoom?.host === myId) net.send({ t: 'roomSettings', map: id });
+    else if (myRoom) lobby.nudgeStart('Only the host picks the map.');
   };
-  lobby.onMode = (mode) => {
-    myMode = mode;
-    try {
-      localStorage.setItem('bandit-mode', mode);
-    } catch {
-      // Not remembered; still applies now.
-    }
-    net.send({ t: 'mode', mode });
-  };
-  lobby.onStart = () => {
-    const s = startState();
-    if (s.kind === 'none') {
-      flashUntil = performance.now() + 1500;
-      lobby.nudgeStart('Choose a party size first: click a portal below the table, or walk into one.');
-    } else if (s.kind === 'waiting') {
-      const missing = s.size - s.count;
-      lobby.nudgeStart(`Can't start yet: ${missing} more crew member${missing > 1 ? 's' : ''} needed in the ${s.size}-player portal.`);
-    } else if (s.kind === 'countdown') {
-      lobby.nudgeStart(`Starting in ${s.seconds}... hold tight!`);
-    } else {
-      lobby.nudgeStart('Not connected to the game server.');
-    }
-  };
-  // Exit: leave the server on purpose and go back to the title screen.
-  lobby.onExit = () => {
-    session.set('playing', null);
-    setScene('title');
-    net.disconnect();
-    remotes.clear();
-    portals = [];
-    online = 0;
-    title.setBusy(false);
-  };
+  lobby.onMode = (mode) => net.send({ t: 'roomSettings', mode });
+  lobby.onStart = () => net.send({ t: 'startGame' });
+  lobby.onReady = (ready) => net.send({ t: 'roomReady', ready });
+  lobby.onRoomSettings = (settings) => net.send({ t: 'roomSettings', ...settings });
+  lobby.onKick = (id) => net.send({ t: 'kick', id });
+  // Exit: out of the room, back to the menu (still connected; the server answers with room: null).
+  lobby.onExit = () => net.send({ t: 'leaveRoom' });
   setSoundEnabled(settings.values.sound);
   setMusicEnabled(settings.values.music);
   setHeistMusicEnabled(settings.values.music);
@@ -1278,76 +1297,12 @@ async function boot() {
     frameCamera(true);
   });
 
-  /** The party size you're standing in, if any. */
-  function myPortal(): number | null {
-    const pad = lobbyData.portals.find((p) => LobbyMap.inside(p, me.x, me.y));
-    return pad ? padSize(pad) : null;
-  }
-
-  /** The CUSTOM pad (the map's 4-player pad) is whatever size you picked; the others are fixed. */
-  const padSize = (p: { size: number }) => (p.size === CUSTOM_PAD ? lobby.customSize : p.size);
-  const padFor = (size: number) => lobbyData.portals.find((q) => q.size === (size >= CUSTOM_MIN ? CUSTOM_PAD : size));
-
-  /**
-   * Picking a portal (click, or a row in the Heist Lobby panel): step into its next free
-   * seat. Picking the one you're in steps you back out. The server counts whoever stands
-   * in a portal, so this is the same as walking in.
-   */
-  function joinPortal(size: number) {
-    if (scene !== 'lobby' || lobby.panelOpen) return;
-    const p = padFor(size);
-    if (!p) return;
-    if (myPortal() === size) {
-      me.x = (p.x + p.w / 2) * ART_TILE;
-      me.y = (p.y - 0.9) * ART_TILE;
-      me.facing = 'up';
-      net.send({ t: 'portal', size: null });
-    } else {
-      if (size >= CUSTOM_MIN) lobby.customSize = size;
-      const seat = Math.min(portals.find((s) => s.size === size)?.count ?? 0, size - 1);
-      me.x = (p.x + 1.2 + (seat % 3) * ((p.w - 2.4) / 2)) * ART_TILE;
-      me.y = (p.y + 2.4 + Math.floor(seat / 3) * 1.3) * ART_TILE;
-      me.facing = 'down';
-      net.send({ t: 'portal', size });
-    }
-    frameCamera(true);
-  }
-
-  function startState(): StartState {
-    if (!net.connected) return { kind: 'offline' };
-    const size = myPortal();
-    const state = portals.find((s) => s.size === size);
-    if (size === null || !state) return { kind: 'none' };
-    if (state.countdown !== null) return { kind: 'countdown', size, seconds: state.countdown };
-    return { kind: 'waiting', size, count: state.count };
-  }
-
-  // Portals are real controls: hover highlights one, click joins (or leaves) it.
-  const portalAtScreen = (clientX: number, clientY: number) => {
-    const wx = viewX + (clientX * dpr) / scale;
-    const wy = viewY + (clientY * dpr) / scale;
-    // The pad and its sign above it.
-    const p = lobbyData.portals.find((q) => LobbyMap.inside({ x: q.x, y: q.y - 1.1, w: q.w, h: q.h + 1.1 }, wx, wy));
-    return p ? padSize(p) : null;
-  };
-  canvas.addEventListener('mousemove', (e) => {
-    hoverPortal = scene === 'lobby' && !lobby.panelOpen ? portalAtScreen(e.clientX, e.clientY) : null;
-    canvas.style.cursor = hoverPortal ? 'pointer' : '';
-  });
-  canvas.addEventListener('mouseleave', () => {
-    hoverPortal = null;
-    canvas.style.cursor = '';
-  });
-  canvas.addEventListener('click', (e) => {
-    const size = scene === 'lobby' ? portalAtScreen(e.clientX, e.clientY) : null;
-    if (size) joinPortal(size);
-  });
   setScene('title');
   window.addEventListener('resize', resize);
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get portals() { return portals; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get pings() { return pings; }, lobbyMusicInfo, audioState: () => audioOutState(), get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get room() { return myRoom; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get pings() { return pings; }, lobbyMusicInfo, audioState: () => audioOutState(), get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -1745,21 +1700,7 @@ async function boot() {
         me.update(input, lobbyMap);
         if (input.action && nearWardrobe()) lobby.openPicker(myCharacter);
       }
-      // Until you pick a size yourself, the CUSTOM pad shows the busiest custom party waiting,
-      // so walking in joins them.
-      const onCustom = lobbyData.portals.some((p) => p.size === CUSTOM_PAD && LobbyMap.inside(p, me.x, me.y));
-      if (!onCustom && !lobby.customPicked) {
-        const busiest = portals.filter((p) => p.size >= CUSTOM_MIN && p.count > 0).sort((a, b) => b.count - a.count)[0];
-        if (busiest) lobby.customSize = busiest.size;
-      }
-      // Tell the server which party we're standing in (the CUSTOM pad's size is ours to pick).
-      const mine = myPortal();
-      if (mine !== sentPortal) {
-        sentPortal = mine;
-        net.send({ t: 'portal', size: mine });
-      }
-      lobby.setPortals(portals, online, mine);
-      lobby.setStart(startState());
+      if (myRoom) lobby.setRoom(myRoom, myId, online);
       sendPosition();
       frameCamera(false);
       return;
@@ -2247,7 +2188,6 @@ async function boot() {
       if (scene === 'lobby') {
         ctx.save();
         ctx.scale(scale, scale);
-        drawPortalFloors(camX, camY);
         actors.forEach((b) => b.draw(ctx, camX, camY));
         ctx.restore();
       }
@@ -2262,11 +2202,9 @@ async function boot() {
       if (scene === 'title') return;
       ctx.save();
       ctx.scale(scale, scale);
-      drawPortalFrames(camX, camY);
       ctx.globalAlpha = CHAR_GLOW;
       actors.forEach((b) => b.draw(ctx, camX, camY, false));
       ctx.restore();
-      drawPortalLabels(camX, camY);
       drawWardrobePrompt(camX, camY);
       if (settings.values.nameTags) drawNameTags(camX, camY);
       return;
@@ -3407,145 +3345,6 @@ async function boot() {
     ctx.globalAlpha = near ? 1 : 0.75;
     keyTag('E', 'CUSTOMIZE', sx, sy, near ? '#ffc94a' : '#fff4e6', size);
     ctx.restore();
-  }
-
-  /** The tinted pad under the players. */
-  /** The CUSTOM pad glows purple; the fixed pads keep their colours. */
-  const portalColor = (p: { size: number }) => (p.size === CUSTOM_PAD ? '#9b6cff' : PORTAL_COLORS[p.size] ?? '#ffffff');
-
-  function drawPortalFloors(camX: number, camY: number) {
-    const mine = myPortal();
-    const flashing = performance.now() < flashUntil;
-    for (const p of lobbyData.portals) {
-      const size = padSize(p);
-      const state = portals.find((s) => s.size === size);
-      const counting = state?.countdown != null;
-      ctx.save();
-      ctx.fillStyle = portalColor(p);
-      let alpha = 0.26;
-      if (size === mine) alpha = 0.38 + 0.08 * Math.sin(frame / 10);
-      else if (size === hoverPortal) alpha = 0.34;
-      if (flashing) alpha = 0.3 + 0.3 * Math.abs(Math.sin(frame / 5));
-      ctx.globalAlpha = counting ? 0.35 + 0.3 * Math.abs(Math.sin(frame / 6)) : alpha;
-      ctx.fillRect(p.x * ART_TILE - camX, p.y * ART_TILE - camY, p.w * ART_TILE, p.h * ART_TILE);
-      ctx.restore();
-    }
-  }
-
-  /** Neon frames, a crew icon per seat, and a sign plate; drawn over the lamplight so they glow. */
-  function drawPortalFrames(camX: number, camY: number) {
-    const pulse = 0.65 + 0.35 * Math.sin(frame / 15);
-    const mine = myPortal();
-    for (const p of lobbyData.portals) {
-      const size = padSize(p);
-      const state = portals.find((s) => s.size === size);
-      const color = portalColor(p);
-      const selected = size === mine;
-      const hovered = size === hoverPortal;
-      const x = Math.round(p.x * ART_TILE - camX);
-      const y = Math.round(p.y * ART_TILE - camY) - (hovered && !selected ? 1 : 0);
-      const w = p.w * ART_TILE;
-      const h = p.h * ART_TILE;
-      ctx.save();
-      // Dark bezel, then a glowing double neon line.
-      ctx.strokeStyle = '#0e0a1a';
-      ctx.lineWidth = 4;
-      ctx.strokeRect(x, y, w, h);
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 10 * dpr * (selected || hovered ? 1.4 : pulse);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = selected ? 3 : 2;
-      ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
-      if (selected) {
-        // Marching dashes inside the frame: this is your party.
-        ctx.setLineDash([4, 4]);
-        ctx.lineDashOffset = -frame / 3;
-        ctx.globalAlpha = 0.9;
-        ctx.strokeRect(x + 9.5, y + 9.5, w - 19, h - 19);
-        ctx.setLineDash([]);
-        ctx.globalAlpha = 1;
-      }
-      ctx.globalAlpha = 0.55;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x + 6.5, y + 6.5, w - 13, h - 13);
-      ctx.shadowBlur = 0;
-      // Bright corner brackets.
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#fff4e6';
-      for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
-        ctx.fillRect(dx > 0 ? cx + 1 : cx - 9, dy > 0 ? cy + 1 : cy - 3, 8, 2);
-        ctx.fillRect(dx > 0 ? cx + 1 : cx - 3, dy > 0 ? cy + 1 : cy - 9, 2, 8);
-      }
-      // One little person per seat: lit when taken.
-      const count = state?.count ?? 0;
-      // Up to 9 seats on the CUSTOM pad, so they squeeze together to fit.
-      const gap = Math.min(13, (w - 20) / Math.max(1, size - 1));
-      const left = x + w / 2 - ((size - 1) * gap) / 2;
-      for (let i = 0; i < size; i++) person(left + i * gap, y + h * 0.38, i < count ? color : 'rgba(255,244,230,0.3)');
-      // The sign plate above the pad, hung on two posts.
-      ctx.fillStyle = '#6b4529';
-      ctx.fillRect(x + 10, y - 4, 2, 4);
-      ctx.fillRect(x + w - 12, y - 4, 2, 4);
-      ctx.fillStyle = '#16101e';
-      ctx.fillRect(x + 4, y - 15, w - 8, 12);
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 6 * dpr;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x + 4.5, y - 14.5, w - 9, 11);
-      ctx.shadowBlur = 0;
-      ctx.restore();
-    }
-  }
-
-  /** A tiny pixel person (head and shoulders) centred on (x, y), in art pixels. */
-  function person(x: number, y: number, color: string) {
-    const px = Math.round(x);
-    const py = Math.round(y);
-    ctx.fillStyle = color;
-    ctx.fillRect(px - 3, py - 8, 6, 6);
-    ctx.fillRect(px - 2, py - 9, 4, 1);
-    ctx.fillRect(px - 5, py, 10, 5);
-    ctx.fillRect(px - 4, py - 1, 8, 1);
-  }
-
-  function drawPortalLabels(camX: number, camY: number) {
-    for (const p of lobbyData.portals) {
-      const size = padSize(p);
-      const state = portals.find((s) => s.size === size);
-      const color = portalColor(p);
-      const cx = ((p.x + p.w / 2) * ART_TILE - camX) * scale;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.font = `${Math.round(8 * dpr)}px "Press Start 2P"`;
-      ctx.fillStyle = color;
-      ctx.fillText(p.size === CUSTOM_PAD ? `CUSTOM ${size}P` : `${size} PLAYERS`, cx, (p.y * ART_TILE - 9 - camY) * scale);
-      const countY = ((p.y + p.h * 0.75) * ART_TILE - camY) * scale;
-      if (state?.countdown != null) {
-        const midY = ((p.y + p.h / 2) * ART_TILE - camY) * scale;
-        ctx.font = `${Math.round(30 * dpr)}px "Press Start 2P"`;
-        ctx.fillStyle = '#0e0a1a';
-        ctx.fillText(String(state.countdown), cx + 3 * dpr, midY + 3 * dpr);
-        ctx.fillStyle = '#fff4e6';
-        ctx.fillText(String(state.countdown), cx, midY);
-      } else {
-        ctx.font = `${Math.round(13 * dpr)}px "Press Start 2P"`;
-        ctx.fillStyle = '#0e0a1a';
-        ctx.fillText(`${state?.count ?? 0}/${size}`, cx + 2 * dpr, countY + 2 * dpr);
-        ctx.fillStyle = '#fff4e6';
-        ctx.fillText(`${state?.count ?? 0}/${size}`, cx, countY);
-      }
-      // Under the count: your party, or what a click will do.
-      const mine = myPortal() === size;
-      const note = mine ? (hoverPortal === size ? 'CLICK TO LEAVE' : 'YOUR PARTY') : hoverPortal === size ? 'CLICK TO JOIN' : '';
-      if (note) {
-        ctx.font = `${Math.round(7 * dpr)}px "Press Start 2P"`;
-        ctx.fillStyle = '#0e0a1a';
-        ctx.fillText(note, cx + dpr, ((p.y + p.h - 0.4) * ART_TILE - camY) * scale + dpr);
-        ctx.fillStyle = mine ? color : '#fff4e6';
-        ctx.fillText(note, cx, ((p.y + p.h - 0.4) * ART_TILE - camY) * scale);
-      }
-    }
   }
 
   /** A key cap followed by a label, on a dark plate, centred at (sx, sy) in screen pixels. */

@@ -1,5 +1,6 @@
 // Messages between the game and the server (server/index.ts), sent as JSON over one WebSocket.
 
+import type { RoomError, RoomInfo, RoomSummary } from '../data/rooms';
 import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node server
 import type { AbilityId } from '../data/characters.ts';
 import type { MapId } from '../data/maps.ts';
@@ -57,6 +58,18 @@ export type ClientMsg =
   | { t: 'move'; room: RoomKind; x: number; y: number; facing: Facing; moving: boolean; sprint: boolean; carrying: boolean; hp: number; stunned: boolean }
   /** Explicit lobby portal selection (also used when the player clicks a portal pad). */
   | { t: 'portal'; size: number | null }
+  /** Rooms: create one (you're its host), join by code, Quick Play, or leave for the menu. */
+  | { t: 'createRoom'; private: boolean; size: number; mode: GameMode; map: MapId }
+  | { t: 'joinRoom'; code: string }
+  | { t: 'quickPlay' }
+  | { t: 'leaveRoom' }
+  /** The room browser is open (true): send me the public rooms whenever they change. */
+  | { t: 'browse'; on: boolean }
+  /** In a room: I'm ready (or not); the host changes settings, removes someone, or starts. */
+  | { t: 'roomReady'; ready: boolean }
+  | { t: 'roomSettings'; size?: number; mode?: GameMode; map?: MapId; private?: boolean }
+  | { t: 'kick'; id: string }
+  | { t: 'startGame' }
   /** Saboteur confirms setup early. */
   | { t: 'ready' }
   /** Setup: the Saboteur hides a diamond in a piece of furniture (null takes it back out). */
@@ -127,6 +140,12 @@ export type ServerMsg =
   | { t: 'resync'; doors: { id: string; open: boolean }[]; placed: PlacedTrap[] }
   /** You are in the lobby now, standing at (x, y) in its art pixels. */
   | { t: 'lobby'; x: number; y: number; character: CharacterId }
+  /** Your room (null: you're not in one, back to the menu). */
+  | { t: 'room'; room: RoomInfo | null }
+  /** A room request didn't work. */
+  | { t: 'roomError'; reason: RoomError }
+  /** The public rooms (for the room browser). */
+  | { t: 'rooms'; list: RoomSummary[] }
   /** Your character, as the server decided it (picks can be refused: one of each per server). */
   | { t: 'character'; character: CharacterId }
   /** All five crew members are taken: the server can't fit another player right now. */

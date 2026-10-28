@@ -1,10 +1,11 @@
 import { CHARACTERS, type CharacterId } from '../config';
 import { abilityFor, CHARACTER_INFO } from '../data/characters';
 import type { Profile } from '../data/profile';
-import { CUSTOM_MIN, MAX_CREW } from '../data/round';
 import type { GameMode } from '../data/hideSeek';
 import type { MapId } from '../data/maps';
-import type { PortalState, Taken } from '../net/protocol';
+import { HIDE_SEEK_MIN_PLAYERS } from '../data/hideSeek';
+import { ROOM_MAX, ROOM_MIN, type RoomInfo } from '../data/rooms';
+import type { Taken } from '../net/protocol';
 import { iconHtml, type IconName } from './pixelIcons';
 import { SETTING_LABELS, type Settings, type SettingsValues } from './Settings';
 
@@ -25,13 +26,6 @@ export interface MapInfo {
   loot: { name: string; value: number }[];
   preview: string;
 }
-
-/** Where your party stands, for the Start Heist box. */
-export type StartState =
-  | { kind: 'none' }
-  | { kind: 'waiting'; size: number; count: number }
-  | { kind: 'countdown'; size: number; seconds: number }
-  | { kind: 'offline' };
 
 const NAV: { id: NavId; label: string; icon: IconName }[] = [
   { id: 'lobby', label: 'LOBBY', icon: 'home' },
@@ -67,24 +61,20 @@ export class LobbyUI {
   private partyTitle = $('party-title');
   private lobbyHint = $('lobby-hint');
   private abort = new AbortController();
-  private lastPortals = '';
-  /** Party sizes that have a pad in the safehouse; other sizes are custom parties. */
-  private padSizes = new Set<number>();
-  private size = CUSTOM_MIN;
-  /** Set once the player presses - or +: from then on the CUSTOM pad keeps their size. */
-  customPicked = false;
+  /** My room (from the server), and who I am in it. */
+  private room: RoomInfo | null = null;
+  private myId = '';
+  private lastRoom = '';
+  private roomBar = document.createElement('div');
+  private sizeRow = document.createElement('div');
   /** The game mode I want: a heist, or Hide & Seek (3+ players, on the cruise ship). */
   private mode: GameMode = 'heist';
   private modeRow = document.createElement('div');
   /** The mode switch was clicked. */
   onMode: (mode: GameMode) => void = () => {};
-  private custom = document.createElement('div');
   private lastCard = '';
-  private lastStart = '';
   /** A START HEIST explanation stays up until then (ms), instead of the live status. */
   private nudgeUntil = 0;
-  private nudgeKind = '';
-  private startKind = '';
   private choice = 0;
   /** Characters other players have, and who has them. */
   private taken = new Map<CharacterId, string>();
@@ -92,10 +82,14 @@ export class LobbyUI {
 
   /** The wardrobe or Loadout picker confirmed a character. */
   onPick: (id: CharacterId) => void = () => {};
-  /** A party row was clicked: join (or leave) that portal. */
-  onPortal: (size: number) => void = () => {};
-  /** START HEIST was pressed. */
+  /** The host pressed START. */
   onStart: () => void = () => {};
+  /** A player (not the host) pressed READY / NOT READY. */
+  onReady: (ready: boolean) => void = () => {};
+  /** The host changed the room: size or who can join (mode and map have their own). */
+  onRoomSettings: (s: { size?: number; private?: boolean }) => void = () => {};
+  /** The host removed a player. */
+  onKick: (id: string) => void = () => {};
   /** Exit was confirmed. */
   onExit: () => void = () => {};
   /** A map was picked in the map picker. */
@@ -121,39 +115,48 @@ export class LobbyUI {
       if (item) this.navigate(item.dataset.nav as NavId);
       item?.blur();
     }, opts);
+    // The member list: the host's remove (x) buttons.
     this.portalList.addEventListener('click', (e) => {
-      const row = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-size]');
-      if (row) this.onPortal(Number(row.dataset.size));
-      row?.blur();
+      const kick = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-kick]');
+      if (kick) this.onKick(kick.dataset.kick!);
     }, opts);
-    // The CUSTOM pad's party size, CUSTOM_MIN to MAX_CREW; JOIN walks you onto the pad.
-    this.custom.className = 'custom-party';
-    this.custom.innerHTML = `<span class="label">CUSTOM</span><button type="button" data-step="-1" aria-label="Fewer players">-</button><b class="n"></b><button type="button" data-step="1" aria-label="More players">+</button><button type="button" class="join">JOIN</button>`;
-    this.portalList.after(this.custom);
-    this.renderCustom();
+    // The room's code (copy it, or a link to it) and who can join.
+    this.roomBar.className = 'room-bar';
+    this.partyTitle.closest('.party-head')!.after(this.roomBar);
+    this.roomBar.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
+      if (!b || !this.room) return;
+      if (b.dataset.copy) {
+        const text = b.dataset.copy === 'link' ? `${location.origin}/?room=${this.room.code}` : this.room.code;
+        void copyText(text).then((ok) => this.nudgeStart(ok ? (b.dataset.copy === 'link' ? 'Invite link copied: send it to your friends.' : `Code ${this.room!.code} copied.`) : `Couldn't copy: the code is ${this.room!.code}.`));
+      } else if (b.dataset.privacy && this.isHost) this.onRoomSettings({ private: !this.room.private });
+      b.blur();
+    }, opts);
+    // The room's size (host only).
+    this.sizeRow.className = 'size-row';
+    this.sizeRow.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-step]');
+      if (!b || !this.room || !this.isHost) return;
+      this.onRoomSettings({ size: Math.max(ROOM_MIN, Math.min(ROOM_MAX, this.room.size + Number(b.dataset.step))) });
+      b.blur();
+    }, opts);
     // Which game: a heist, or Hide & Seek on the cruise ship.
     this.modeRow.className = 'mode-row';
     this.modeRow.innerHTML = `<span class="label">MODE</span><button type="button" data-mode="heist">HEIST</button><button type="button" data-mode="hideSeek">HIDE &amp; SEEK</button><span class="mode-note">Hide &amp; Seek: 3+ players, on the cruise ship</span>`;
     this.portalList.before(this.modeRow);
+    this.portalList.before(this.sizeRow);
     this.modeRow.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-mode]');
       if (!btn) return;
-      this.setMode(btn.dataset.mode as GameMode);
-      this.onMode(this.mode);
+      if (this.room && !this.isHost) this.nudgeStart('Only the host picks the mode.');
+      else this.onMode(btn.dataset.mode as GameMode);
       btn.blur();
     }, opts);
     this.renderMode();
-    this.custom.addEventListener('click', (e) => {
-      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
-      if (!btn) return;
-      if (btn.dataset.step) {
-        this.customPicked = true;
-        this.customSize = this.size + Number(btn.dataset.step);
-      } else this.onPortal(this.size);
-      btn.blur();
-    }, opts);
+    // The host starts; everyone else readies up.
     this.startBtn.addEventListener('click', () => {
-      this.onStart();
+      if (this.isHost) this.onStart();
+      else if (this.room) this.onReady(!this.room.members.find((m) => m.id === this.myId)?.ready);
       this.startBtn.blur();
     }, opts);
     this.root.addEventListener('click', (e) => {
@@ -249,7 +252,7 @@ export class LobbyUI {
   setMap(id: MapId) {
     this.selectedMap = id;
     this.renderMaps();
-    this.lastPortals = '';
+    this.lastRoom = '';
   }
 
   private mapName = (id: MapId | null) => this.maps.find((m) => m.id === id)?.name ?? '';
@@ -261,79 +264,84 @@ export class LobbyUI {
   setMode(mode: GameMode) {
     this.mode = mode;
     this.renderMode();
-    this.lastPortals = '';
+    this.lastRoom = '';
   }
 
   private renderMode() {
     const hideSeek = this.mode === 'hideSeek';
     for (const b of this.modeRow.querySelectorAll<HTMLButtonElement>('[data-mode]')) b.classList.toggle('on', b.dataset.mode === this.mode);
-    this.partyTitle.textContent = hideSeek ? 'Hide & Seek Lobby' : 'Heist Lobby';
-    this.partyTitle.closest('section')?.setAttribute('aria-label', hideSeek ? 'Hide & Seek lobby' : 'Heist lobby');
+    this.partyTitle.closest('section')?.setAttribute('aria-label', hideSeek ? 'Hide & Seek room' : 'Heist room');
     this.modeRow.querySelector('.mode-note')!.textContent = hideSeek
       ? '3+ players on the cruise ship · smaller crews play Heist'
       : '2–9 players · set traps, hide diamonds, and escape';
     this.lobbyHint.textContent = hideSeek
-      ? 'Join 3 or more to play Hide & Seek aboard the cruise ship. Smaller crews play Heist.'
-      : 'Walk into a portal with your crew to start the heist.';
-    this.lastStart = '';
+      ? 'Hide & Seek aboard the cruise ship needs 3 or more. Smaller crews play Heist.'
+      : 'Share the code, wait for your crew to get ready, then the host starts.';
   }
 
-  /** The pads in the safehouse; their rows always show. */
-  setPadSizes(sizes: number[]) {
-    this.padSizes = new Set(sizes);
-    this.lastPortals = '';
+  private get isHost() {
+    return !!this.room && this.room.host === this.myId;
   }
 
-  /** The size picked for the CUSTOM pad. */
-  get customSize() {
-    return this.size;
-  }
-
-  set customSize(n: number) {
-    const next = Math.min(MAX_CREW, Math.max(CUSTOM_MIN, n));
-    if (next === this.size) return;
-    this.size = next;
-    this.renderCustom();
-    this.lastPortals = '';
-  }
-
-  private renderCustom() {
-    this.custom.querySelector('.n')!.textContent = `${this.size}P`;
-  }
-
-  setPortals(all: PortalState[], online: number, mine: number | null) {
-    // Pads always show; a custom size only once someone is waiting in it (or it's yours).
-    const portals = all.filter((p) => this.padSizes.has(p.size) || p.count > 0 || p.size === mine);
+  /**
+   * My room, from the server: its code and who can join, the players (host crown, ready
+   * ticks; the host can remove them), its size and mode, and the START / READY button.
+   */
+  setRoom(room: RoomInfo, myId: string, online: number) {
+    this.room = room;
+    this.myId = myId;
     this.online.textContent = String(online);
-    const key = JSON.stringify([portals, mine]);
-    if (key === this.lastPortals) return;
-    this.lastPortals = key;
-    // Rows are updated in place (not rebuilt), so a click isn't lost when a count changes under it.
-    portals.forEach((p, i) => {
-      let row = this.portalList.children[i] as HTMLButtonElement | undefined;
-      if (!row || row.dataset.size !== String(p.size)) {
-        row = document.createElement('button');
-        row.type = 'button';
-        row.dataset.size = String(p.size);
-        row.innerHTML = `<span class="size">${p.size}P</span><span class="dots"></span><span class="status"></span>`;
-        this.portalList.insertBefore(row, this.portalList.children[i] ?? null);
-      }
-      const me = p.size === mine;
-      row.className = `portal-row p${p.size}${this.padSizes.has(p.size) ? '' : ' custom'}${me ? ' mine' : ''}`;
-      row.title = `${me ? 'Leave' : 'Join'} the ${p.size}-player party`;
-      row.querySelector('.dots')!.innerHTML = Array.from({ length: p.size }, (_, k) => `<i class="${k < p.count ? 'on' : ''}"></i>`).join('');
-      const status = row.querySelector('.status')!;
-      status.className = `status ${p.countdown !== null ? 'go' : 'count'}`;
-      status.textContent = p.countdown !== null ? `GO ${p.countdown}` : `${p.count}/${p.size}`;
-    });
-    while (this.portalList.children.length > portals.length) this.portalList.lastElementChild!.remove();
-    const mineState = portals.find((p) => p.size === mine);
-    const pick = `Your map: <b class="map-pick">${esc(this.mapName(this.selectedMap))}</b>`;
-    this.partyStatus.innerHTML = mineState
-      ? mineState.mode === 'hideSeek'
-        ? `Party: <b class="c${mineState.size}">${mineState.size}P</b> · ${mineState.count}/${mineState.size} ready · <b class="map-pick">HIDE &amp; SEEK</b> on the cruise ship`
-        : `Party: <b class="c${mineState.size}">${mineState.size}P</b> · ${mineState.count}/${mineState.size} ready · map <b class="map-pick">${esc(this.mapName(mineState.map))}</b>`
-      : `No party yet · ${pick}`;
+    if (room.mode !== this.mode) this.setMode(room.mode);
+    if (room.map !== this.selectedMap) this.setMap(room.map);
+    const key = JSON.stringify([room, myId]);
+    if (key === this.lastRoom) return;
+    this.lastRoom = key;
+    const host = this.isHost;
+    this.partyTitle.innerHTML = `ROOM <span class="room-code">${room.code}</span>`;
+    this.roomBar.innerHTML = `<button type="button" data-copy="code">COPY CODE</button><button type="button" data-copy="link">COPY LINK</button><button type="button" class="privacy${host ? ' host' : ''}" data-privacy="1" title="${host ? 'Click to change who can join' : 'The host decides who can join'}">${room.private ? 'PRIVATE' : 'PUBLIC'}</button>`;
+    this.sizeRow.innerHTML = `<span class="label">PLAYERS</span>${host ? '<button type="button" data-step="-1" aria-label="Fewer players">-</button>' : ''}<b>${room.members.length}/${room.size}</b>${host ? '<button type="button" data-step="1" aria-label="More players">+</button>' : ''}`;
+    for (const b of this.modeRow.querySelectorAll<HTMLButtonElement>('[data-mode]')) b.classList.toggle('locked', !host);
+    this.portalList.innerHTML = room.members
+      .map((m) => {
+        const info = CHARACTER_INFO[m.character as CharacterId];
+        const isHost = m.id === room.host;
+        const status = m.offline ? 'RECONNECTING' : m.inGame ? 'IN GAME' : isHost ? 'HOST' : m.ready ? 'READY' : 'NOT READY';
+        return `<div class="member${m.id === myId ? ' me' : ''}">
+          <img src="/assets/characters/${m.character}-portrait.png" alt="">
+          <span class="mname" style="color:${info?.color ?? '#fff'}">${isHost ? '<span class="crown" title="Host">\u265B</span> ' : ''}${esc(m.name)}${m.id === myId ? ' <small>(you)</small>' : ''}</span>
+          <span class="mstate ${m.ready || isHost ? 'ok' : ''}">${m.ready && !isHost ? '\u2714 ' : ''}${status}</span>
+          ${host && m.id !== myId ? `<button type="button" class="kick" data-kick="${m.id}" title="Remove ${esc(m.name)}">\u2715</button>` : ''}
+        </div>`;
+      })
+      .join('');
+    const map = room.mode === 'hideSeek' ? 'the cruise ship' : this.mapName(room.map);
+    this.partyStatus.innerHTML = `Map: <b class="map-pick">${esc(map)}</b>${host ? ' · change it in MAP INFO' : ''}`;
+    // START (host) or READY (everyone else), and what it's waiting for.
+    const here = room.members.filter((m) => !m.inGame && !m.offline);
+    const waiting = here.filter((m) => m.id !== room.host && !m.ready);
+    const me = room.members.find((m) => m.id === myId);
+    const canStart = room.status === 'waiting' && here.length >= ROOM_MIN && !waiting.length;
+    const label = room.mode === 'hideSeek' && here.length >= HIDE_SEEK_MIN_PLAYERS ? 'HIDE & SEEK' : 'HEIST';
+    let button: string;
+    let go: boolean;
+    let status: string;
+    if (room.status === 'playing') {
+      [button, go, status] = ['IN GAME', false, 'Your room is still playing: you will all be back here after.'];
+    } else if (host) {
+      [button, go] = [`START ${label}`, canStart];
+      status = here.length < ROOM_MIN ? `Waiting for players: share code ${room.code}.` : waiting.length ? `Waiting for ${waiting.map((m) => m.name).join(', ')} to get ready.` : 'Everyone is ready. Start when you like!';
+    } else {
+      [button, go] = [me?.ready ? 'NOT READY' : 'READY', !me?.ready];
+      status = me?.ready ? `Ready! Waiting for the host to start.` : 'Press READY when you are set.';
+    }
+    this.startBtn.classList.toggle('blocked', !go);
+    this.startBtn.classList.toggle('go', go);
+    this.startBtn.setAttribute('aria-disabled', String(!go));
+    this.startBtn.innerHTML = `${button} <span class="arrow">&gt;</span>`;
+    if (performance.now() >= this.nudgeUntil) {
+      this.startStatus.className = 'start-status';
+      this.startStatus.textContent = status;
+    }
   }
 
   /** Who has which character (from the server); `mine` is never shown as taken. */
@@ -369,43 +377,16 @@ export class LobbyUI {
       </div>`;
   }
 
-  // ---------- Start Heist ----------
-
-  setStart(state: StartState) {
-    // An explanation is dropped as soon as your party situation changes.
-    if (state.kind !== this.nudgeKind) this.nudgeUntil = 0;
-    this.startKind = state.kind;
-    const nudging = performance.now() < this.nudgeUntil;
-    const key = JSON.stringify(state) + (nudging ? '!' : '');
-    if (key === this.lastStart) return;
-    this.lastStart = key;
-    const ready = state.kind === 'countdown';
-    this.startBtn.classList.toggle('blocked', !ready);
-    this.startBtn.classList.toggle('go', ready);
-    this.startBtn.setAttribute('aria-disabled', String(!ready));
-    const startLabel = this.mode === 'hideSeek' ? 'START HIDE & SEEK' : 'START HEIST';
-    this.startBtn.innerHTML = ready ? `STARTING ${state.seconds} <span class="arrow">&gt;</span>` : `${startLabel} <span class="arrow">&gt;</span>`;
-    if (nudging) return; // the explanation stays up for a moment
-    this.startStatus.className = `start-status ${state.kind}`;
-    this.startStatus.textContent =
-      state.kind === 'none'
-        ? 'Pick a party size: click a portal or walk into one.'
-        : state.kind === 'waiting'
-          ? `Waiting for your crew: ${state.count}/${state.size} in the ${state.size}-player portal.`
-          : state.kind === 'countdown'
-          ? `Crew ready! ${this.mode === 'hideSeek' ? 'Hide & Seek' : 'The heist'} starts in ${state.seconds}...`
-            : 'Not connected to the game server.';
-  }
+  // ---------- Start ----------
 
   /** Pressing START HEIST when it can't start: say why, a little louder. */
   nudgeStart(reason: string) {
     this.nudgeUntil = performance.now() + 2500;
-    this.nudgeKind = this.startKind;
     this.startStatus.textContent = reason;
     this.startStatus.classList.remove('shake');
     void this.startStatus.offsetWidth; // restart the animation
     this.startStatus.classList.add('shake');
-    this.lastStart = '';
+    this.lastRoom = '';
   }
 
   // ---------- Map Info ----------
@@ -500,5 +481,28 @@ export class LobbyUI {
     if (this.taken.has(id)) return;
     this.onPick(id);
     this.closePicker();
+  }
+}
+
+/** Copies text to the clipboard (with a fallback for plain-http pages on the local network). */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.append(area);
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    return ok;
   }
 }

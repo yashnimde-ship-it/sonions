@@ -14,11 +14,12 @@ import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from 
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
-import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, MAX_CREW, MIN_CREW, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
+import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
+import { normalizeCode, QUICK_PLAY_SIZE, ROOM_CODE_CHARS, ROOM_CODE_LENGTH, ROOM_MAX, ROOM_MIN, type RoomInfo, type RoomSummary } from '../src/data/rooms.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
-import { NET_HZ, PORTAL_COUNTDOWN, type ClientMsg, type PlayerState, type PortalState, type ServerMsg, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
+import { NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.PORT ?? 3001);
@@ -36,16 +37,17 @@ const lobbyMap = readJson('public/assets/lobby/lobby.json');
 const mapData = Object.fromEntries(MAP_IDS.map((id) => [id, readJson(`public${MAPS[id].json}`)])) as Record<MapId, { width: number; height: number; spawn: { x: number; y: number }; doors: { id: string }[]; interactables: HidingSpot[]; areas: { names: string[]; data: number[] }; collision: { cell: number; width: number; height: number; data: string } }>;
 const mapCollision = Object.fromEntries(MAP_IDS.map((id) => [id, Uint8Array.from(Buffer.from(mapData[id].collision.data, 'base64'))])) as Record<MapId, Uint8Array>;
 const PADS: { size: number; x: number; y: number; w: number; h: number }[] = lobbyMap.portals;
-// A party per size from 2 to MAX_CREW. Sizes 2 and 3 have their own pads; 4 and up all
-// gather on the CUSTOM pad, each player in the size they picked.
+// The safehouse pads (scenery now that rooms start games): sizes 2 and 3, and CUSTOM for 4+.
 const padFor = (size: number) => PADS.find((p) => p.size === (size >= CUSTOM_MIN ? CUSTOM_PAD : size)) ?? null;
-interface Portal { size: number; pad: (typeof PADS)[number] | null }
-const PORTALS: Portal[] = Array.from({ length: MAX_CREW - MIN_CREW + 1 }, (_, i) => MIN_CREW + i).map((size) => ({ size, pad: padFor(size) }));
 const LOBBY_SPAWN = { x: lobbyMap.spawn.x * TILE, y: lobbyMap.spawn.y * TILE };
 
 interface Client {
   ws: WebSocket;
   state: PlayerState;
+  /** The room (its code) this player is in, or null while they're on the menu. */
+  party: string | null;
+  /** The room browser is open: they get the public room list when it changes. */
+  browsing?: boolean;
   /** When this player last revived a teammate, and last pinged (ms). */
   lastRevive?: number;
   lastPing?: number;
@@ -422,14 +424,16 @@ function spendUse(c: Client, ability: AbilityId) {
   uses.set(key, used + 1);
   return true;
 }
-const portalEnds = new Map<number, number>(); // portal size -> when its countdown ends (ms)
 let nextId = 1;
 let nextMatch = 1;
 
 /** Players who have joined (said hello), wherever they are: lobby or a heist. */
 const joined = () => [...clients.values()].filter((c) => c.state.name);
-/** One of each character per server, like colours in an Among Us lobby. */
-const takenBy = (character: CharacterId, except?: Client) => joined().find((c) => c !== except && c.state.character === character);
+/** One of each character per room, like colours in an Among Us lobby. */
+const takenBy = (character: CharacterId, except?: Client) => {
+  const room = except?.party;
+  return joined().find((c) => c !== except && (!room || c.party === room) && c.state.character === character);
+};
 
 const send = (c: Client, msg: ServerMsg) => {
   if (!c.state.offline && c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg));
@@ -438,14 +442,6 @@ const inRoom = (room: string) => [...clients.values()].filter((c) => c.room === 
 
 function portalAt(s: PlayerState) {
   return PADS.find((p) => s.x >= p.x * TILE && s.x < (p.x + p.w) * TILE && s.y >= p.y * TILE && s.y < (p.y + p.h) * TILE);
-}
-
-function chosenPortal(c: Client) {
-  // On a fixed pad, its size; on the CUSTOM pad, the size you picked (4 until you pick).
-  const pad = portalAt(c.state);
-  if (!pad) return undefined;
-  const size = pad.size !== CUSTOM_PAD ? pad.size : c.portalChoice !== null && c.portalChoice >= CUSTOM_MIN ? c.portalChoice : CUSTOM_PAD;
-  return PORTALS.find((p) => p.size === size);
 }
 
 function distanceToSegment(x: number, y: number, ax: number, ay: number, bx: number, by: number) {
@@ -536,7 +532,16 @@ function laserHit(matchId: string, trap: PlacedTrap, victim: Client, fromX: numb
 }
 
 function toLobby(c: Client) {
+  if (!c.party || !parties.has(c.party)) {
+    // No room to go back to (it closed, or they were removed): the menu.
+    c.party = null;
+    c.room = 'menu';
+    send(c, { t: 'room', room: null });
+    return;
+  }
   c.room = 'lobby';
+  const party = parties.get(c.party)!;
+  setTimeout(() => sendRoom(party), 0);
   c.portalSince.clear();
   c.portalChoice = null;
   c.state.x = LOBBY_SPAWN.x + (Math.random() - 0.5) * 64;
@@ -568,6 +573,10 @@ function leaveMatch(c: Client) {
 }
 
 function endMatch(matchId: string) {
+  for (const p of parties.values()) if (p.matchId === matchId) {
+    p.matchId = null;
+    sendRoom(p);
+  }
   matches.delete(matchId);
   matchMaps.delete(matchId);
   matchSizes.delete(matchId);
@@ -589,7 +598,7 @@ function endMatch(matchId: string) {
   hunts.delete(matchId);
 }
 
-function startMatch(size: number, crew: Client[]) {
+function startMatch(size: number, crew: Client[]): string {
   const matchId = `heist-${nextMatch++}`;
   const mode = crewMode(crew);
   const first = crewMap(crew);
@@ -618,6 +627,7 @@ function startMatch(size: number, crew: Client[]) {
   }
   console.log(`${matchId}: ${size}-player ${mode === 'hideSeek' ? 'Hide & Seek' : 'heist'} match, ${rounds} rounds, with ${crew.map((c) => c.state.name).join(', ')}`);
   startRound(matchId);
+  return matchId;
 }
 
 /** A round: everyone back at the spawn, a fresh house, the next Saboteur in the order. */
@@ -773,49 +783,25 @@ function forget(c: Client) {
   if (c.dropTimer) clearTimeout(c.dropTimer);
   c.dropTimer = null;
   leaveMatch(c);
+  leaveParty(c);
   clients.delete(c.state.id);
   if (c.key && byKey.get(c.key) === c) byKey.delete(c.key);
   if (c.state.name) console.log(`${c.state.name} left (${clients.size} connected)`);
 }
 
-const sortByArrival = (inside: Client[], size: number) => [...inside].sort((a, b) => a.portalSince.get(size)! - b.portalSince.get(size)!);
-
-/** Who is in which portal, and starts a heist once a portal has been full for a few seconds. */
-function updatePortals(now: number): PortalState[] {
-  const lobby = inRoom('lobby').filter((c) => !c.state.offline);
-  return PORTALS.map((portal) => {
-    const inside: Client[] = [];
-    for (const c of lobby) {
-      if (chosenPortal(c) === portal) {
-        if (!c.portalSince.has(portal.size)) c.portalSince.set(portal.size, now);
-        inside.push(c);
-      } else c.portalSince.delete(portal.size);
-    }
-    if (inside.length < portal.size) {
-      portalEnds.delete(portal.size);
-      return { size: portal.size, count: inside.length, countdown: null, map: inside.length ? crewMap(sortByArrival(inside, portal.size)) : null, mode: inside.length ? crewMode(sortByArrival(inside, portal.size).slice(0, portal.size)) : undefined };
-    }
-    if (!portalEnds.has(portal.size)) portalEnds.set(portal.size, now + PORTAL_COUNTDOWN * 1000);
-    const left = (portalEnds.get(portal.size)! - now) / 1000;
-    if (left <= 0) {
-      // First in, first out: the earliest arrivals make up the crew.
-      inside.sort((a, b) => a.portalSince.get(portal.size)! - b.portalSince.get(portal.size)!);
-      startMatch(portal.size, inside.slice(0, portal.size));
-      portalEnds.delete(portal.size);
-      return { size: portal.size, count: 0, countdown: null, map: null };
-    }
-    const crew = sortByArrival(inside, portal.size).slice(0, portal.size);
-    return { size: portal.size, count: inside.length, countdown: Math.ceil(left), map: crewMap(crew), mode: crewMode(crew) };
-  });
-}
 
 function tick() {
   const now = Date.now();
-  const portals = updatePortals(now);
   const online = joined().length;
-  const taken: Taken[] = joined().map((c) => ({ character: c.state.character, name: c.state.name }));
-  const lobbyPlayers = inRoom('lobby').map((c) => c.state);
-  for (const c of inRoom('lobby')) send(c, { t: 'snapshot', room: 'lobby', players: lobbyPlayers, portals, online, taken });
+  // Each room has its own safehouse: you only see (and share characters with) your room.
+  const byParty = new Map<string, Client[]>();
+  for (const c of joined()) if (c.party) byParty.set(c.party, [...(byParty.get(c.party) ?? []), c]);
+  for (const c of inRoom('lobby')) {
+    const mates = byParty.get(c.party ?? '') ?? [c];
+    const taken: Taken[] = mates.map((m) => ({ character: m.state.character, name: m.state.name }));
+    send(c, { t: 'snapshot', room: 'lobby', players: mates.filter((m) => m.room === 'lobby').map((m) => m.state), portals: [], online, taken });
+  }
+  if (roomsDirty) sendRoomList();
   for (const [matchId, ids] of matches) {
     const players = [...ids].map((id) => clients.get(id)?.state).filter((s): s is PlayerState => !!s && s.id !== saboteurs.get(matchId));
     const seeker = isHideSeek(matchId) ? clients.get(saboteurs.get(matchId) ?? '')?.state : undefined;
@@ -886,8 +872,101 @@ function handle(c: Client, msg: ClientMsg) {
       // Nothing offensive in the lobby: a blocked name becomes a plain one.
       s.name = cleanName(msg.name, `Bandit ${s.id}`);
       s.character = free;
-      toLobby(c);
-      console.log(`${s.name} joined as ${s.character} (${clients.size} connected)`);
+      // On the menu until they create or join a room.
+      c.room = 'menu';
+      console.log(`${s.name} connected (${clients.size} connected)`);
+      break;
+    }
+    case 'createRoom': {
+      if (c.room !== 'menu') break;
+      const party = createParty(c, !!msg.private, msg.size, isGameMode(msg.mode) ? msg.mode : 'heist', isMapId(msg.map) ? msg.map : 'estate');
+      joinParty(c, party);
+      break;
+    }
+    case 'joinRoom': {
+      if (c.room !== 'menu') break;
+      const code = normalizeCode(String(msg.code ?? ''));
+      if (!code) {
+        send(c, { t: 'roomError', reason: 'badCode' });
+        break;
+      }
+      const party = parties.get(code);
+      const why = !party ? 'notFound' : party.matchId ? 'playing' : party.members.length >= party.size ? 'full' : null;
+      if (why) send(c, { t: 'roomError', reason: why });
+      else joinParty(c, party!);
+      break;
+    }
+    case 'quickPlay': {
+      if (c.room !== 'menu') break;
+      // The fullest public room that's waiting and has space; otherwise a new public one.
+      const open = [...parties.values()].filter((p) => !p.isPrivate && !p.matchId && p.members.length < p.size).sort((a, b) => b.members.length - a.members.length);
+      joinParty(c, open[0] ?? createParty(c, false, QUICK_PLAY_SIZE, 'heist', 'estate'));
+      break;
+    }
+    case 'leaveRoom':
+      if (c.room === 'lobby') {
+        leaveParty(c);
+        c.room = 'menu';
+        send(c, { t: 'room', room: null });
+      }
+      break;
+    case 'browse':
+      c.browsing = !!msg.on && c.room === 'menu';
+      if (c.browsing) send(c, { t: 'rooms', list: roomList() });
+      break;
+    case 'roomReady': {
+      const party = parties.get(c.party ?? '');
+      if (!party || c.room !== 'lobby') break;
+      if (msg.ready) party.ready.add(s.id);
+      else party.ready.delete(s.id);
+      sendRoom(party);
+      break;
+    }
+    case 'roomSettings': {
+      const party = parties.get(c.party ?? '');
+      if (!party || party.host !== s.id || party.matchId) break;
+      if (msg.size !== undefined && Number.isFinite(msg.size)) party.size = Math.max(Math.max(ROOM_MIN, party.members.length), Math.min(ROOM_MAX, Math.round(msg.size)));
+      if (msg.mode !== undefined && isGameMode(msg.mode)) party.mode = msg.mode;
+      if (msg.map !== undefined && isMapId(msg.map)) party.map = msg.map;
+      if (msg.private !== undefined) party.isPrivate = !!msg.private;
+      sendRoom(party);
+      break;
+    }
+    case 'kick': {
+      const party = parties.get(c.party ?? '');
+      const target = clients.get(msg.id);
+      if (!party || party.host !== s.id || !target || target === c || target.party !== party.code || target.room !== 'lobby') break;
+      leaveParty(target);
+      target.room = 'menu';
+      send(target, { t: 'roomError', reason: 'kicked' });
+      send(target, { t: 'room', room: null });
+      break;
+    }
+    case 'startGame': {
+      const party = parties.get(c.party ?? '');
+      if (!party || c.room !== 'lobby' || party.matchId) break;
+      if (party.host !== s.id) {
+        send(c, { t: 'roomError', reason: 'notHost' });
+        break;
+      }
+      const crew = party.members.map((id) => clients.get(id)).filter((m): m is Client => !!m && m.room === 'lobby' && !m.state.offline);
+      if (crew.length < ROOM_MIN) {
+        send(c, { t: 'roomError', reason: 'tooFew' });
+        break;
+      }
+      if (crew.some((m) => m !== c && !party.ready.has(m.state.id))) {
+        send(c, { t: 'roomError', reason: 'notReady' });
+        break;
+      }
+      // The room's settings decide the game (startMatch reads each player's picks).
+      for (const m of crew) {
+        m.mapPref = party.map;
+        m.modePref = party.mode;
+      }
+      const matchId = startMatch(crew.length, crew);
+      party.matchId = matchId;
+      party.ready.clear();
+      sendRoom(party);
       break;
     }
     case 'move':
@@ -1116,12 +1195,9 @@ function handle(c: Client, msg: ClientMsg) {
       if (vault.banked >= vault.need) finish(c.room, 'runners');
       break;
     }
-    case 'portal': {
-      if (c.room !== 'lobby') break;
-      c.portalChoice = msg.size !== null && PORTALS.some((portal) => portal.size === msg.size) ? msg.size : null;
-      c.portalSince.clear();
+    case 'portal':
+      // The safehouse pads are scenery now: rooms start games (see 'startGame').
       break;
-    }
     case 'trap': {
       // Only this heist's Saboteur fires traps, and only plates that are ready and not jammed.
       if (saboteurs.get(c.room) !== s.id || phases.get(c.room)?.phase !== 'live') break;
@@ -1883,9 +1959,14 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
   known.ws = fresh.ws;
   known.state.offline = false;
   send(known, { t: 'welcome', id: known.state.id, resumed: true });
-  if (known.room === 'lobby' || !matches.has(known.room)) {
+  if (known.room === 'menu' || !known.party) {
+    known.room = 'menu';
+    known.party = null;
+  } else if (known.room === 'lobby' || !matches.has(known.room)) {
     known.room = 'lobby';
     send(known, { t: 'lobby', x: known.state.x, y: known.state.y, character: known.state.character });
+    const party = parties.get(known.party);
+    if (party) sendRoom(party);
   } else {
     send(known, matchMsg(known, known.room, true));
     if (known.state.hp === 0 && (known.koUntil ?? 0) > Date.now()) send(known, { t: 'knockout', ms: known.koUntil! - Date.now(), reasons: known.koReasons ?? [] });
@@ -1911,6 +1992,106 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
   return known;
 }
 
+// ---------- Rooms ----------
+
+/** A room: its code, host, settings and members (in the order they joined). */
+interface Party {
+  code: string;
+  host: string;
+  isPrivate: boolean;
+  size: number;
+  map: MapId;
+  mode: GameMode;
+  members: string[];
+  ready: Set<string>;
+  /** The game this room is playing, or null while they're in the safehouse. */
+  matchId: string | null;
+}
+const parties = new Map<string, Party>();
+/** The public room list changed: the browsers get it on the next tick. */
+let roomsDirty = false;
+
+function newCode() {
+  for (;;) {
+    let code = '';
+    for (let i = 0; i < ROOM_CODE_LENGTH; i++) code += ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)];
+    if (!parties.has(code)) return code;
+  }
+}
+
+function createParty(host: Client, isPrivate: boolean, size: number, mode: GameMode, map: MapId): Party {
+  const party: Party = { code: newCode(), host: host.state.id, isPrivate, size: Math.max(ROOM_MIN, Math.min(ROOM_MAX, Math.round(Number(size) || QUICK_PLAY_SIZE))), map, mode, members: [], ready: new Set(), matchId: null };
+  parties.set(party.code, party);
+  console.log(`room ${party.code} created by ${host.state.name} (${isPrivate ? 'private' : 'public'}, ${party.size} players)`);
+  return party;
+}
+
+/** Into a room's safehouse, with a character nobody else in the room has (while there are any). */
+function joinParty(c: Client, party: Party) {
+  c.browsing = false;
+  c.party = party.code;
+  if (!party.members.includes(c.state.id)) party.members.push(c.state.id);
+  const uses = (id: CharacterId) => party.members.filter((m) => clients.get(m)?.state.character === id).length;
+  if (takenBy(c.state.character, c)) c.state.character = CHARACTERS.find((id) => !takenBy(id, c)) ?? [...CHARACTERS].sort((a, b) => uses(a) - uses(b))[0];
+  toLobby(c);
+  sendRoom(party);
+}
+
+/** Out of their room: the next player hosts; an empty room closes. */
+function leaveParty(c: Client) {
+  const party = parties.get(c.party ?? '');
+  c.party = null;
+  if (!party) return;
+  party.members = party.members.filter((id) => id !== c.state.id);
+  party.ready.delete(c.state.id);
+  if (!party.members.length) {
+    parties.delete(party.code);
+    roomsDirty = true;
+    console.log(`room ${party.code} closed`);
+    return;
+  }
+  if (party.host === c.state.id) party.host = party.members[0];
+  sendRoom(party);
+}
+
+function roomInfo(party: Party): RoomInfo {
+  return {
+    code: party.code,
+    private: party.isPrivate,
+    host: party.host,
+    size: party.size,
+    map: party.map,
+    mode: party.mode,
+    status: party.matchId ? 'playing' : 'waiting',
+    members: party.members.flatMap((id) => {
+      const m = clients.get(id);
+      return m ? [{ id, name: m.state.name, character: m.state.character, ready: party.ready.has(id) || id === party.host, inGame: m.room !== 'lobby', offline: !!m.state.offline }] : [];
+    }),
+  };
+}
+
+/** Everyone in the room hears what changed (and the browsers, on the next tick). */
+function sendRoom(party: Party) {
+  if (!parties.has(party.code)) return;
+  const msg: ServerMsg = { t: 'room', room: roomInfo(party) };
+  for (const id of party.members) {
+    const m = clients.get(id);
+    if (m) send(m, msg);
+  }
+  roomsDirty = true;
+}
+
+const roomList = (): RoomSummary[] =>
+  [...parties.values()]
+    .filter((p) => !p.isPrivate)
+    .map((p) => ({ code: p.code, hostName: clients.get(p.host)?.state.name ?? '?', count: p.members.length, size: p.size, map: p.map, mode: p.mode, status: p.matchId ? 'playing' : 'waiting' }));
+
+function sendRoomList() {
+  roomsDirty = false;
+  const msg: ServerMsg = { t: 'rooms', list: roomList() };
+  for (const c of joined()) if (c.browsing && c.room === 'menu') send(c, msg);
+}
+
 // ---------- HTTP (the built game) and WebSocket ----------
 
 const DIST = path.join(ROOT, 'dist');
@@ -1921,6 +2102,10 @@ const TYPES: Record<string, string> = {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://x');
+  if (url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok');
+    return;
+  }
   const file = path.join(DIST, url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname));
   if (!file.startsWith(DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404).end('Not found. Run `npm run build` to serve the game from here.');
@@ -1935,7 +2120,8 @@ wss.on('connection', (ws) => {
   const id = String(nextId++);
   const c: Client = {
     ws,
-    room: 'lobby',
+    party: null,
+    room: 'menu',
     portalSince: new Map(),
     portalChoice: null,
     mapPref: 'estate',
