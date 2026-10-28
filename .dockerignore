@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+# Never deployed: local-only media (the lobby song) and the source art for the maps.
+public/local-assets
+public/reference
+*.log
+.env*

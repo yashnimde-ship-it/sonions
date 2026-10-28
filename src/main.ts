@@ -12,6 +12,7 @@ import { HANDOFF_REACH, type PingLabel, KO_HP, KO_RESPAWN, type Phase, placement
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H, DRAW_W } from './entities/Bandit';
 import { keyHeld, keyPressed, pollInput, readControls } from './input/Controls';
+import { type TouchButton, TouchControls } from './input/Touch';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
 import { type EstateJson, TileMap, type Stairwell } from './map/TileMap';
 import { NetClient } from './net/NetClient';
@@ -210,6 +211,8 @@ async function boot() {
   const abilities = new AbilitySystem();
   const trapBar = new TrapBar((kind) => selectTrap(selectedTrap?.id === kind.id ? null : kind));
   const setupPanel = new SetupPanel(() => net.send({ t: 'ready' }));
+  /** On-screen controls for phones and tablets. */
+  const touch = new TouchControls();
   const resultScreen = new ResultScreen(() => net.send({ t: 'leave' }));
 
   const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -232,19 +235,31 @@ async function boot() {
     if (e.button === 1) e.preventDefault();
   });
   canvas.addEventListener('pointerdown', (e) => {
+    lastTapAt = performance.now();
+    if (e.pointerType === 'touch') [mouseX, mouseY] = toWorld(e);
+    // The Saboteur's camera on a touch screen: drag, pinch, then a tap acts (see below).
+    if (e.pointerType === 'touch' && sabCamera()) {
+      touchDown(e);
+      return;
+    }
+    canvasPress(e, e.button);
+  });
+
+  /** A click (or a tap) on the game: `button` 0 is a left click, 1 middle, 2 right. */
+  function canvasPress(e: PointerEvent, button: number) {
     // Middle-click: ping the spot for my teammates (not the Saboteur or Seeker).
-    if (e.button === 1) {
+    if (button === 1) {
       e.preventDefault();
       if (scene === 'match' && !match?.saboteur) openPingWheel(...toWorld(e), 'mouse');
       return;
     }
-    if (e.button === 0 && spectated()) {
+    if (button === 0 && spectated()) {
       spectateNext();
       return;
     }
     if (scene === 'match' && hideSeek()) {
       // The Seeker's gun: click where to shoot.
-      if (match?.saboteur && phase === 'live' && e.button === 0 && !result) {
+      if (match?.saboteur && phase === 'live' && button === 0 && !result) {
         const [x, y] = toWorld(e);
         if (performance.now() < gun.reloadEnd || gun.ammo <= 0) sfx('click');
         else net.send({ t: 'shoot', x, y });
@@ -253,7 +268,7 @@ async function boot() {
     }
     if (scene !== 'match' || !match?.saboteur) return;
     const [x, y] = toWorld(e);
-    if (phase === 'setup' && e.button === 2) {
+    if (phase === 'setup' && button === 2) {
       if (selectedTrap) return selectTrap(null);
       const hit = placedUnder(x, y);
       if (hit) {
@@ -273,7 +288,7 @@ async function boot() {
       return hideAt(x, y);
     }
     if (phase !== 'live') return;
-    if (e.button === 2) {
+    if (button === 2) {
       if (movingTrapId) {
         movingTrapId = null;
         movingTrapPending = false;
@@ -287,7 +302,7 @@ async function boot() {
       movingTrapPending = false;
       return toast('Trap selected · click open floor to move it · right-click to cancel');
     }
-    if (e.button !== 0) return;
+    if (button !== 0) return;
     if (movingTrapId) {
       if (movingTrapPending) return;
       const moving = placed.get(movingTrapId);
@@ -307,7 +322,53 @@ async function boot() {
     }
     const trap = trapUnder(x, y);
     if (trap && trapReady(trap.id)) net.send({ t: 'trap', id: trap.id });
+  }
+
+  // Touch, for the heist Saboteur's free camera: one finger drags the view, two pinch to zoom,
+  // and a tap that didn't drag acts like a click (a right-click while REMOVE is on).
+  const fingers = new Map<number, { x: number; y: number; sx: number; sy: number }>();
+  let dragged = false;
+  let pinch = 0;
+  let lastTapAt = 0;
+  const sabCamera = () => scene === 'match' && !!match?.saboteur && !hideSeek();
+  const spread = () => {
+    const [a, b] = [...fingers.values()];
+    return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+  };
+  function touchDown(e: PointerEvent) {
+    canvas.setPointerCapture(e.pointerId);
+    fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY });
+    if (fingers.size === 1) dragged = false;
+    else {
+      dragged = true;
+      pinch = spread();
+    }
+  }
+  canvas.addEventListener('pointermove', (e) => {
+    const f = fingers.get(e.pointerId);
+    if (!f) return;
+    const [dx, dy] = [e.clientX - f.x, e.clientY - f.y];
+    f.x = e.clientX;
+    f.y = e.clientY;
+    if (fingers.size >= 2) {
+      const d = spread();
+      if (pinch > 0 && d > 0) sabScale = (sabScale || fitScale()) * (d / pinch);
+      pinch = d;
+      return;
+    }
+    if (!dragged && Math.hypot(e.clientX - f.sx, e.clientY - f.sy) > 10) dragged = true;
+    if (dragged) {
+      freeX -= (dx * dpr) / scale;
+      freeY -= (dy * dpr) / scale;
+    }
   });
+  const fingerUp = (e: PointerEvent) => {
+    if (!fingers.delete(e.pointerId)) return;
+    if (!dragged && !fingers.size && sabCamera()) canvasPress(e, touch.isOn('remove') ? 2 : 0);
+  };
+  canvas.addEventListener('pointerup', fingerUp);
+  canvas.addEventListener('pointercancel', (e) => fingers.delete(e.pointerId));
+
   // The Saboteur's free camera zooms with the mouse wheel.
   canvas.addEventListener(
     'wheel',
@@ -527,6 +588,7 @@ async function boot() {
 
   function setScene(next: Scene) {
     scene = next;
+    document.body.dataset.scene = next;
     title.show(scene === 'title');
     lobby.show(scene === 'lobby');
     setLobbyMusic(scene === 'lobby');
@@ -1746,6 +1808,12 @@ async function boot() {
     // A finished reload: the gun is full again (the server agrees on its next shot).
     if (hs && sab && gun.ammo === 0 && gun.reloadEnd && performance.now() >= gun.reloadEnd) gun = { ...gun, ammo: GUN.ammo, reloadEnd: 0 };
     if (input.ability && !hud.messageOpen && phase === 'live' && !hs) abilities.use(abilityContext());
+    // Touch: the Seeker's flashlight points the way they're facing unless they tapped lately.
+    if (touch.enabled && hs && sab && performance.now() - lastTapAt > 1500) {
+      const [fx, fy] = me.facing === 'up' ? [0, -1] : me.facing === 'down' ? [0, 1] : me.facing === 'left' ? [-1, 0] : [1, 0];
+      mouseX = me.x + fx * 90;
+      mouseY = me.y - 14 + fy * 90;
+    }
     // G (or middle-click): tap to ping where the mouse is; hold for the wheel to pick what.
     if (!sab && !hud.messageOpen && keyPressed('KeyG')) openPingWheel(mouseX, mouseY, 'key');
     if (pingWheel?.by === 'key' && !keyHeld('KeyG')) closePingWheel();
@@ -2529,6 +2597,44 @@ async function boot() {
     ctx.restore();
   }
   const pingColor = (label: string) => (label === 'TRAP' ? '#ff4d6a' : label === 'DIAMOND' ? '#5ad8ff' : label === 'SEEKER' || label === 'DANGER' ? '#ff8a3d' : label === 'KEYCARD' ? '#ffd84a' : '#ffe39a');
+
+  /**
+   * The on-screen buttons for what I'm doing now: the safehouse, a Runner, the heist Saboteur
+   * (no stick: drag the view instead), a Hider or the Seeker. EXIT needs a second tap.
+   */
+  let leaveArmedUntil = 0;
+  function touchLayout(): [boolean, TouchButton[], boolean] {
+    if (scene === 'title' || (scene === 'lobby' && lobby.panelOpen) || result) return [false, [], true];
+    // The safehouse: just the stick (LOADOUT opens the wardrobe; the panels are tappable).
+    if (scene === 'lobby') return [true, [], true];
+    const leave: TouchButton = { id: 'leave', key: '', label: performance.now() < leaveArmedUntil ? 'SURE?' : 'EXIT' };
+    const sab = !!match?.saboteur;
+    if (hideSeek()) {
+      if (isGhost(myId)) return [true, [leave], true];
+      return sab
+        ? [true, [{ id: 'search', key: 'KeyE', label: 'SEARCH', big: true }, { id: 'reload', key: 'KeyR', label: 'RELOAD' }, { id: 'flare', key: 'KeyQ', label: 'FLARE' }, { id: 'scan', key: 'KeyC', label: 'SCAN' }, leave], true]
+        : [true, [{ id: 'act', key: 'KeyE', label: hiddenIn ? 'OUT' : 'HIDE', big: true }, { id: 'run', key: 'ShiftLeft', label: 'RUN', toggle: true }, { id: 'boost', key: 'KeyQ', label: 'BOOST' }, { id: 'ping', key: '', label: 'PING' }, leave], true];
+    }
+    if (sab) return [true, [{ id: 'ability', key: 'KeyQ', label: 'POWER' }, { id: 'remove', key: '', label: 'REMOVE', toggle: true }, ...(multiDeck() ? [{ id: 'deck', key: 'KeyF', label: 'DECK' }] : []), leave], false];
+    if (knockedOut) return [true, [leave], false];
+    return [true, [
+      { id: 'act', key: 'KeyE', label: 'E', big: true },
+      { id: 'run', key: 'ShiftLeft', label: 'RUN', toggle: true },
+      { id: 'ability', key: 'KeyQ', label: 'POWER' },
+      { id: 'ping', key: '', label: 'PING' },
+      { id: 'pass', key: 'KeyH', label: 'PASS' },
+      leave,
+    ], true];
+  }
+  touch.onPress = (id) => {
+    if (id === 'ping') sendPing(me.x, me.y - 10);
+    else if (id === 'leave') {
+      if (performance.now() < leaveArmedUntil) {
+        leaveArmedUntil = 0;
+        net.send({ t: 'leave' });
+      } else leaveArmedUntil = performance.now() + 2500;
+    }
+  };
 
   /** The teammate I'd hand my diamond to: the nearest Runner up, with free hands, in reach. */
   function handoffTarget() {
@@ -3614,6 +3720,8 @@ async function boot() {
     }
     setHeistMusic(musicIntensity());
     draw();
+    const [show, buttons, stick] = touchLayout();
+    touch.set(show, buttons, stick);
   }
   requestAnimationFrame(tick);
 }

@@ -65,6 +65,20 @@ export function pollInput() {
 /** Is this key down right now? */
 export const keyHeld = (code: string) => held.has(code);
 
+/** The on-screen thumbstick (see Touch.ts): -1..1 each way. */
+let touchMove: [number, number] = [0, 0];
+export function setTouchMove(dx: number, dy: number) {
+  touchMove = [dx, dy];
+}
+
+/** An on-screen button pressing (or letting go of) the key it stands for. */
+export function touchKey(code: string, down: boolean) {
+  if (down) {
+    if (!held.has(code)) pressedNext.add(code);
+    held.add(code);
+  } else held.delete(code);
+}
+
 export function keyPressed(code: string) {
   return pressed.has(code);
 }
@@ -89,5 +103,6 @@ export function readControls(): ControlState {
     dy = (gp.buttons[13]?.pressed ? 1 : 0) - (gp.buttons[12]?.pressed ? 1 : 0) || dead(gp.axes[1] ?? 0);
     sprint ||= !!(gp.buttons[7]?.pressed || gp.buttons[5]?.pressed);
   }
+  if (!dx && !dy) [dx, dy] = touchMove;
   return { dx, dy, sprint, action: [...pressed].some((c) => ACTION.has(c)) || padAction, ability: pressed.has(ABILITY) || padAbility, actionHeld: [...held].some((c) => ACTION.has(c)) || padActionWasDown };
 }
