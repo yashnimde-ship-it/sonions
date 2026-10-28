@@ -2151,3 +2151,19 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => console.log(`Vault Breakers server on http://localhost:${PORT} (WebSocket at /ws)`));
+
+// Free hosting (Render) puts a service to sleep after 15 minutes without visitors. Asking our
+// own public address for /health every 5 minutes counts as a visit, so it never sleeps.
+// Render sets RENDER_EXTERNAL_URL; KEEPALIVE_URL does the same on any other host.
+const KEEPALIVE_URL = process.env.KEEPALIVE_URL ?? process.env.RENDER_EXTERNAL_URL;
+const KEEPALIVE_MS = Number(process.env.KEEPALIVE_SECONDS ?? 300) * 1000;
+if (KEEPALIVE_URL) {
+  console.log(`keep-alive: pinging ${KEEPALIVE_URL}/health every ${KEEPALIVE_MS / 1000}s`);
+  setInterval(() => {
+    fetch(new URL('/health', KEEPALIVE_URL), { signal: AbortSignal.timeout(20_000) })
+      .then((res) => {
+        if (!res.ok) console.warn(`keep-alive: /health answered ${res.status}`);
+      })
+      .catch((err) => console.warn(`keep-alive: ping failed (${err})`));
+  }, KEEPALIVE_MS);
+}

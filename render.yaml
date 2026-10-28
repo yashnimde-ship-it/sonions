@@ -1,0 +1,13 @@
+# Render Blueprint: the whole game as one free web service (the Dockerfile builds the client
+# and runs the game server, which serves it and the WebSocket at /ws). Singapore is Render's
+# nearest region to India. The server pings its own /health every 5 minutes so the free
+# service doesn't go to sleep (see KEEPALIVE in server/index.ts).
+services:
+  - type: web
+    name: vault-breakers
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: main
+    healthCheckPath: /health
+    autoDeploy: true
