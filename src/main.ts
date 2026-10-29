@@ -1,5 +1,5 @@
 import '@fontsource/press-start-2p';
-import { ART_TILE, CHAR_GLOW, CHARACTERS, type CharacterId, characterSheet, HITBOX, ZOOM } from './config';
+import { ART_TILE, CHAR_GLOW, CHAR_SCREEN_FRACTION, CHARACTERS, type CharacterId, characterSheet, HITBOX } from './config';
 import { CHARACTER_INFO } from './data/characters';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
@@ -404,7 +404,7 @@ async function boot() {
   /** Another tab took over this player: don't fight it by reconnecting. */
   let replaced = false;
   let dpr = 1;
-  let scale = ZOOM;
+  let scale = 2;
   let scene: Scene = 'title';
 
   let myId = '';
@@ -560,13 +560,15 @@ async function boot() {
     // looks round the whole house with a free camera; waiting Runners see all of it.
     const watch = spectated();
     let [tx, ty] = watch ? [watch.bandit.x, watch.bandit.y - DRAW_H / 2] : [me.x, me.y - DRAW_H / 2];
+    // The play zoom: a character is CHAR_SCREEN_FRACTION of the screen's height, on any screen.
+    const play = Math.max(1, (canvas.height * CHAR_SCREEN_FRACTION) / DRAW_H);
     if (scene !== 'match') scale = Math.max(1.5 * dpr, Math.min(canvas.width / w, canvas.height / h));
     else if (phase === 'over' && result) {
       // The reveal: everyone sees the whole map, with every diamond's spot marked.
       scale = fitScale();
       [tx, ty] = [w / 2, h / 2];
     } else if (match?.saboteur && !hideSeek()) {
-      sabScale = sabScale && Math.min(ZOOM * dpr, Math.max(fitScale(), sabScale));
+      sabScale = sabScale && Math.min(play, Math.max(fitScale(), sabScale));
       scale = sabScale || fitScale();
       [tx, ty] = [freeX, freeY];
     } else if (phase === 'setup' && !hideSeek()) {
@@ -576,10 +578,10 @@ async function boot() {
       // GO!: swoop from the whole map down to me (ease in-out).
       const t = (performance.now() - zoomInFrom) / ZOOM_IN_MS;
       const e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
-      scale = fitScale() + (ZOOM * dpr - fitScale()) * e;
+      scale = fitScale() + (play - fitScale()) * e;
       [tx, ty] = [w / 2 + (tx - w / 2) * e, h / 2 + (ty - h / 2) * e];
       snap = true;
-    } else scale = ZOOM * dpr;
+    } else scale = play;
     camera.resize(canvas.width / scale, canvas.height / scale);
     if (scene === 'title') {
       tx = w / 2;

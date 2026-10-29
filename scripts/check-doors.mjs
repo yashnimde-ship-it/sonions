@@ -5,7 +5,7 @@ const file = process.argv[2] ?? 'public/assets/map/estate.json';
 const map = JSON.parse(fs.readFileSync(file, 'utf8'));
 const base = Buffer.from(map.collision.data, 'base64');
 const { cell, width: CW, height: CH } = map.collision;
-const HIT = { l: -5, r: 5, t: -5, b: 0 };
+const HIT = { l: -3.5, r: 3.5, t: -3.5, b: 0 }; // matches src/config.ts HITBOX
 function make(closedIds) {
   const g = Buffer.from(base);
   for (const d of map.doors) if (closedIds.has(d.id)) for (const c of d.cells) g[c] = 1;

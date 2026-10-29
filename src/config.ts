@@ -14,9 +14,11 @@ export const CHAR_FRAME_W = 48;
 /** Frames per sheet: 3 standing, then a 4-frame walk for down, up and left. */
 export const CHAR_FRAMES = 15;
 export const CHAR_FRAME_H = 72;
-// Sheets are drawn at 0.6 size in art pixels, so a character stands about 43 art pixels
-// (2.7 tiles) tall: big enough to read clearly, still fitting through doorways.
-export const CHAR_DRAW_SCALE = 0.6;
+// Sheets are drawn at 0.4 size in art pixels, so a character stands about 29 art pixels
+// (1.8 tiles) tall: crewmate-sized next to the furniture, like Among Us, so rooms feel open.
+export const CHAR_DRAW_SCALE = 0.4;
+/** The play camera keeps a character about this fraction of the screen height (Among Us). */
+export const CHAR_SCREEN_FRACTION = 1 / 10;
 // After the dusk lighting, characters are drawn again at this opacity so they stay readable.
 export const CHAR_GLOW = 0.75;
 
@@ -25,7 +27,8 @@ export const WALK_SPEED = 1.6;
 export const SPRINT_SPEED = 2.6;
 
 // The bandit's feet hitbox, relative to the point between his feet (art pixels).
-export const HITBOX = { left: -5, right: 5, top: -5, bottom: 0 };
+// Two-thirds of the old box, matching the smaller characters (more room between furniture).
+export const HITBOX = { left: -3.5, right: 3.5, top: -3.5, bottom: 0 };
 
 // Camera easing: the fraction of the remaining distance covered each frame.
 export const CAMERA_EASE = 0.18;

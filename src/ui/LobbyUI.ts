@@ -65,6 +65,8 @@ export class LobbyUI {
   private room: RoomInfo | null = null;
   private myId = '';
   private lastRoom = '';
+  /** The room's map and mode as last heard from the server. */
+  private roomPick = '';
   private roomBar = document.createElement('div');
   private sizeRow = document.createElement('div');
   /** The game mode I want: a heist, or Hide & Seek (3+ players, on the cruise ship). */
@@ -291,8 +293,14 @@ export class LobbyUI {
     this.room = room;
     this.myId = myId;
     this.online.textContent = String(online);
-    if (room.mode !== this.mode) this.setMode(room.mode);
-    if (room.map !== this.selectedMap) this.setMap(room.map);
+    // The pickers follow the room only when its map or mode changes on the server (this runs
+    // every frame, and browsing other maps in Map Info mustn't snap back).
+    const pick = `${room.map}|${room.mode}`;
+    if (pick !== this.roomPick) {
+      this.roomPick = pick;
+      this.setMode(room.mode);
+      this.setMap(room.map);
+    }
     const key = JSON.stringify([room, myId]);
     if (key === this.lastRoom) return;
     this.lastRoom = key;
@@ -425,7 +433,7 @@ export class LobbyUI {
       <p class="map-list"><b>Inside:</b> ${m.rooms.map(esc).join(', ')}</p>
       <p class="map-list"><b>Grounds:</b> ${m.outdoor.map(esc).join(', ')}</p>
       <p class="map-list"><b>Worth stealing:</b> ${m.loot.map((l) => `${esc(l.name)} ($${l.value})`).join(', ')}</p>
-      <div class="modal-actions"><button type="button" class="btn small primary-play" data-map="${m.id}" data-play>PLAY ${esc(m.name)}</button></div>`;
+      <div class="modal-actions"><button type="button" class="btn small primary-play" data-map="${m.id}" data-play>${this.room && !this.isHost ? 'ONLY THE HOST PICKS THE MAP' : `PLAY ${esc(m.name)}`}</button></div>`;
   }
 
   // ---------- Settings ----------
