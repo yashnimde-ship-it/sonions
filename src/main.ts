@@ -457,6 +457,8 @@ async function boot() {
   const waves = new Map<string, { line: number; at: number }>();
   const WAVE_MS = 1700;
   let lobbyStart: { endsAt: number; shown: number; stopEngine: () => void } | null = null;
+  /** The crew-size pad you're standing on, so stepping onto one acts once. */
+  let standingPad: LobbyJson['portals'][number] | null = null;
   const lobbyCountEl = Object.assign(document.createElement('div'), { id: 'lobby-countdown', hidden: true });
   document.getElementById('lobby')!.append(lobbyCountEl);
   lobbyCountEl.addEventListener('animationend', () => (lobbyCountEl.hidden = true));
@@ -2048,6 +2050,13 @@ async function boot() {
           if (nearWardrobe()) lobby.openPicker(myCharacter);
           else if (nearTable()) lobby.navigate('map');
           else if (nearCar() && lobby.carPrompt) lobby.pressStart();
+        }
+        // Stepping onto a crew-size pad: the host sets the room to that size. (Only a step counts,
+        // not arriving there, e.g. back from a reload.)
+        const pad = lobbyData.portals.find((p) => LobbyMap.inside(p, me.x, me.y)) ?? null;
+        if (pad !== standingPad) {
+          standingPad = pad;
+          if (pad && (input.dx || input.dy)) stepOnPad(pad);
         }
         // Q: wave to the crew (everyone in the room sees it).
         if (keyPressed('KeyQ') && myRoom && performance.now() - (waves.get(myId)?.at ?? 0) > 1000) {
@@ -3784,6 +3793,17 @@ async function boot() {
   /** The pad for this room's size: lit, with a seat per crew member. */
   const padActive = (p: { size: number }) => !!myRoom && padSize(p) === myRoom.size;
   const padOccupied = (p: LobbyJson['portals'][number]) => [me, ...[...remotes.values()].map((r) => r.bandit)].some((b) => LobbyMap.inside(p, b.x, b.y));
+
+  /** The host walks onto a pad: the room becomes that size (never smaller than the crew in it). */
+  function stepOnPad(p: LobbyJson['portals'][number]) {
+    if (!myRoom || lobbyStart || padActive(p)) return;
+    const size = padSize(p);
+    if (myRoom.host !== myId) return lobby.nudgeStart('Only the host sets the crew size.');
+    if (size < myRoom.members.length) return lobby.nudgeStart(`${myRoom.members.length} crew are in: the room can't be smaller.`);
+    net.send({ t: 'roomSettings', size });
+    sfx('click');
+    particles.burst(me.x, me.y - 6, PORTAL_COLORS[p.size] ?? '#ffffff', 16, 1.4);
+  }
 
   /** The tinted floor of each pad, under the players; it pulses through the 3-2-1. */
   function drawPortalFloors(camX: number, camY: number) {
