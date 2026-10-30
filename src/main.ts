@@ -10,7 +10,7 @@ import { Profile } from './data/profile';
 import { type Diamond, distToSpot, type HidingSpot, isHidingSpot, PICKUP_REACH, RED_EXTRA_SLOW, SEARCH_MS, SEARCH_REACH, spotBox, spotCenter, spotRoom } from './data/diamonds';
 import { cleanName } from './data/names';
 import { BOOST, FLARE, HIDE_SEEK_MAP, HS_SCORE, type HsAbility, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, FLASHLIGHT_HALF_ANGLE, FLASHLIGHT_RANGE, type GameMode, GUN, HIDE_REACH, HIDER_LIGHT, type HideSpot, hideSpotCenter, hideSpotName, SEEKER_GLOW, SEEKER_HP } from './data/hideSeek';
-import { HANDOFF_REACH, type PingLabel, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
+import { CUSTOM_MIN, CUSTOM_PAD, HANDOFF_REACH, type PingLabel, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H, DRAW_W } from './entities/Bandit';
 import { keyHeld, keyPressed, pollInput, readControls } from './input/Controls';
@@ -86,6 +86,9 @@ interface Remote {
   state: PlayerState;
   bandit: Bandit;
 }
+
+/** The crew-size pads under the planning table; the 4+ pad glows purple. */
+const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#9b6cff' };
 
 // Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
 // that). Bank it by walking into the GETAWAY zone on the street, in tiles.
@@ -2584,6 +2587,7 @@ async function boot() {
       if (scene === 'lobby') {
         ctx.save();
         ctx.scale(scale, scale);
+        drawPortalFloors(camX, camY);
         drawReadyRings(camX, camY);
         actors.forEach((b) => b.draw(ctx, camX, camY));
         ctx.restore();
@@ -2599,6 +2603,7 @@ async function boot() {
       if (scene === 'title') return;
       ctx.save();
       ctx.scale(scale, scale);
+      drawPortalFrames(camX, camY);
       ctx.globalAlpha = CHAR_GLOW;
       actors.forEach((b) => b.draw(ctx, camX, camY, false));
       ctx.restore();
@@ -2607,6 +2612,7 @@ async function boot() {
       drawHeadlights(camX, camY);
       particles.draw(ctx, camX, camY);
       ctx.restore();
+      drawPortalLabels(camX, camY);
       drawLobbySigns(camX, camY);
       if (settings.values.nameTags) drawNameTags(camX, camY);
       drawWaves(camX, camY);
@@ -3771,6 +3777,130 @@ async function boot() {
       textTag(label, sx, sy - 20 * dpr, color, Math.round(7 * dpr));
     }
     ctx.restore();
+  }
+
+  /** What a crew-size pad stands for: 2, 3, or the room's size on the 4+ pad (at least 4). */
+  const padSize = (p: { size: number }) => (p.size === CUSTOM_PAD ? Math.max(CUSTOM_MIN, myRoom?.size ?? 0) : p.size);
+  /** The pad for this room's size: lit, with a seat per crew member. */
+  const padActive = (p: { size: number }) => !!myRoom && padSize(p) === myRoom.size;
+  const padOccupied = (p: LobbyJson['portals'][number]) => [me, ...[...remotes.values()].map((r) => r.bandit)].some((b) => LobbyMap.inside(p, b.x, b.y));
+
+  /** The tinted floor of each pad, under the players; it pulses through the 3-2-1. */
+  function drawPortalFloors(camX: number, camY: number) {
+    for (const p of lobbyData.portals) {
+      const active = padActive(p);
+      ctx.save();
+      ctx.fillStyle = PORTAL_COLORS[p.size] ?? '#ffffff';
+      let alpha = active ? 0.36 + 0.08 * Math.sin(frame / 10) : 0.22;
+      if (padOccupied(p)) alpha += 0.08;
+      if (active && lobbyStart) alpha = 0.35 + 0.3 * Math.abs(Math.sin(frame / 6));
+      ctx.globalAlpha = alpha;
+      ctx.fillRect(p.x * ART_TILE - camX, p.y * ART_TILE - camY, p.w * ART_TILE, p.h * ART_TILE);
+      ctx.restore();
+    }
+  }
+
+  /** Neon frames, a crew icon per seat, and a sign plate; drawn over the lamplight so they glow. */
+  function drawPortalFrames(camX: number, camY: number) {
+    const pulse = 0.65 + 0.35 * Math.sin(frame / 15);
+    for (const p of lobbyData.portals) {
+      const size = padSize(p);
+      const color = PORTAL_COLORS[p.size] ?? '#ffffff';
+      const active = padActive(p);
+      const occupied = padOccupied(p);
+      const x = Math.round(p.x * ART_TILE - camX);
+      const y = Math.round(p.y * ART_TILE - camY);
+      const w = p.w * ART_TILE;
+      const h = p.h * ART_TILE;
+      ctx.save();
+      // Dark bezel, then a glowing double neon line.
+      ctx.strokeStyle = '#0e0a1a';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(x, y, w, h);
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10 * dpr * (active || occupied ? 1.4 : pulse);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = active ? 3 : 2;
+      ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
+      if (active) {
+        // Marching dashes inside the frame: this is your crew's size.
+        ctx.setLineDash([4, 4]);
+        ctx.lineDashOffset = -frame / 3;
+        ctx.globalAlpha = 0.9;
+        ctx.strokeRect(x + 9.5, y + 9.5, w - 19, h - 19);
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 6.5, y + 6.5, w - 13, h - 13);
+      ctx.shadowBlur = 0;
+      // Bright corner brackets.
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff4e6';
+      for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
+        ctx.fillRect(dx > 0 ? cx + 1 : cx - 9, dy > 0 ? cy + 1 : cy - 3, 8, 2);
+        ctx.fillRect(dx > 0 ? cx + 1 : cx - 3, dy > 0 ? cy + 1 : cy - 9, 2, 8);
+      }
+      // One little person per seat: lit for each crew member in the room.
+      const count = active ? myRoom!.members.length : 0;
+      // Up to 9 seats on the 4+ pad, so they squeeze together to fit.
+      const gap = Math.min(13, (w - 20) / Math.max(1, size - 1));
+      const left = x + w / 2 - ((size - 1) * gap) / 2;
+      for (let i = 0; i < size; i++) person(left + i * gap, y + h * 0.38, i < count ? color : 'rgba(255,244,230,0.3)');
+      // The sign plate above the pad, hung on two posts.
+      ctx.fillStyle = '#6b4529';
+      ctx.fillRect(x + 10, y - 4, 2, 4);
+      ctx.fillRect(x + w - 12, y - 4, 2, 4);
+      ctx.fillStyle = '#16101e';
+      ctx.fillRect(x + 4, y - 15, w - 8, 12);
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 6 * dpr;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 4.5, y - 14.5, w - 9, 11);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+  }
+
+  /** A tiny pixel person (head and shoulders) centred on (x, y), in art pixels. */
+  function person(x: number, y: number, color: string) {
+    const px = Math.round(x);
+    const py = Math.round(y);
+    ctx.fillStyle = color;
+    ctx.fillRect(px - 3, py - 8, 6, 6);
+    ctx.fillRect(px - 2, py - 9, 4, 1);
+    ctx.fillRect(px - 5, py, 10, 5);
+    ctx.fillRect(px - 4, py - 1, 8, 1);
+  }
+
+  /** Each pad's sign (2 PLAYERS, 3 PLAYERS, 4+ PLAYERS), and the crew count on the lit one. */
+  function drawPortalLabels(camX: number, camY: number) {
+    for (const p of lobbyData.portals) {
+      const size = padSize(p);
+      const color = PORTAL_COLORS[p.size] ?? '#ffffff';
+      const cx = ((p.x + p.w / 2) * ART_TILE - camX) * scale;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `${Math.round(8 * dpr)}px "Press Start 2P"`;
+      ctx.fillStyle = color;
+      ctx.fillText(p.size === CUSTOM_PAD && !padActive(p) ? `${CUSTOM_MIN}+ PLAYERS` : `${size} PLAYERS`, cx, (p.y * ART_TILE - 9 - camY) * scale);
+      if (!padActive(p)) continue;
+      const count = `${myRoom!.members.length}/${size}`;
+      const countY = ((p.y + p.h * 0.75) * ART_TILE - camY) * scale;
+      ctx.font = `${Math.round(13 * dpr)}px "Press Start 2P"`;
+      ctx.fillStyle = '#0e0a1a';
+      ctx.fillText(count, cx + 2 * dpr, countY + 2 * dpr);
+      ctx.fillStyle = '#fff4e6';
+      ctx.fillText(count, cx, countY);
+      ctx.font = `${Math.round(7 * dpr)}px "Press Start 2P"`;
+      const noteY = ((p.y + p.h - 0.4) * ART_TILE - camY) * scale;
+      ctx.fillStyle = '#0e0a1a';
+      ctx.fillText('YOUR CREW', cx + dpr, noteY + dpr);
+      ctx.fillStyle = '#fff4e6';
+      ctx.fillText('YOUR CREW', cx, noteY);
+    }
   }
 
   /** The "E  CUSTOMIZE" plate over the wardrobe; it lights up when you're close enough. */

@@ -133,7 +133,13 @@ export const LIGHTS = [
   { x: 65.0, y: 27.0, r: 4 },
   { x: 60.2, y: 14.5, r: 6 }, // garage
   { x: 35.2, y: 28.2, r: 9 }, // the portals' glow
-  { x: 7.0, y: 20.0, r: 4 }, // the den's lounge
+  { x: 3.3, y: 1.7, r: 3 }, // the gear lockers' lamps
+  { x: 8.6, y: 1.7, r: 3 },
+  { x: 16.7, y: 2.7, r: 5 }, // the surveillance room's monitor wall
+  { x: 5.9, y: 10.6, r: 3 }, // the tool bench
+  { x: 4.2, y: 13.7, r: 3 }, // the bunk room's lamps
+  { x: 8.8, y: 13.7, r: 3 },
+  { x: 5.5, y: 21.3, r: 3 },
   { x: 10.5, y: 35.0, r: 6 }, // the stash
 ];
 
@@ -142,10 +148,15 @@ export const LIGHTS = [
  * wing is walled off from the hall). `file` is relative to the project, placed at (x, y) in tiles.
  */
 export const DECOR = [
-  // Where the reference had its menu and profile card painted in (plain floor once repaired):
-  // the den in the west wing (a desk on a green rug, then the lounge's sofa on a red rug), and
-  // the stash along the south wall (the crew's loot: crates, a tarp-covered pallet, a case of gold).
-  { id: 'den', file: 'art/lobby/den.png', x: 1.375, y: 9.0 },
+  // Where the reference had its title, menu and profile card painted in (plain floor once
+  // repaired), rooms and pieces from the heist maps' own art, at the same 16 px a tile:
+  // - the north room: the crew's gear lockers (the cruise ship's locker room) and the
+  //   surveillance room (the museum's security room: the CCTV wall, desks and console);
+  // - the west room: a tool bench (the museum workshop's) over the bunk room (the cruise ship's
+  //   crew quarters: beds, lockers, crates), walled off from the dining room;
+  // - the stash along the south wall: crates, a tarp-covered pallet and a case of gold.
+  { id: 'north-rooms', file: 'art/lobby/north-rooms.png', x: 1.6, y: 1.1 },
+  { id: 'west-room', file: 'art/lobby/west-room.png', x: 1.375, y: 9.0 },
   { id: 'stash', file: 'art/lobby/stash.png', x: 1.375, y: 31.4 },
 ];
 
