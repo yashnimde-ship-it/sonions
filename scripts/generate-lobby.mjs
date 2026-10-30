@@ -336,6 +336,22 @@ for (const p of props) {
       if (sprite.data[s + 3]) room.set(sprite.data.subarray(s, s + 4), ((p.y + y) * W + p.x + x) * 4);
     }
 }
+// Decor: whole pieces of art painted over the room (blended by their alpha).
+for (const d of L.DECOR) {
+  const art = decode(fs.readFileSync(path.join(ROOT, d.file)));
+  const ch = art.channels;
+  for (let y = 0; y < art.height; y++)
+    for (let x = 0; x < art.width; x++) {
+      const s = (y * art.width + x) * ch;
+      const a = ch === 4 ? art.data[s + 3] / 255 : 1;
+      const tx = px(d.x) + x;
+      const ty = px(d.y) + y;
+      if (!a || tx >= W || ty >= H) continue;
+      const i = (ty * W + tx) * 4;
+      for (let k = 0; k < 3; k++) room[i + k] = Math.round(art.data[s + k] * a + room[i + k] * (1 - a));
+      room[i + 3] = 255;
+    }
+}
 writeRgba('lobby.png', W, H, room);
 
 // ---------- Collision (8 px cells, like the estate's) ----------

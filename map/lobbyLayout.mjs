@@ -133,6 +133,20 @@ export const LIGHTS = [
   { x: 65.0, y: 27.0, r: 4 },
   { x: 60.2, y: 14.5, r: 6 }, // garage
   { x: 35.2, y: 28.2, r: 9 }, // the portals' glow
+  { x: 7.0, y: 20.0, r: 4 }, // the den's lounge
+  { x: 10.5, y: 35.0, r: 6 }, // the stash
+];
+
+/**
+ * Decor painted over the room as drawn (pieces of art, blended in; no collision: the west
+ * wing is walled off from the hall). `file` is relative to the project, placed at (x, y) in tiles.
+ */
+export const DECOR = [
+  // Where the reference had its menu and profile card painted in (plain floor once repaired):
+  // the den in the west wing (a desk on a green rug, then the lounge's sofa on a red rug), and
+  // the stash along the south wall (the crew's loot: crates, a tarp-covered pallet, a case of gold).
+  { id: 'den', file: 'art/lobby/den.png', x: 1.375, y: 9.0 },
+  { id: 'stash', file: 'art/lobby/stash.png', x: 1.375, y: 31.4 },
 ];
 
 export const SPAWN = { x: 28.5, y: 23.6 };
