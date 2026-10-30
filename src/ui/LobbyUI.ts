@@ -27,21 +27,23 @@ export interface MapInfo {
   preview: string;
 }
 
+/** The menu row under the profile ('lobby' is just "no panel open", so it has no button). */
 const NAV: { id: NavId; label: string; icon: IconName }[] = [
-  { id: 'lobby', label: 'LOBBY', icon: 'home' },
   { id: 'loadout', label: 'LOADOUT', icon: 'loadout' },
-  { id: 'map', label: 'MAP INFO', icon: 'map' },
+  { id: 'map', label: 'MAP', icon: 'map' },
   { id: 'settings', label: 'SETTINGS', icon: 'settings' },
   { id: 'exit', label: 'EXIT', icon: 'exit' },
 ];
+/** Open seats listed under the players before the rest are summed up in one line. */
+const OPEN_SEATS_SHOWN = 3;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /**
- * The safehouse UI over the lobby scene: title badge, menu, Heist Lobby panel, profile card,
- * Start Heist box, and the Loadout (wardrobe), Map Info, Settings and Exit panels. It only
- * shows state and reports clicks; main.ts owns the game and network state.
+ * The safehouse UI over the lobby scene: my panel (profile and menu), the crew card (room code,
+ * mode, players, map), the Start Heist box, and the Loadout (wardrobe), Map Info, Settings and
+ * Exit panels. It only shows state and reports clicks; main.ts owns the game and network state.
  */
 export class LobbyUI {
   private root = $('lobby');
@@ -77,6 +79,8 @@ export class LobbyUI {
   private lastCard = '';
   /** A START HEIST explanation stays up until then (ms), instead of the live status. */
   private nudgeUntil = 0;
+  /** The host started: the 3-2-1 runs until then (ms). */
+  private startingUntil = 0;
   private choice = 0;
   /** Characters other players have, and who has them. */
   private taken = new Map<CharacterId, string>();
@@ -122,6 +126,13 @@ export class LobbyUI {
       const kick = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-kick]');
       if (kick) this.onKick(kick.dataset.kick!);
     }, opts);
+    // The map line's CHANGE (host only) opens the map picker.
+    this.partyStatus.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-change-map]');
+      if (!b) return;
+      this.navigate('map');
+      b.blur();
+    }, opts);
     // The room's code (copy it, or a link to it) and who can join.
     this.roomBar.className = 'room-bar';
     this.partyTitle.closest('.party-head')!.after(this.roomBar);
@@ -157,8 +168,7 @@ export class LobbyUI {
     this.renderMode();
     // The host starts; everyone else readies up.
     this.startBtn.addEventListener('click', () => {
-      if (this.isHost) this.onStart();
-      else if (this.room) this.onReady(!this.room.members.find((m) => m.id === this.myId)?.ready);
+      this.pressStart();
       this.startBtn.blur();
     }, opts);
     this.root.addEventListener('click', (e) => {
@@ -208,6 +218,11 @@ export class LobbyUI {
   }
 
   show(visible: boolean) {
+    // Arriving (from the title or a heist): the panels slide in from their edges.
+    if (visible && this.root.hidden) {
+      this.root.classList.add('entering');
+      setTimeout(() => this.root.classList.remove('entering'), 1300);
+    }
     this.root.hidden = !visible;
     if (!visible) this.navigate('lobby');
   }
@@ -292,7 +307,9 @@ export class LobbyUI {
   setRoom(room: RoomInfo, myId: string, online: number) {
     this.room = room;
     this.myId = myId;
-    this.online.textContent = String(online);
+    // The server-wide count isn't this room's: the crew card counts the room itself.
+    void online;
+    this.online.hidden = true;
     // The pickers follow the room only when its map or mode changes on the server (this runs
     // every frame, and browsing other maps in Map Info mustn't snap back).
     const pick = `${room.map}|${room.mode}`;
@@ -301,11 +318,12 @@ export class LobbyUI {
       this.setMode(room.mode);
       this.setMap(room.map);
     }
-    const key = JSON.stringify([room, myId]);
+    const starting = performance.now() < this.startingUntil && room.status !== 'playing';
+    const key = JSON.stringify([room, myId, starting]);
     if (key === this.lastRoom) return;
     this.lastRoom = key;
     const host = this.isHost;
-    this.partyTitle.innerHTML = `ROOM <span class="room-code">${room.code}</span>`;
+    this.partyTitle.innerHTML = `<span class="label">ROOM CODE</span><span class="room-code">${room.code}</span>`;
     this.roomBar.innerHTML = `<button type="button" data-copy="code">COPY CODE</button><button type="button" data-copy="link">COPY LINK</button><button type="button" class="privacy${host ? ' host' : ''}" data-privacy="1" title="${host ? 'Click to change who can join' : 'The host decides who can join'}">${room.private ? 'PRIVATE' : 'PUBLIC'}</button>`;
     this.sizeRow.innerHTML = `<span class="label">PLAYERS</span>${host ? '<button type="button" data-step="-1" aria-label="Fewer players">-</button>' : ''}<b>${room.members.length}/${room.size}</b>${host ? '<button type="button" data-step="1" aria-label="More players">+</button>' : ''}`;
     for (const b of this.modeRow.querySelectorAll<HTMLButtonElement>('[data-mode]')) b.classList.toggle('locked', !host);
@@ -322,34 +340,74 @@ export class LobbyUI {
         </div>`;
       })
       .join('');
-    const map = room.mode === 'hideSeek' ? 'the cruise ship' : this.mapName(room.map);
-    this.partyStatus.innerHTML = `Map: <b class="map-pick">${esc(map)}</b>${host ? ' · change it in MAP INFO' : ''}`;
+    // Open seats: how many more can join (a few listed, the rest summed up).
+    const open = Math.max(0, room.size - room.members.length);
+    this.portalList.innerHTML += Array.from({ length: Math.min(open, OPEN_SEATS_SHOWN) }, () => '<div class="member open"><i class="seat"></i><span class="mname">Open seat</span><span class="mstate">SHARE THE CODE</span></div>').join('')
+      + (open > OPEN_SEATS_SHOWN ? `<p class="more-seats">+${open - OPEN_SEATS_SHOWN} more open seat${open - OPEN_SEATS_SHOWN > 1 ? 's' : ''}</p>` : '');
+    const hideSeekMap = room.mode === 'hideSeek';
+    const map = hideSeekMap ? 'THE CRUISE SHIP' : this.mapName(room.map);
+    this.partyStatus.innerHTML = `<span class="label">MAP</span><b class="map-pick">${esc(map)}</b>${host && !hideSeekMap ? '<button type="button" data-change-map>CHANGE</button>' : hideSeekMap ? '' : '<span class="note">host picks</span>'}`;
     // START (host) or READY (everyone else), and what it's waiting for.
     const here = room.members.filter((m) => !m.inGame && !m.offline);
     const waiting = here.filter((m) => m.id !== room.host && !m.ready);
     const me = room.members.find((m) => m.id === myId);
     const canStart = room.status === 'waiting' && here.length >= ROOM_MIN && !waiting.length;
     const label = room.mode === 'hideSeek' && here.length >= HIDE_SEEK_MIN_PLAYERS ? 'HIDE & SEEK' : 'HEIST';
+    // One button, four clear states: waiting (amber), go (green, pulsing), ready (teal), in game.
     let button: string;
-    let go: boolean;
+    let state: 'wait' | 'go' | 'ready';
     let status: string;
-    if (room.status === 'playing') {
-      [button, go, status] = ['IN GAME', false, 'Your room is still playing: you will all be back here after.'];
+    const others = here.filter((m) => m.id !== room.host);
+    if (starting) {
+      [button, state, status] = ['STARTING', 'go', 'Into the getaway car: the heist starts in a moment!'];
+    } else if (room.status === 'playing') {
+      [button, state, status] = ['IN GAME', 'wait', 'Your room is still playing: you will all be back here after.'];
+    } else if (host && here.length < ROOM_MIN) {
+      [button, state, status] = ['WAITING FOR CREW', 'wait', `Share code ${room.code} to bring your crew in.`];
+    } else if (host && waiting.length) {
+      [button, state] = [`WAITING · ${others.length - waiting.length}/${others.length} READY`, 'wait'];
+      status = `Waiting for ${waiting.map((m) => m.name).join(', ')} to ready up.`;
     } else if (host) {
-      [button, go] = [`START ${label}`, canStart];
-      status = here.length < ROOM_MIN ? `Waiting for players: share code ${room.code}.` : waiting.length ? `Waiting for ${waiting.map((m) => m.name).join(', ')} to get ready.` : 'Everyone is ready. Start when you like!';
+      [button, state, status] = [`START ${label}`, canStart ? 'go' : 'wait', 'Everyone is ready. Start when you like!'];
+    } else if (me?.ready) {
+      [button, state, status] = ['\u2714 READY', 'ready', 'Waiting for the host to start. Click to cancel.'];
     } else {
-      [button, go] = [me?.ready ? 'NOT READY' : 'READY', !me?.ready];
-      status = me?.ready ? `Ready! Waiting for the host to start.` : 'Press READY when you are set.';
+      [button, state, status] = ['READY UP', 'go', 'Press READY when you are set.'];
     }
-    this.startBtn.classList.toggle('blocked', !go);
-    this.startBtn.classList.toggle('go', go);
-    this.startBtn.setAttribute('aria-disabled', String(!go));
-    this.startBtn.innerHTML = `${button} <span class="arrow">&gt;</span>`;
+    for (const c of ['wait', 'go', 'ready']) this.startBtn.classList.toggle(c, c === state);
+    this.startBtn.classList.toggle('starting', starting);
+    this.startBtn.setAttribute('aria-disabled', String(state === 'wait'));
+    this.startBtn.innerHTML = state === 'wait' ? `${button}<span class="dots" aria-hidden="true"></span>` : `${button}${state === 'go' && host && !starting ? ' <span class="arrow">&gt;</span>' : ''}`;
     if (performance.now() >= this.nudgeUntil) {
       this.startStatus.className = 'start-status';
       this.startStatus.textContent = status;
     }
+  }
+
+  /** The host started (`ms` until the game, the 3-2-1), or the start was called off (0). */
+  setStarting(ms: number) {
+    this.startingUntil = ms > 0 ? performance.now() + ms : 0;
+    this.lastRoom = '';
+  }
+
+  /** START HEIST, from the button or from the garage door: the host starts, everyone else
+   *  readies up (or stops being ready). */
+  pressStart() {
+    if (!this.room) return;
+    if (this.isHost) this.onStart();
+    else this.onReady(!this.room.members.find((m) => m.id === this.myId)?.ready);
+  }
+
+  /** What the planning table's sign offers. */
+  get tablePrompt() {
+    return this.isHost && this.room?.mode !== 'hideSeek' ? 'CHOOSE THE MAP' : 'MAP INFO';
+  }
+
+  /** What the garage door's sign offers, or null when there's nothing to do there. */
+  get carPrompt(): string | null {
+    if (!this.room || this.room.status === 'playing') return null;
+    if (this.isHost) return this.room.mode === 'hideSeek' ? 'START HIDE & SEEK' : 'START THE HEIST';
+    return this.room.members.find((m) => m.id === this.myId)?.ready ? 'NOT READY' : 'READY UP';
   }
 
   /** Who has which character (from the server); `mine` is never shown as taken. */
@@ -426,7 +484,7 @@ export class LobbyUI {
             <dt>Doors</dt><dd>${m.doors}</dd>
             <dt>Loot</dt><dd>${m.loot.length} items · $${total.toLocaleString('en-US')}</dd>
             <dt>Difficulty</dt><dd>${stars(m.difficulty)}</dd>
-            <dt>Crew</dt><dd>2 to 4 players</dd>
+            <dt>Crew</dt><dd>${ROOM_MIN} to ${ROOM_MAX} players</dd>
           </dl>
         </div>
       </div>

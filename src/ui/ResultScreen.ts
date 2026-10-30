@@ -1,4 +1,5 @@
 import type { ServerMsg, Standing } from '../net/protocol';
+import { blip } from '../systems/Sound';
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 type Result = Extract<ServerMsg, { t: 'result' }>;
@@ -45,7 +46,7 @@ export class ResultScreen {
           : `Time's up: only ${r.banked} of ${r.total} diamonds were banked (needed ${r.need}).`;
     const sides = h ? (['HIDERS WIN', 'SEEKER WINS'] as const) : (['RUNNERS WIN', 'SABOTEUR WINS'] as const);
     const points = r.points
-      .map((p) => `<li class="${p.id === me ? 'me' : ''}"><span class="who">${esc(p.name)}${p.saboteur ? ` <em>${h ? 'SEEKER' : 'SABOTEUR'}</em>` : ''}</span><b>+${p.points}</b></li>`)
+      .map((p) => `<li class="${p.id === me ? 'me' : ''}"><span class="who">${esc(p.name)}${p.saboteur ? ` <em>${h ? 'SEEKER' : 'SABOTEUR'}</em>` : ''}</span><b data-to="${p.points}">+${p.points}</b></li>`)
       .join('');
     this.root.className = r.winner === 'none' ? 'off' : won ? 'win' : 'lose';
     this.root.innerHTML = `
@@ -55,13 +56,14 @@ export class ResultScreen {
         <p class="reason">${reason}</p>
         <div class="result-cols">
           <div><h2>THIS ROUND</h2><ol class="points">${points}</ol></div>
-          <div><h2>SCOREBOARD</h2>${table(r.standings, me)}</div>
+          <div><h2>SCOREBOARD</h2>${table(r.standings, me, r.round - 1)}</div>
         </div>
         ${h ? '' : '<p class="legend"><i class="gem banked"></i> banked <i class="gem floor"></i> dropped <i class="gem hidden"></i> never found</p>'}
         <p class="next"></p>
         <button type="button" class="result-back">LEAVE MATCH</button>
       </div>`;
     if (won) confetti(this.root);
+    countUpScores(this.root);
     this.countdown = this.root.querySelector('.next');
     this.nextAt = performance.now() + r.nextMs;
     this.last = r.last;
@@ -133,14 +135,63 @@ export class ResultScreen {
   }
 }
 
-/** Totals so far, with a column per round. */
-function table(standings: Standing[], me: string) {
+/** Totals so far, with a column per round. After a round (`round`: its index), each row also
+ *  carries where it stood before that round, so the board can count up and re-sort itself. */
+function table(standings: Standing[], me: string, round?: number) {
   const rounds = Math.max(0, ...standings.map((s) => s.perRound.length));
   const head = Array.from({ length: rounds }, (_, i) => `<th>R${i + 1}</th>`).join('');
+  const prev = (s: Standing) => (round === undefined ? s.total : s.total - (s.perRound[round] ?? 0));
+  const before = [...standings].sort((a, b) => prev(b) - prev(a)).map((s) => s.id);
   const rows = standings
-    .map((s) => `<tr class="${s.id === me ? 'me' : ''}${s.here ? '' : ' gone'}"><td>${standings.findIndex((o) => o.total === s.total) + 1}</td><td class="who">${esc(s.name)}${s.here ? '' : ' (left)'}</td>${Array.from({ length: rounds }, (_, r) => `<td>${s.perRound[r] ?? '-'}</td>`).join('')}<td class="total">${s.total}</td></tr>`)
+    .map((s, i) => {
+      const old = before.indexOf(s.id);
+      const climb = round !== undefined && old > i ? `<span class="climb">${old - i}</span>` : '';
+      return `<tr class="${s.id === me ? 'me' : ''}${s.here ? '' : ' gone'}" data-old="${old}" data-prev="${prev(s)}" data-total="${s.total}"><td>${standings.findIndex((o) => o.total === s.total) + 1}</td><td class="who">${esc(s.name)}${s.here ? '' : ' (left)'}${climb}</td>${Array.from({ length: rounds }, (_, r) => `<td>${s.perRound[r] ?? '-'}</td>`).join('')}<td class="total">${s.total}</td></tr>`;
+    })
     .join('');
   return `<table class="scores"><thead><tr><th>#</th><th>PLAYER</th>${head}<th>TOTAL</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+let lastBlip = 0;
+
+/** Count `el` from `from` to `to` (formatted by `fmt`), starting `delay` ms from now. */
+function countUp(el: HTMLElement, from: number, to: number, delay: number, fmt: (v: number) => string) {
+  el.textContent = fmt(from);
+  if (from === to) return;
+  setTimeout(() => {
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - t0) / 700);
+      el.textContent = fmt(Math.round(from + (to - from) * (1 - (1 - t) ** 3)));
+      // A ticking climb (shared, so several counters at once don't clatter).
+      if (now - lastBlip > 65 && t < 1) {
+        lastBlip = now;
+        blip('count', Math.floor(t * 12));
+      }
+      if (t < 1) requestAnimationFrame(step);
+      else el.classList.add('counted');
+    };
+    requestAnimationFrame(step);
+  }, delay);
+}
+
+/** The round card's numbers: this round's points count up one by one, then the totals climb
+ *  and the scoreboard rows slide into their new order. */
+function countUpScores(root: HTMLElement) {
+  if (reducedMotion.matches) return;
+  const points = [...root.querySelectorAll<HTMLElement>('.points b[data-to]')];
+  points.forEach((el, i) => countUp(el, 0, Number(el.dataset.to), 450 + i * 160, (v) => `+${v}`));
+  const boardAt = 450 + points.length * 160 + 450;
+  const rows = [...root.querySelectorAll<HTMLElement>('.scores tbody tr')];
+  const rowH = rows[0]?.getBoundingClientRect().height ?? 0;
+  rows.forEach((tr, i) => {
+    const total = tr.querySelector<HTMLElement>('.total');
+    if (total) countUp(total, Number(tr.dataset.prev), Number(tr.dataset.total), boardAt, String);
+    const old = Number(tr.dataset.old);
+    if (rowH && old !== i) tr.animate([{ transform: `translateY(${(old - i) * rowH}px)` }, { transform: 'none' }], { duration: 650, delay: boardAt + 750, easing: 'cubic-bezier(0.3, 1.35, 0.5, 1)', fill: 'backwards' });
+  });
+  root.style.setProperty('--board-at', `${boardAt + 1100}ms`);
 }
 
 /** A shower of pixel confetti over the result screen (it removes itself). */

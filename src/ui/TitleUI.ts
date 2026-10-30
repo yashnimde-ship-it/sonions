@@ -1,7 +1,6 @@
-import { CHARACTERS } from '../config';
-import { CHARACTER_INFO } from '../data/characters';
 import type { GameMode } from '../data/hideSeek';
 import { QUICK_PLAY_SIZE, ROOM_MAX, ROOM_MIN, type RoomSummary } from '../data/rooms';
+import { play as sfx } from '../systems/Sound';
 
 /** What Create Room asks for. */
 export interface CreateOptions {
@@ -15,15 +14,18 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 const NAME_KEY = 'vault-breakers-name';
 
 /**
- * The title screen: logo, crew lineup, name box, and the ways online: Quick Play, Create Room,
- * Browse Rooms and Join with a code (plus How to Play).
+ * The title screen: the vault key art with PLAY (Quick Play) on its plate, the name, the other
+ * ways online (Create Room, Browse Rooms, Join with a code) and How to Play on the art's strip.
  */
 export class TitleUI {
   private root = document.getElementById('title')!;
   private howto = document.getElementById('howto')!;
   private nameInput = document.getElementById('name-input') as HTMLInputElement;
   private playBtn = document.getElementById('play-btn') as HTMLButtonElement;
+  private playLabel = this.playBtn.querySelector<HTMLElement>('.title-play-label')!;
   private codeInput = document.getElementById('code-input') as HTMLInputElement;
+  private links = this.root.querySelector<HTMLElement>('.title-links')!;
+  private joinRow = this.root.querySelector<HTMLElement>('.title-join')!;
   private createModal = document.getElementById('create-modal')!;
   private browseModal = document.getElementById('browse-modal')!;
   private roomList = document.getElementById('room-list')!;
@@ -41,16 +43,6 @@ export class TitleUI {
   onBrowse: (open: boolean) => void = () => {};
 
   constructor() {
-    const lineup = document.getElementById('lineup')!;
-    CHARACTERS.forEach((id, i) => {
-      const info = CHARACTER_INFO[id];
-      const el = document.createElement('div');
-      el.className = 'crew';
-      el.style.setProperty('--delay', `${i * 0.15}s`);
-      el.innerHTML = `<img class="crew-portrait" src="/assets/characters/${id}-portrait.png" alt="" loading="eager"><span style="--crew-color:${info.color}">${info.nick}</span>`;
-      lineup.append(el);
-    });
-
     try {
       this.nameInput.value = localStorage.getItem(NAME_KEY) ?? '';
     } catch {
@@ -59,14 +51,17 @@ export class TitleUI {
     this.hasSavedName = !!this.nameInput.value;
     if (!this.nameInput.value) this.nameInput.value = `Bandit${Math.floor(100 + Math.random() * 900)}`;
     this.nameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this.onPlay();
+      if (e.key === 'Enter') this.unlock();
     });
-    this.playBtn.addEventListener('click', () => this.onPlay());
-    // Join with a code.
+    this.playBtn.addEventListener('click', () => this.unlock());
+    // Join with a code: the links make way for the code box.
     const join = () => this.onJoin(this.codeInput.value);
+    document.getElementById('join-open')!.addEventListener('click', () => this.showJoin(true));
+    document.getElementById('join-cancel')!.addEventListener('click', () => this.showJoin(false));
     document.getElementById('join-btn')!.addEventListener('click', join);
     this.codeInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') join();
+      else if (e.key === 'Escape') this.showJoin(false);
     });
     this.codeInput.addEventListener('input', () => (this.codeInput.value = this.codeInput.value.toUpperCase()));
     // Create Room: private/public, size, mode.
@@ -129,6 +124,15 @@ export class TitleUI {
   /** A ?room= link or a pasted code: show it in the box. */
   setCode(code: string) {
     this.codeInput.value = code;
+    if (code) this.showJoin(true, false);
+  }
+
+  /** Swap the room links for the code box (or back). */
+  showJoin(open: boolean, focus = true) {
+    this.joinRow.hidden = !open;
+    this.links.hidden = open;
+    if (open && focus) this.codeInput.focus();
+    if (!open) document.getElementById('join-open')!.focus();
   }
 
   /** An invite link for someone new: their name first, then JOIN. */
@@ -142,6 +146,16 @@ export class TitleUI {
 
   get modalOpen() {
     return !this.createModal.hidden || !this.browseModal.hidden || this.howToOpen;
+  }
+
+  /** PLAY: the vault lock turns (a clunk, the keyhole flares, the plate flashes), then Quick Play,
+   *  a beat later so the unlock is seen before the safehouse replaces the title. */
+  private unlock() {
+    if (this.playBtn.disabled || this.root.classList.contains('unlocking')) return;
+    sfx('unlock');
+    this.root.classList.add('unlocking');
+    setTimeout(() => this.onPlay(), 380);
+    setTimeout(() => this.root.classList.remove('unlocking'), 900);
   }
 
   private closeBrowse() {
@@ -177,8 +191,9 @@ export class TitleUI {
 
   setBusy(busy: boolean, error = '') {
     this.playBtn.disabled = busy;
-    for (const id of ['create-btn', 'browse-btn', 'join-btn']) (document.getElementById(id) as HTMLButtonElement).disabled = busy;
-    this.playBtn.textContent = busy ? 'CONNECTING...' : 'QUICK PLAY';
+    for (const id of ['create-btn', 'browse-btn', 'join-open', 'join-btn']) (document.getElementById(id) as HTMLButtonElement).disabled = busy;
+    this.playLabel.textContent = busy ? 'CONNECTING...' : 'PLAY';
+    this.playBtn.classList.toggle('busy', busy);
     this.error.hidden = !error;
     this.error.textContent = error;
   }

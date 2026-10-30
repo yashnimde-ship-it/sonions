@@ -11,24 +11,34 @@
     <canvas id="game"></canvas>
     <div id="rotate" aria-live="polite"><div class="rotate-phone"></div><p>Turn your phone sideways to play</p></div>
     <div id="title" class="screen title-screen">
-      <div class="title-top">
-        <h1 class="logo"><span>VAULT</span><span>BREAKERS</span></h1>
-        <p class="tagline">Hide. Hunt. Steal. Escape.</p>
-      </div>
-      <div id="lineup"></div>
-      <div class="menu">
-        <label class="name-box">YOUR NAME <input id="name-input" maxlength="14" autocomplete="off" spellcheck="false" /></label>
-        <button id="play-btn" class="btn primary">QUICK PLAY</button>
-        <div class="menu-row">
-          <button id="create-btn" class="btn">CREATE ROOM</button>
-          <button id="browse-btn" class="btn">BROWSE ROOMS</button>
+      <!-- The key art (logo, PLAY plate and the search/bank/escape strip are painted in it);
+           everything live sits on top, positioned in the art's own 1600 x 900 pixels. -->
+      <div class="title-art">
+        <h1 class="sr-only">Vault Breakers</h1>
+        <span class="title-vaultglow" aria-hidden="true"></span>
+        <span class="title-searchlight" aria-hidden="true"></span>
+        <span class="title-glint" aria-hidden="true"></span>
+        <div class="title-dust" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <span class="title-keyhole" aria-hidden="true"></span>
+        <div class="title-sparks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <button id="play-btn" class="title-play" type="button"><span class="title-play-label">PLAY</span></button>
+        <div class="title-menu">
+          <label class="title-name">PLAYING AS <input id="name-input" maxlength="14" autocomplete="off" spellcheck="false" /></label>
+          <nav class="title-links" aria-label="More ways to play">
+            <button id="create-btn" type="button">CREATE ROOM</button>
+            <i aria-hidden="true"></i>
+            <button id="browse-btn" type="button">BROWSE ROOMS</button>
+            <i aria-hidden="true"></i>
+            <button id="join-open" type="button">JOIN BY CODE</button>
+          </nav>
+          <div class="title-join" hidden>
+            <input id="code-input" maxlength="7" placeholder="ROOM CODE" autocomplete="off" spellcheck="false" aria-label="Room code" />
+            <button id="join-btn" type="button">JOIN</button>
+            <button id="join-cancel" type="button" aria-label="Cancel">&times;</button>
+          </div>
+          <p id="title-error" class="title-error" hidden></p>
         </div>
-        <div class="join-row">
-          <input id="code-input" maxlength="7" placeholder="ROOM CODE" autocomplete="off" spellcheck="false" aria-label="Room code" />
-          <button id="join-btn" class="btn">JOIN</button>
-        </div>
-        <button id="howto-btn" class="btn small">HOW TO PLAY</button>
-        <p id="title-error" class="error" hidden></p>
+        <button id="howto-btn" class="title-howto" type="button" aria-label="How to play: search, bank, escape"><span>HOW TO PLAY</span></button>
       </div>
       <div id="create-modal" class="modal room-modal" hidden>
         <h2>Create a room</h2>
@@ -69,24 +79,22 @@
       </div>
     </div>
     <div id="lobby" class="screen" hidden>
-      <header class="brand px-panel">
-        <img class="mascot" src="/assets/ui/mascot.png" alt="" />
-        <div class="brand-text">
-          <h1 class="brand-title">VAULT BREAKERS</h1>
-          <span class="brand-sub">HEIST · HIDE &amp; SEEK</span>
-          <span class="brand-tag">Plan Traps. Outsmart. Steal. Survive.</span>
-        </div>
-      </header>
-      <nav id="lobby-nav" class="side-nav px-panel" aria-label="Lobby menu"></nav>
+      <!-- Me: who I'm playing as, and the menu. One slim panel, so the room stays in view. -->
+      <aside class="me-panel px-panel" aria-label="You">
+        <h1 class="brand-mini">VAULT BREAKERS <span>SAFEHOUSE</span></h1>
+        <div id="my-card" class="profile"></div>
+        <nav id="lobby-nav" class="side-nav" aria-label="Lobby menu"></nav>
+        <p class="lobby-keys"><kbd>E</kbd> use the table, car, wardrobe · <kbd>Q</kbd> wave</p>
+      </aside>
+      <!-- The crew: room code, mode, players and open seats, map. -->
       <section class="party-panel px-panel" aria-label="Game lobby">
-        <div class="party-head"><h2 id="party-title">Game Lobby</h2><span class="online"><span class="dot"></span> <span id="online-count">0</span> online</span></div>
+        <div class="party-head"><h2 id="party-title">Game Lobby</h2><span id="online-count" class="room-count"></span></div>
         <div id="portal-list"></div>
         <p id="party-status" class="party-status"></p>
       </section>
-      <div id="my-card" class="profile px-panel"></div>
       <div class="start-box">
-        <p id="lobby-hint" class="lobby-hint">Walk into a portal with your crew to start the game.</p>
-        <button id="start-btn" class="start-btn blocked" type="button">START GAME <span class="arrow">&gt;</span></button>
+        <p id="lobby-hint" class="lobby-hint" hidden></p>
+        <button id="start-btn" class="start-btn wait" type="button">START HEIST <span class="arrow">&gt;</span></button>
         <p id="start-status" class="start-status"></p>
       </div>
       <div id="picker" class="modal picker" hidden>

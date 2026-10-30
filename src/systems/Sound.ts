@@ -5,7 +5,7 @@
 import type { Surface } from '../data/surfaces';
 import type { TrapKindId } from '../data/trapKinds';
 
-export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen' | 'award' | 'revive' | 'coin' | 'combo' | 'ping' | 'count' | 'go';
+export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen' | 'award' | 'revive' | 'coin' | 'combo' | 'ping' | 'count' | 'go' | 'knockout' | 'down' | 'revealSab' | 'revealRunner' | 'nearWin' | 'whoosh' | 'unlock' | 'join' | 'leave' | 'readyUp' | 'wave' | 'tap';
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -308,5 +308,121 @@ export function play(id: SoundId) {
       tone(a, 'square', 660, 660, 0.08, 0, 0.15);
       tone(a, 'square', 880, 880, 0.08, 0.1, 0.15);
       break;
+    case 'knockout':
+      // The Saboteur's payoff: a body-drop thud, then a sly minor stab and a bell.
+      noise(a, 0.3, 0, 0.8, 'lowpass', 260);
+      tone(a, 'sine', 140, 40, 0.35, 0, 0.7);
+      [233, 277, 349].forEach((f) => tone(a, 'sawtooth', f, f * 0.98, 0.32, 0.12, 0.1));
+      tone(a, 'triangle', 1397, 1397, 0.5, 0.18, 0.18);
+      break;
+    case 'down':
+      // A Runner goes down: a heavy thud sliding away.
+      tone(a, 'sine', 220, 50, 0.5, 0, 0.5);
+      noise(a, 0.22, 0, 0.45, 'lowpass', 420);
+      break;
+    case 'revealSab':
+      // "You are the Saboteur": a low hit and an ominous minor chord.
+      noise(a, 0.35, 0, 0.7, 'lowpass', 500);
+      tone(a, 'sawtooth', 82, 73, 1.1, 0, 0.22);
+      [220, 262, 311].forEach((f, i) => tone(a, 'sawtooth', f, f * 0.97, 0.8, 0.05 + i * 0.03, 0.08));
+      break;
+    case 'revealRunner':
+      // "You are a Runner": a whoosh and a bright rising chord.
+      noise(a, 0.3, 0, 0.35, 'highpass', 2200);
+      [392, 523, 659, 784].forEach((f, i) => tone(a, 'square', f, f, 0.32, i * 0.05, 0.1));
+      break;
+    case 'nearWin':
+      // One more to win: a fast climb that hangs on the top note.
+      [523, 659, 784, 1047].forEach((f, i) => tone(a, 'square', f, f, 0.08, i * 0.06, 0.15));
+      tone(a, 'square', 1319, 1319, 0.5, 0.24, 0.13);
+      break;
+    case 'whoosh':
+      noise(a, 0.28, 0, 0.18, 'bandpass', 2600);
+      break;
+    case 'tap':
+      // A menu button: a soft, short tick.
+      tone(a, 'triangle', 1500, 1200, 0.035, 0, 0.12);
+      break;
+    case 'join':
+      // Someone came into the safehouse: a two-note door chime.
+      tone(a, 'triangle', 784, 784, 0.18, 0, 0.3);
+      tone(a, 'triangle', 1047, 1047, 0.3, 0.12, 0.3);
+      break;
+    case 'leave':
+      tone(a, 'triangle', 659, 659, 0.14, 0, 0.22);
+      tone(a, 'triangle', 440, 440, 0.24, 0.1, 0.22);
+      break;
+    case 'readyUp':
+      tone(a, 'square', 659, 988, 0.12, 0, 0.14);
+      tone(a, 'square', 1319, 1319, 0.1, 0.1, 0.12);
+      break;
+    case 'wave':
+      tone(a, 'sine', 988, 1319, 0.12, 0, 0.18);
+      tone(a, 'sine', 1319, 1175, 0.12, 0.12, 0.14);
+      break;
+    case 'unlock':
+      // PLAY: a vault lock turning. Two tumbler clicks, the bolt thunks back, a bright ring.
+      noise(a, 0.03, 0, 0.5, 'highpass', 3500);
+      noise(a, 0.03, 0.07, 0.5, 'highpass', 3000);
+      tone(a, 'sine', 150, 55, 0.22, 0.11, 0.6);
+      noise(a, 0.12, 0.11, 0.35, 'lowpass', 500);
+      [1047, 1568].forEach((f, i) => tone(a, 'triangle', f, f, 0.35, 0.2 + i * 0.06, 0.18));
+      break;
   }
+}
+
+/**
+ * The getaway car starting up for the 3-2-1: the starter cranks, the engine catches, and the
+ * rumble climbs to a rev as GO comes. Returns a stop (fades it out) for a start that's called off.
+ */
+export function engineStart(ms = 3000): () => void {
+  const a = enabled ? audio() : null;
+  if (!a) return () => {};
+  const bus = a.createGain();
+  bus.gain.value = 1;
+  bus.connect(master!);
+  const t = a.currentTime;
+  const end = ms / 1000;
+  // Starter: three cranks, then the catch.
+  [0, 0.18, 0.36].forEach((at) => noise(a, 0.12, at, 0.35, 'bandpass', 900, bus));
+  noise(a, 0.25, 0.55, 0.6, 'lowpass', 300, bus);
+  // The idle rumble, rising into a rev.
+  const o = a.createOscillator();
+  const f = a.createBiquadFilter();
+  const g = a.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(48, t + 0.55);
+  o.frequency.linearRampToValueAtTime(70, t + end - 0.6);
+  o.frequency.exponentialRampToValueAtTime(190, t + end + 0.2);
+  f.type = 'lowpass';
+  f.frequency.setValueAtTime(260, t);
+  f.frequency.linearRampToValueAtTime(900, t + end + 0.2);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.32, t + 0.7);
+  g.gain.setValueAtTime(0.32, t + end);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + end + 0.9);
+  o.connect(f).connect(g).connect(bus);
+  o.start(t + 0.5);
+  o.stop(t + end + 1);
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    bus.gain.setTargetAtTime(0.0001, a.currentTime, 0.08);
+    setTimeout(() => bus.disconnect(), 600);
+  };
+}
+
+/**
+ * A note that climbs with `step`: the search ticks (rising while E is held), the streak chimes
+ * (higher with every link of a chain) and the score count-up ticks.
+ */
+export function blip(kind: 'search' | 'streak' | 'count', step: number) {
+  if (!enabled) return;
+  const a = audio();
+  if (!a) return;
+  const up = (semis: number) => 2 ** (semis / 12);
+  if (kind === 'search') tone(a, 'triangle', 392 * up(step * 2), 392 * up(step * 2), 0.06, 0, 0.12);
+  else if (kind === 'count') tone(a, 'square', 1200 * up(Math.min(step, 12)), 1200 * up(Math.min(step, 12)), 0.025, 0, 0.06);
+  else [784, 988, 1175, 1568].forEach((f, i) => tone(a, 'square', f * up(step * 2), f * up(step * 2) * 1.02, 0.09, i * 0.045, 0.16));
 }

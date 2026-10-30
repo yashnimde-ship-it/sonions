@@ -19,10 +19,10 @@ export const HEIGHT = 40;
 const WOOD = [20.6, 20.0, 23.4, 24.0]; // plain floorboards on the hall's west side
 const WALL = [55.5, 20.4, 63.5, 21.6]; // the dark wall band between garage and wardrobe room
 export const REPAIRS = [
-  { id: 'branding', box: [1.6, 1.1, 24.7, 8.0], tile: WOOD, shade: 0.5 },
-  { id: 'nav', box: [1.4, 9.0, 12.0, 23.0], tile: WOOD, shade: 0.5 },
+  { id: 'branding', box: [1.6, 1.1, 24.7, 8.0], tile: WOOD },
+  { id: 'nav', box: [1.4, 9.0, 12.0, 23.0], tile: WOOD },
   { id: 'lobby-panel', box: [52.3, 1.4, 69.0, 9.0], tile: WALL },
-  { id: 'profile', box: [1.4, 31.4, 20.2, 38.0], tile: WOOD, shade: 0.5 },
+  { id: 'profile', box: [1.4, 31.4, 20.2, 38.0], tile: WOOD },
   { id: 'start', box: [49.4, 31.5, 68.7, 38.5], tile: WALL },
   { id: 'customize', box: [54.4, 22.5, 61.7, 24.7], from: 'right', span: 2.2 },
   // The portal pads and their signs: the game draws live ones, so this becomes plain floor.
@@ -110,6 +110,11 @@ export const PORTALS = [
 
 /** Stand here (in front of the wardrobe and mirror) and press E to customize; the sign hangs at `prompt`. */
 export const WARDROBE = { x: 53.0, y: 24.2, w: 11.0, h: 7.5, prompt: { x: 58.1, y: 23.5 } };
+/** Stand around the planning table and press E to pick the map (the host) or look at the maps. */
+export const PLANNING_TABLE = { x: 23.6, y: 8.0, w: 22.8, h: 14.0, prompt: { x: 35.0, y: 19.9 } };
+/** The garage's side door: the getaway car is behind it (the workbench fills the garage's west
+ *  side, so the car itself can't be walked up to). E here starts the heist (host) or readies up. */
+export const GARAGE_DOOR = { x: 50.0, y: 14.0, w: 3.0, h: 4.0, prompt: { x: 57.8, y: 13.2 } };
 
 /** The masked-burglar mascot in the reference's title badge (reference pixels): circle centre and radius. */
 export const MASCOT = { cx: 120, cy: 102, r: 47 };

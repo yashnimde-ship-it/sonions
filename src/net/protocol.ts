@@ -70,6 +70,8 @@ export type ClientMsg =
   | { t: 'roomSettings'; size?: number; mode?: GameMode; map?: MapId; private?: boolean }
   | { t: 'kick'; id: string }
   | { t: 'startGame' }
+  /** A wave in the safehouse: `line` picks what it says (WAVE_LINES). */
+  | { t: 'emote'; kind: 'wave'; line: number }
   /** Saboteur confirms setup early. */
   | { t: 'ready' }
   /** Setup: the Saboteur hides a diamond in a piece of furniture (null takes it back out). */
@@ -142,6 +144,10 @@ export type ServerMsg =
   | { t: 'lobby'; x: number; y: number; character: CharacterId }
   /** Your room (null: you're not in one, back to the menu). */
   | { t: 'room'; room: RoomInfo | null }
+  /** The host started: the game begins in `ms` (the 3-2-1). `ms` 0: the start was called off, and why. */
+  | { t: 'roomStarting'; ms: number; reason?: string }
+  /** Someone in my safehouse waved. */
+  | { t: 'emote'; id: string; kind: 'wave'; line: number }
   /** A room request didn't work. */
   | { t: 'roomError'; reason: RoomError }
   /** The public rooms (for the room browser). */

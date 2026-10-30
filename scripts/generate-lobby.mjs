@@ -4,7 +4,7 @@
 //   public/assets/lobby/floor.png        the floor/wall layer alone (props removed, filled in)
 //   public/assets/lobby/props/<id>.png   each prop as its own transparent sprite
 //   public/assets/lobby/props.json       where each prop sits, and whether it's solid
-//   public/assets/lobby/lobby.json       size, collision grid, portals, wardrobe, lights, spawn
+//   public/assets/lobby/lobby.json       size, collision grid, portals, wardrobe, table, car, lights, spawn
 //   public/assets/ui/mascot.png          the masked-burglar mascot for the title badge
 //
 // Steps: scale the reference to the estate's art scale (16 px per tile) and reduce it to
@@ -364,6 +364,8 @@ fs.writeFileSync(
     collision: { cell: CELL, width: CW, height: CH, data: Buffer.from(grid).toString('base64') },
     portals: L.PORTALS,
     wardrobe: L.WARDROBE,
+    table: L.PLANNING_TABLE,
+    car: L.GARAGE_DOOR,
     lights: L.LIGHTS,
     spawn: L.SPAWN,
   }),

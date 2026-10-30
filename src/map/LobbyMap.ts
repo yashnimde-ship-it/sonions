@@ -17,6 +17,10 @@ export interface LobbyJson {
   portals: Portal[];
   /** Where to stand to customize; `prompt` is where its sign hangs (tiles). */
   wardrobe: { x: number; y: number; w: number; h: number; prompt?: { x: number; y: number } };
+  /** Around the planning table: E picks the map. */
+  table?: { x: number; y: number; w: number; h: number; prompt?: { x: number; y: number } };
+  /** At the garage door (the getaway car): E starts the heist, or readies up. */
+  car?: { x: number; y: number; w: number; h: number; prompt?: { x: number; y: number } };
   /** Lamps: x, y and radius in tiles. */
   lights: { x: number; y: number; r: number }[];
   spawn: { x: number; y: number };

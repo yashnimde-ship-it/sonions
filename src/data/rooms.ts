@@ -12,6 +12,10 @@ export const ROOM_CODE_LENGTH = 6;
 export const ROOM_MIN = 2;
 export const ROOM_MAX = 9;
 export const QUICK_PLAY_SIZE = 4;
+/** The host presses START: everyone gets a 3-2-1 in the safehouse, then the game begins. */
+export const START_COUNTDOWN_MS = 3000;
+/** What a wave says over your head (the server checks the index). */
+export const WAVE_LINES = ['HEY!', 'YO!', 'HI CREW!', "LET'S GO!"] as const;
 
 /** What someone typed (or a ?room= link) as a code: upper case, no spaces or dashes; null if it can't be one. */
 export function normalizeCode(raw: string): string | null {

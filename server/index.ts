@@ -17,7 +17,7 @@ import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
-import { normalizeCode, QUICK_PLAY_SIZE, ROOM_CODE_CHARS, ROOM_CODE_LENGTH, ROOM_MAX, ROOM_MIN, type RoomInfo, type RoomSummary } from '../src/data/rooms.ts';
+import { normalizeCode, QUICK_PLAY_SIZE, ROOM_CODE_CHARS, ROOM_CODE_LENGTH, ROOM_MAX, ROOM_MIN, START_COUNTDOWN_MS, WAVE_LINES, type RoomInfo, type RoomSummary } from '../src/data/rooms.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
 import { NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
 
@@ -61,6 +61,8 @@ interface Client {
   /** When First Aid was last spent (a heal for a teammate must follow it), and the last noise. */
   firstAidAt?: number;
   lastNoise?: number;
+  /** When they last waved in the safehouse (ms), so waves can't be spammed. */
+  lastEmote?: number;
   /** 'lobby' or the id of the match the player is in. */
   room: string;
   /** When the player stepped into the portal they are standing in (ms), keyed by portal size. */
@@ -919,6 +921,7 @@ function handle(c: Client, msg: ClientMsg) {
       if (!party || c.room !== 'lobby') break;
       if (msg.ready) party.ready.add(s.id);
       else party.ready.delete(s.id);
+      if (!msg.ready) cancelStart(party, `${s.name} isn't ready any more.`);
       sendRoom(party);
       break;
     }
@@ -944,29 +947,35 @@ function handle(c: Client, msg: ClientMsg) {
     }
     case 'startGame': {
       const party = parties.get(c.party ?? '');
-      if (!party || c.room !== 'lobby' || party.matchId) break;
+      if (!party || c.room !== 'lobby' || party.matchId || party.startTimer) break;
       if (party.host !== s.id) {
         send(c, { t: 'roomError', reason: 'notHost' });
         break;
       }
-      const crew = party.members.map((id) => clients.get(id)).filter((m): m is Client => !!m && m.room === 'lobby' && !m.state.offline);
-      if (crew.length < ROOM_MIN) {
-        send(c, { t: 'roomError', reason: 'tooFew' });
+      const why = startProblem(party);
+      if (why) {
+        send(c, { t: 'roomError', reason: why });
         break;
       }
-      if (crew.some((m) => m !== c && !party.ready.has(m.state.id))) {
-        send(c, { t: 'roomError', reason: 'notReady' });
-        break;
+      // A 3-2-1 in the safehouse first; the game starts when it ends (if the crew is still set).
+      party.startTimer = setTimeout(() => launchParty(party), START_COUNTDOWN_MS);
+      for (const id of party.members) {
+        const m = clients.get(id);
+        if (m?.room === 'lobby') send(m, { t: 'roomStarting', ms: START_COUNTDOWN_MS });
       }
-      // The room's settings decide the game (startMatch reads each player's picks).
-      for (const m of crew) {
-        m.mapPref = party.map;
-        m.modePref = party.mode;
+      break;
+    }
+    case 'emote': {
+      // A wave in the safehouse, for everyone else in the room (once a second at most).
+      const party = parties.get(c.party ?? '');
+      const now = Date.now();
+      if (!party || c.room !== 'lobby' || msg.kind !== 'wave' || now - (c.lastEmote ?? 0) < 1000) break;
+      c.lastEmote = now;
+      const line = Number.isInteger(msg.line) && msg.line >= 0 && msg.line < WAVE_LINES.length ? msg.line : 0;
+      for (const id of party.members) {
+        const m = clients.get(id);
+        if (m && m !== c && m.room === 'lobby') send(m, { t: 'emote', id: s.id, kind: 'wave', line });
       }
-      const matchId = startMatch(crew.length, crew);
-      party.matchId = matchId;
-      party.ready.clear();
-      sendRoom(party);
       break;
     }
     case 'move':
@@ -2006,6 +2015,8 @@ interface Party {
   ready: Set<string>;
   /** The game this room is playing, or null while they're in the safehouse. */
   matchId: string | null;
+  /** The host pressed START: the 3-2-1 is running (the game starts when it fires). */
+  startTimer: ReturnType<typeof setTimeout> | null;
 }
 const parties = new Map<string, Party>();
 /** The public room list changed: the browsers get it on the next tick. */
@@ -2020,7 +2031,7 @@ function newCode() {
 }
 
 function createParty(host: Client, isPrivate: boolean, size: number, mode: GameMode, map: MapId): Party {
-  const party: Party = { code: newCode(), host: host.state.id, isPrivate, size: Math.max(ROOM_MIN, Math.min(ROOM_MAX, Math.round(Number(size) || QUICK_PLAY_SIZE))), map, mode, members: [], ready: new Set(), matchId: null };
+  const party: Party = { code: newCode(), host: host.state.id, isPrivate, size: Math.max(ROOM_MIN, Math.min(ROOM_MAX, Math.round(Number(size) || QUICK_PLAY_SIZE))), map, mode, members: [], ready: new Set(), matchId: null, startTimer: null };
   parties.set(party.code, party);
   console.log(`room ${party.code} created by ${host.state.name} (${isPrivate ? 'private' : 'public'}, ${party.size} players)`);
   return party;
@@ -2051,7 +2062,47 @@ function leaveParty(c: Client) {
     return;
   }
   if (party.host === c.state.id) party.host = party.members[0];
+  cancelStart(party, `${c.state.name} left the room.`);
   sendRoom(party);
+}
+
+/** The players in the safehouse who'd go into the game (not offline, not still in the last one). */
+const crewOf = (party: Party) => party.members.map((id) => clients.get(id)).filter((m): m is Client => !!m && m.room === 'lobby' && !m.state.offline);
+
+/** Why this room can't start right now, or null if it can. */
+function startProblem(party: Party): 'tooFew' | 'notReady' | null {
+  const crew = crewOf(party);
+  if (crew.length < ROOM_MIN) return 'tooFew';
+  if (crew.some((m) => m.state.id !== party.host && !party.ready.has(m.state.id))) return 'notReady';
+  return null;
+}
+
+/** The 3-2-1 is over: into the game, if the crew is still set. */
+function launchParty(party: Party) {
+  party.startTimer = null;
+  if (!parties.has(party.code) || party.matchId) return;
+  const why = startProblem(party);
+  if (why) return cancelStart(party, why === 'tooFew' ? 'Not enough players any more.' : 'Someone isn\'t ready any more.', true);
+  const crew = crewOf(party);
+  // The room's settings decide the game (startMatch reads each player's picks).
+  for (const m of crew) {
+    m.mapPref = party.map;
+    m.modePref = party.mode;
+  }
+  party.matchId = startMatch(crew.length, crew);
+  party.ready.clear();
+  sendRoom(party);
+}
+
+/** Calls off a running 3-2-1 (someone left or isn't ready), and tells the room why. */
+function cancelStart(party: Party, reason: string, fired = false) {
+  if (!party.startTimer && !fired) return;
+  if (party.startTimer) clearTimeout(party.startTimer);
+  party.startTimer = null;
+  for (const id of party.members) {
+    const m = clients.get(id);
+    if (m?.room === 'lobby') send(m, { t: 'roomStarting', ms: 0, reason });
+  }
 }
 
 function roomInfo(party: Party): RoomInfo {

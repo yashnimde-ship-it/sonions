@@ -1,4 +1,6 @@
 import '@fontsource/press-start-2p';
+import '@fontsource/cinzel/600.css';
+import '@fontsource/cinzel/700.css';
 import { ART_TILE, CHAR_GLOW, CHAR_SCREEN_FRACTION, CHARACTERS, type CharacterId, characterSheet, HITBOX } from './config';
 import { CHARACTER_INFO } from './data/characters';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
@@ -17,7 +19,7 @@ import { type LobbyJson, LobbyMap } from './map/LobbyMap';
 import { type EstateJson, TileMap, type Stairwell } from './map/TileMap';
 import { NetClient } from './net/NetClient';
 import { type ClientMsg, NET_HZ, type PlayerState, type ServerMsg } from './net/protocol';
-import { normalizeCode, ROOM_ERRORS, type RoomInfo } from './data/rooms';
+import { normalizeCode, ROOM_ERRORS, type RoomInfo, WAVE_LINES } from './data/rooms';
 import { CameraSystem } from './systems/CameraSystem';
 import { InteractionSystem } from './systems/InteractionSystem';
 import { Particles } from './systems/Particles';
@@ -27,7 +29,7 @@ import { drawTrap } from './systems/TrapArt';
 import { heistMusicLevel, setHeistMusic, setHeistMusicEnabled } from './systems/HeistMusic';
 import { lobbyMusicInfo, setLobbyMusic, setMusicEnabled } from './systems/Music';
 import { surfaceAt } from './data/surfaces';
-import { audioOut, footstep, play as sfx, setSoundEnabled, unlockSound } from './systems/Sound';
+import { audioOut, blip, engineStart, footstep, play as sfx, setSoundEnabled, unlockSound } from './systems/Sound';
 /** For playtests: is sound running yet? */
 const audioOutState = () => audioOut()?.state ?? 'none';
 import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
@@ -438,13 +440,50 @@ async function boot() {
   let needN = 0;
   let totalN = 0;
   /** The furniture I'm searching (holding E), and since when. */
-  let searching: { spot: string; since: number } | null = null;
+  /** Holding E on furniture: since when, and how many of its rising ticks have played. */
+  let searching: { spot: string; since: number; ticks: number } | null = null;
   /** The knocked-out teammate I'm reviving (holding E), and since when. */
   let reviving: { id: string; since: number } | null = null;
   /** Little animations: a diamond dropping into furniture, popping out, an empty search. */
   const particles = new Particles();
   // The round's start: 3-2-1 in the last seconds of setup, then GO!, and a Runner's camera
   // zooms from the whole map into their character.
+  // The safehouse's crew moments: pops when someone joins or readies up, waves over heads,
+  // and the 3-2-1 (with the getaway car starting up) when the host starts.
+  const crewPops = new Map<string, { text: string; color: string; at: number }>();
+  const waves = new Map<string, { line: number; at: number }>();
+  const WAVE_MS = 1700;
+  let lobbyStart: { endsAt: number; shown: number; stopEngine: () => void } | null = null;
+  const lobbyCountEl = Object.assign(document.createElement('div'), { id: 'lobby-countdown', hidden: true });
+  document.getElementById('lobby')!.append(lobbyCountEl);
+  lobbyCountEl.addEventListener('animationend', () => (lobbyCountEl.hidden = true));
+  function showLobbyCount(text: string) {
+    lobbyCountEl.textContent = text;
+    lobbyCountEl.className = '';
+    void lobbyCountEl.offsetWidth;
+    lobbyCountEl.className = 'num';
+    lobbyCountEl.hidden = false;
+  }
+  function endLobbyStart(called = false) {
+    if (!lobbyStart) return;
+    if (called) lobbyStart.stopEngine();
+    lobbyStart = null;
+    lobbyCountEl.hidden = true;
+    lobby.setStarting(0);
+  }
+
+  const sceneFade = Object.assign(document.createElement('div'), { id: 'scene-fade' });
+  document.body.append(sceneFade);
+  function playSceneFade() {
+    sceneFade.classList.remove('play');
+    void sceneFade.offsetWidth;
+    sceneFade.classList.add('play');
+  }
+  // Every menu button ticks when pressed (PLAY has its own unlock).
+  document.addEventListener('click', (e) => {
+    if ((e.target as Element).closest?.('#lobby button, #title button:not(#play-btn), #result button')) sfx('tap');
+  });
+
   const countEl = document.createElement('div');
   countEl.id = 'countdown';
   countEl.hidden = true;
@@ -538,6 +577,25 @@ async function boot() {
   let impactUntil = 0;
   let impactColor = '#ff4557';
   let impactShake = 0;
+  // Game feel: a hit-stop holds the world still for a beat on a big hit; a punch zoom kicks the
+  // camera in on a payoff; chains of banks (the crew) or trap hits (the Saboteur) build streaks.
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let hitStopUntil = 0;
+  let punchAt = 0;
+  let punchAmount = 0;
+  const PUNCH_MS = 320;
+  const BANK_CHAIN_MS = 20_000;
+  const BANK_STREAK = ['', '', 'DOUBLE HAUL!', 'TRIPLE HAUL!', 'HEIST FRENZY!', 'UNSTOPPABLE!'];
+  const SAB_CHAIN_MS = 6000;
+  let bankChain = { n: 0, at: 0 };
+  let sabChain = { n: 0, at: 0 };
+  /** Who banked which kind of diamond just now (from the 'diamonds' update), for the flying gem. */
+  const justBanked = new Map<string, Diamond['kind']>();
+  let nearWinShown = false;
+  let nearWinAt = 0;
+  let lastSecShown = 0;
+  /** My HP as last shown, so any drop (from any trap) floats a damage number. */
+  let shownHp = MAX_HP;
   /** The mouse in world (art) pixels, for the Saboteur picking traps. */
   let mouseX = -1;
   /** The mouse in canvas pixels (for the ping wheel). */
@@ -582,6 +640,7 @@ async function boot() {
       [tx, ty] = [w / 2 + (tx - w / 2) * e, h / 2 + (ty - h / 2) * e];
       snap = true;
     } else scale = play;
+    if (scene === 'match') scale *= punchFactor();
     camera.resize(canvas.width / scale, canvas.height / scale);
     if (scene === 'title') {
       tx = w / 2;
@@ -606,6 +665,8 @@ async function boot() {
   // ---------- Scenes ----------
 
   function setScene(next: Scene) {
+    // Between the title, the safehouse and a heist's end: a fade up from dark.
+    if (next !== scene && next !== 'match') playSceneFade();
     scene = next;
     document.body.dataset.scene = next;
     title.show(scene === 'title');
@@ -744,6 +805,13 @@ async function boot() {
     bankedN = needN = totalN = 0;
     keycard = null;
     searching = null;
+    bankChain = { n: 0, at: 0 };
+    sabChain = { n: 0, at: 0 };
+    justBanked.clear();
+    nearWinShown = false;
+    nearWinAt = 0;
+    lastSecShown = 0;
+    hitStopUntil = 0;
     reviving = null;
     fx.length = 0;
     particles.clear();
@@ -820,7 +888,14 @@ async function boot() {
       : msg.role === 'saboteur'
         ? `Hide the diamonds and place up to ${trapSlots(msg.size)} traps. Confirm when your setup is ready.`
         : 'The Saboteur is rigging the house. Get ready to go in.';
-    banner.innerHTML = `<span class="kicker">ROUND ${msg.round} OF ${msg.rounds} · ${hs ? 'HIDE &amp; SEEK · ' : ''}${MAPS[mapId].name}</span><span>You are ${role}</span><span class="crew-list">${job}</span>`;
+    banner.innerHTML = `<span class="kicker">ROUND ${msg.round} OF ${msg.rounds} · ${hs ? 'HIDE &amp; SEEK · ' : ''}${MAPS[mapId].name}</span><span class="role-line">You are ${role}</span><span class="crew-list">${job}</span>`;
+    // The role lands hard: the card slams in, the role word stamps down, a sting plays.
+    const sab = msg.role === 'saboteur';
+    banner.className = `match-banner reveal ${sab ? 'is-sab' : 'is-runner'}`;
+    if (!msg.resume) {
+      trapImpact(sab ? '#ff4d6a' : '#2ec4b6', 0, 700);
+      setTimeout(() => sfx(sab ? 'revealSab' : 'revealRunner'), 230);
+    }
     banner.hidden = false;
     bannerUntil = performance.now() + BANNER_MS;
     setScene('match');
@@ -832,8 +907,32 @@ async function boot() {
         myId = msg.id;
         onWelcome?.();
         onWelcome = null;
+        // Back after a reload, but the seat wasn't held (gone too long): the server sees a new
+        // player, so join the room in the address bar the way a fresh visit would.
+        if (!msg.resumed && session.get('playing')) {
+          session.set('playing', null);
+          const invite = new URLSearchParams(location.search).get('room');
+          if (invite && title.hasSavedName && scene === 'title') title.onJoin(invite);
+        }
         break;
-      case 'room':
+      case 'room': {
+        // Who just came in, readied up or left (the same room as before, not a fresh one).
+        const before = myRoom;
+        if (before && msg.room && before.code === msg.room.code && scene === 'lobby') {
+          const was = new Map(before.members.map((m) => [m.id, m]));
+          const now = performance.now();
+          for (const m of msg.room.members) {
+            const old = was.get(m.id);
+            if (!old && m.id !== myId) {
+              crewPops.set(m.id, { text: 'JOINED!', color: '#7ceaff', at: now });
+              sfx('join');
+            } else if (old && !old.ready && m.ready && m.id !== msg.room.host) {
+              crewPops.set(m.id, { text: 'READY!', color: '#7fe39a', at: now });
+              sfx('readyUp');
+            }
+          }
+          if (before.members.some((m) => !msg.room!.members.some((n) => n.id === m.id))) sfx('leave');
+        }
         myRoom = msg.room;
         if (msg.room) {
           for (const d of decksOf(msg.room.mode === 'hideSeek' ? HIDE_SEEK_MAP : msg.room.map)) void loadWorldImages(d).catch(() => {});
@@ -852,6 +951,26 @@ async function boot() {
           titleNote = '';
         }
         break;
+      }
+      case 'roomStarting':
+        if (msg.ms > 0 && scene === 'lobby') {
+          // The host started: 3, 2, 1 while the getaway car starts up.
+          endLobbyStart(true);
+          lobbyStart = { endsAt: performance.now() + msg.ms, shown: 0, stopEngine: engineStart(msg.ms) };
+          lobby.setStarting(msg.ms);
+        } else if (msg.ms <= 0) {
+          endLobbyStart(true);
+          if (msg.reason) lobby.nudgeStart(`Start called off: ${msg.reason}`);
+        }
+        break;
+      case 'emote': {
+        const r = remotes.get(msg.id);
+        if (scene !== 'lobby' || !r) break;
+        waves.set(msg.id, { line: msg.line, at: performance.now() });
+        r.bandit.jump(6, 18);
+        sfx('wave');
+        break;
+      }
       case 'roomError':
         if (msg.reason === 'kicked') titleNote = ROOM_ERRORS.kicked;
         else if (scene === 'title') title.setBusy(false, ROOM_ERRORS[msg.reason]);
@@ -897,6 +1016,7 @@ async function boot() {
         modeNow = 'heist';
         break;
       case 'match':
+        endLobbyStart();
         if (msg.resume && match?.id === msg.matchId) {
           // Back after a short drop with the game still open: just catch up on the clock.
           phase = msg.phase;
@@ -935,6 +1055,7 @@ async function boot() {
           if (!r) addRemote(p);
           else {
             if (r.state.character !== p.character) r.bandit.sheet = sheets[p.character];
+            if (msg.room === 'match' && r.state.hp > 0 && p.hp === 0) runnerDown(p);
             r.state = p;
           }
         }
@@ -963,7 +1084,9 @@ async function boot() {
       case 'diamonds': {
         // Diamonds that just went into furniture get a little drop-in animation.
         const before = new Map(diamonds.map((d) => [d.id, d.place.at === 'spot' ? d.place.spot : null]));
+        const wasBanked = new Set(diamonds.filter((d) => d.place.at === 'banked').map((d) => d.id));
         diamonds = msg.items;
+        for (const d of diamonds) if (d.place.at === 'banked' && !wasBanked.has(d.id)) justBanked.set(d.place.by, d.kind);
         for (const d of diamonds) {
           if (d.place.at !== 'spot' || before.get(d.id) === d.place.spot) continue;
           const spot = spots.find((x) => x.id === (d.place as { spot: string }).spot);
@@ -977,6 +1100,8 @@ async function boot() {
         bankedN = msg.banked;
         needN = msg.need;
         totalN = msg.total;
+        // One diamond from the win (after the bank's own celebration).
+        if (phase === 'live' && needN > 0 && needN - bankedN === 1 && !nearWinShown) setTimeout(nearWin, 900);
         {
           const mine = myDiamond();
           if (!mine) hud.setCarrying(null);
@@ -1012,6 +1137,8 @@ async function boot() {
             particles.pop(c.x, c.y - 16, '+ KEYCARD', '#ffd84a');
           }
           trapImpact('#ffd84a', 2, 220);
+          hitStop(60);
+          punchZoom(0.05);
           sfx('found');
           toast(`KEYCARD! Take it to the ${keycard?.vaultRoom ?? 'vault'} door`);
           break;
@@ -1023,7 +1150,10 @@ async function boot() {
           particles.burst(c.x, c.y, '#5ad8ff', 26, 2.2);
           particles.burst(c.x, c.y, '#ffffff', 8, 1.2);
           particles.pop(c.x, c.y - 16, '+1 DIAMOND', '#5ad8ff');
+          particles.ring(c.x, c.y, '#5ad8ff', 30);
           trapImpact('#5ad8ff', 2, 220);
+          hitStop(60);
+          punchZoom(0.05);
           setTimeout(() => sfx('coin'), 120);
         } else if (spot) particles.burst(spotCenter(spot).x, spotCenter(spot).y, '#8a849c', 8, 0.8);
         if (msg.found) hud.setCarrying('CARRYING A DIAMOND · TAKE IT TO THE GETAWAY');
@@ -1055,12 +1185,24 @@ async function boot() {
             by.celebrate();
             particles.burst(by.x, by.y - 14, '#ffc94a', 40, 2.6);
             particles.burst(by.x, by.y - 14, '#ffffff', 12, 1.4);
+            particles.ring(by.x, by.y - 4, '#ffc94a', 40);
             particles.pop(by.x, by.y - 36, msg.id === myId ? `+${SCORE.bank}` : 'BANKED!', '#ffc94a');
+            // The diamond flies up into its slot in the objective, which pops when it lands.
+            const from = toScreen(by.x, by.y - 20);
+            const kind = justBanked.get(msg.id);
+            justBanked.delete(msg.id);
+            requestAnimationFrame(() => {
+              sfx('whoosh');
+              hud.flyGem(from.x, from.y, kind === 'red', !!match?.saboteur, () => sfx('coin'));
+            });
           }
           if (msg.id === myId) {
             trapImpact('#ffc94a', 3, 300);
+            hitStop(80);
+            punchZoom(0.07);
             setTimeout(() => sfx('combo'), 180);
           }
+          bankLink();
         }
         else if (msg.kind === 'dropped') sfx('dropped');
         else if (msg.id !== myId) sfx('alert');
@@ -1092,6 +1234,7 @@ async function boot() {
         setupPanel.show(false);
         searching = null;
         if (phase === 'live') {
+          banner.className = 'match-banner';
           banner.innerHTML = hideSeek()
             ? `<span class="kicker">READY OR NOT</span><span>THE HUNT IS ON</span><span class="crew-list">${match?.saboteur ? 'Find them in the dark. Q Flare, C Heartbeat, click to shoot.' : 'Stay hidden, or run. The main entrance opens near the end.'}</span>`
             : `<span class="kicker">SETUP OVER</span><span>THE HEIST IS ON</span><span class="crew-list">${match?.saboteur ? 'Watch them. Right-click an unused trap to move it once.' : `Search the furniture (hold E), find the diamonds, bank ${needN || 'them'} at the GETAWAY.`}</span>`;
@@ -1142,7 +1285,7 @@ async function boot() {
         if (match?.saboteur) {
           // The Saboteur's reward: a GOTCHA where it happened, and a chime.
           if (msg.deck === deckId) particles.pop(msg.x, msg.y - 30, `GOTCHA! +${SCORE.trapHit}`, '#ff4d6a');
-          setTimeout(() => sfx('combo'), 150);
+          sabLink(msg.x, msg.y);
         }
         break;
       }
@@ -1414,11 +1557,13 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get room() { return myRoom; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get pings() { return pings; }, lobbyMusicInfo, audioState: () => audioOutState(), get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, hud, serverMsg: (m: ServerMsg) => onServerMessage(m), get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get room() { return myRoom; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get pings() { return pings; }, lobbyMusicInfo, audioState: () => audioOutState(), get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
 
   // ---------- Update ----------
 
   const nearWardrobe = () => LobbyMap.inside(lobbyData.wardrobe, me.x, me.y);
+  const nearTable = () => !!lobbyData.table && LobbyMap.inside(lobbyData.table, me.x, me.y);
+  const nearCar = () => !!lobbyData.car && LobbyMap.inside(lobbyData.car, me.x, me.y);
 
   /** About NET_HZ times a second; the server relays it to everyone in the same room. */
   function sendPosition() {
@@ -1542,6 +1687,9 @@ async function boot() {
 
   /** Down: the server times the wait (a 'knockout' message says how long). Until it does, wait. */
   function beginKnockout() {
+    hitStop(150);
+    punchZoom(0.1);
+    sfx('down');
     knockedOut = true;
     koStartedAt = performance.now();
     respawnAt = Infinity;
@@ -1582,6 +1730,87 @@ async function boot() {
     impactUntil = impactStarted + duration;
     impactColor = color;
     impactShake = Math.max(impactShake, shake);
+    // The big hits (a crusher, a spring, a heavy shock) freeze the world for a beat.
+    if (shake >= 5) hitStop(shake >= 7 ? 130 : 90);
+  }
+
+  /** Freeze the world for `ms`: updates and particles stop; drawing and sound go on. */
+  function hitStop(ms: number) {
+    hitStopUntil = Math.max(hitStopUntil, performance.now() + ms);
+  }
+
+  /** Kick the camera in by `amount` (0.06 = 6% closer) and ease it back out. */
+  function punchZoom(amount = 0.06) {
+    if (reducedMotion.matches) return;
+    punchAt = performance.now();
+    punchAmount = amount;
+  }
+
+  function punchFactor() {
+    const t = (performance.now() - punchAt) / PUNCH_MS;
+    if (t < 0 || t >= 1) return 1;
+    return 1 + punchAmount * (t < 0.2 ? t / 0.2 : (1 - (t - 0.2) / 0.8) ** 2);
+  }
+
+  /** A Runner I can see just went down: the Saboteur's big payoff, a gut punch for their crew. */
+  function runnerDown(p: PlayerState) {
+    if (!match || hideSeek() || phase !== 'live' || result) return;
+    const x = p.x;
+    const y = p.y - 14;
+    if (match.saboteur) {
+      hitStop(120);
+      punchZoom(0.08);
+      trapImpact('#ff4d6a', 4, 420);
+      particles.ring(x, y + 10, '#ff4d6a', 46);
+      particles.burst(x, y, '#ff4d6a', 40, 2.6);
+      particles.burst(x, y, '#ffffff', 10, 1.4);
+      particles.slam(x, y - 40, 'KNOCKOUT!', '#ff4d6a');
+      sfx('knockout');
+    } else {
+      particles.burst(x, y, '#ff8a8a', 16, 1.4);
+      particles.pop(x, y - 22, 'DOWN!', '#ff8a8a');
+      sfx('down');
+      hud.alert(`<span class="who">${esc(p.name)}</span> <b>is knocked out</b><span class="where">hold E beside them to revive</span>`);
+    }
+  }
+
+  /** The Saboteur's trap hit `GOTCHA` at (x, y): hits close together chain into a combo. */
+  function sabLink(x: number, y: number) {
+    const now = performance.now();
+    sabChain = { n: now - sabChain.at < SAB_CHAIN_MS ? sabChain.n + 1 : 1, at: now };
+    if (sabChain.n < 2) {
+      setTimeout(() => sfx('combo'), 150);
+      return;
+    }
+    const n = sabChain.n;
+    particles.pop(x, y - 46, `COMBO x${n}`, '#ffc94a');
+    hud.callout(`COMBO x${n}`, 'red', n >= 3 ? 'The house is winning' : 'Back-to-back traps');
+    setTimeout(() => blip('streak', n - 1), 150);
+  }
+
+  /** The crew banked: banks close together build a streak. */
+  function bankLink() {
+    const now = performance.now();
+    bankChain = { n: now - bankChain.at < BANK_CHAIN_MS ? bankChain.n + 1 : 1, at: now };
+    if (bankChain.n < 2 || match?.saboteur) return;
+    const n = bankChain.n;
+    hud.callout(BANK_STREAK[Math.min(n, BANK_STREAK.length - 1)], 'gold', `${n} banks in a row`);
+    setTimeout(() => blip('streak', n - 1), 420);
+  }
+
+  /** One diamond from the win: everyone hears it, the music climbs. */
+  function nearWin() {
+    if (nearWinShown || hideSeek() || phase !== 'live' || result) return;
+    nearWinShown = true;
+    nearWinAt = performance.now();
+    sfx('nearWin');
+    if (match?.saboteur) hud.callout('ONE MORE AND THEY WIN', 'red', 'Stop the next diamond');
+    else hud.callout('ONE MORE DIAMOND TO WIN!', 'gold', 'Get it to the GETAWAY');
+  }
+
+  /** Where a world point (art px) is on the page, in CSS px. */
+  function toScreen(x: number, y: number) {
+    return { x: ((x - viewX) * scale) / dpr, y: ((y - viewY) * scale) / dpr };
   }
 
   /** I set off a placed trap: what it does to me, by kind. */
@@ -1810,9 +2039,41 @@ async function boot() {
         me.update({ dx: 0, dy: 0, sprint: false }, lobbyMap);
       } else {
         me.update(input, lobbyMap);
-        if (input.action && nearWardrobe()) lobby.openPicker(myCharacter);
+        // The room is the menu: the wardrobe, the planning table (the map) and the garage door
+        // (the getaway car: start, or ready up).
+        if (input.action) {
+          if (nearWardrobe()) lobby.openPicker(myCharacter);
+          else if (nearTable()) lobby.navigate('map');
+          else if (nearCar() && lobby.carPrompt) lobby.pressStart();
+        }
+        // Q: wave to the crew (everyone in the room sees it).
+        if (keyPressed('KeyQ') && myRoom && performance.now() - (waves.get(myId)?.at ?? 0) > 1000) {
+          const line = Math.floor(Math.random() * WAVE_LINES.length);
+          waves.set(myId, { line, at: performance.now() });
+          me.jump(6, 18);
+          sfx('wave');
+          net.send({ t: 'emote', kind: 'wave', line });
+        }
       }
       if (myRoom) lobby.setRoom(myRoom, myId, online);
+      if (lobbyStart) {
+        const secs = Math.ceil((lobbyStart.endsAt - performance.now()) / 1000);
+        if (secs >= 1 && secs <= 3 && secs !== lobbyStart.shown) {
+          lobbyStart.shown = secs;
+          showLobbyCount(String(secs));
+          sfx('count');
+        }
+      }
+      // A pop over someone who just joined or readied up, once their character is here.
+      for (const [id, pop] of crewPops) {
+        const b = id === myId ? me : remotes.get(id)?.bandit;
+        if (b) {
+          particles.burst(b.x, b.y - 14, pop.color, 18, 1.6);
+          particles.pop(b.x, b.y - 40, pop.text, pop.color);
+          if (pop.text === 'JOINED!') b.jump(8, 20);
+          crewPops.delete(id);
+        } else if (performance.now() - pop.at > 4000) crewPops.delete(id);
+      }
       sendPosition();
       frameCamera(false);
       return;
@@ -1826,7 +2087,16 @@ async function boot() {
     if (performance.now() > bannerUntil) banner.hidden = true;
     const left = Math.max(0, phaseEndsAt - performance.now());
     const stage = hideSeek() ? (phase === 'setup' ? 'HIDE' : left <= ESCAPE_MS ? 'ESCAPE' : 'HUNT') : phase === 'setup' ? 'SETUP' : 'HEIST';
-    hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${stage}`, left);
+    hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${stage}`, left, phase === 'live');
+    // The last 30 seconds of a round: a warning, then a tick every second for the final 10.
+    const secsLeft = Math.ceil(left / 1000);
+    if (phase === 'live' && !result && secsLeft !== lastSecShown) {
+      if (secsLeft === 30 && lastSecShown > 30) {
+        hud.callout('30 SECONDS LEFT', 'red');
+        sfx('alert');
+      } else if (secsLeft >= 1 && secsLeft <= 10) sfx('tick');
+      lastSecShown = secsLeft;
+    }
     // 3, 2, 1 at the end of setup (the counting Seeker already has a big count on screen).
     const tens = Math.ceil(left / 1000);
     if (phase === 'setup' && !result && tens >= 1 && tens <= 3 && tens !== countShown) {
@@ -2044,6 +2314,7 @@ async function boot() {
     let i = 0.15;
     if (left < ALARM_PHASE_MS) i += 0.15 + 0.4 * clamp(1 - left / ALARM_PHASE_MS);
     if (now - alarmAt < 12_000) i += 0.45;
+    if (nearWinAt) i += 0.3;
     if (hideSeek()) {
       if (match?.saboteur) {
         const near = Math.min(Infinity, ...[...remotes.values()].filter((r) => here(r.state.deck)).map((r) => Math.hypot(r.bandit.x - me.x, r.bandit.y - me.y)));
@@ -2169,10 +2440,17 @@ async function boot() {
         prompt = `Hold E  Search the ${spot.name}`;
         // Holding E on the same furniture, standing still, for SEARCH_MS searches it.
         if (input.actionHeld && !me.stunned) {
-          if (searching?.spot !== spot.id) searching = { spot: spot.id, since: now };
+          if (searching?.spot !== spot.id) searching = { spot: spot.id, since: now, ticks: 0 };
           else if (now - searching.since >= SEARCH_MS) {
             net.send({ t: 'search', spot: spot.id });
             searching = null;
+          } else {
+            // Six rising ticks while the ring fills: the build-up before the reveal.
+            const step = Math.floor(((now - searching.since) / SEARCH_MS) * 6);
+            if (step > searching.ticks) {
+              searching.ticks = step;
+              blip('search', step);
+            }
           }
           prompt = `Searching the ${spot.name}...`;
         }
@@ -2306,6 +2584,7 @@ async function boot() {
       if (scene === 'lobby') {
         ctx.save();
         ctx.scale(scale, scale);
+        drawReadyRings(camX, camY);
         actors.forEach((b) => b.draw(ctx, camX, camY));
         ctx.restore();
       }
@@ -2323,8 +2602,14 @@ async function boot() {
       ctx.globalAlpha = CHAR_GLOW;
       actors.forEach((b) => b.draw(ctx, camX, camY, false));
       ctx.restore();
-      drawWardrobePrompt(camX, camY);
+      ctx.save();
+      ctx.scale(scale, scale);
+      drawHeadlights(camX, camY);
+      particles.draw(ctx, camX, camY);
+      ctx.restore();
+      drawLobbySigns(camX, camY);
       if (settings.values.nameTags) drawNameTags(camX, camY);
+      drawWaves(camX, camY);
       return;
     }
 
@@ -2375,7 +2660,7 @@ async function boot() {
     drawSpots(camX, camY);
     drawFloorDiamonds(camX, camY);
     drawDiamondFx(camX, camY);
-    particles.draw(ctx, camX, camY);
+    particles.draw(ctx, camX, camY, performance.now() >= hitStopUntil);
     drawVault(camX, camY);
     if (myDiamond()) carriedGem(me, camX, camY, myDiamond());
     for (const [id, r] of remotes) if (r.state.carrying) carriedGem(r.bandit, camX, camY, diamonds.find((d) => d.place.at === 'carried' && d.place.by === id));
@@ -2655,8 +2940,8 @@ async function boot() {
   let leaveArmedUntil = 0;
   function touchLayout(): [boolean, TouchButton[], boolean] {
     if (scene === 'title' || (scene === 'lobby' && lobby.panelOpen) || result) return [false, [], true];
-    // The safehouse: just the stick (LOADOUT opens the wardrobe; the panels are tappable).
-    if (scene === 'lobby') return [true, [], true];
+    // The safehouse: the stick, E for the table, car and wardrobe, and a wave.
+    if (scene === 'lobby') return [true, [{ id: 'act', key: 'KeyE', label: 'E', big: true }, { id: 'wave', key: 'KeyQ', label: 'WAVE' }], true];
     const leave: TouchButton = { id: 'leave', key: '', label: performance.now() < leaveArmedUntil ? 'SURE?' : 'EXIT' };
     const sab = !!match?.saboteur;
     if (hideSeek()) {
@@ -3489,18 +3774,112 @@ async function boot() {
   }
 
   /** The "E  CUSTOMIZE" plate over the wardrobe; it lights up when you're close enough. */
-  function drawWardrobePrompt(camX: number, camY: number) {
-    if (lobby.pickerOpen) return;
-    const w = lobbyData.wardrobe;
-    const at = w.prompt ?? { x: w.x + w.w / 2, y: w.y - 1 };
-    const near = nearWardrobe();
-    const size = Math.round(9 * dpr);
-    const sx = (at.x * ART_TILE - camX) * scale;
-    const sy = (at.y * ART_TILE - camY) * scale + (near ? Math.sin(frame / 8) * 2 * dpr : 0);
+  /** A soft glowing ring under everyone in the room who's ready (the host is always set). */
+  function drawReadyRings(camX: number, camY: number) {
+    if (!myRoom) return;
+    const ready = new Set(myRoom.members.filter((m) => m.ready && m.id !== myRoom!.host && !m.inGame).map((m) => m.id));
+    const pulse = 0.55 + 0.25 * Math.sin(frame / 12);
+    for (const [id, b] of [[myId, me] as const, ...[...remotes].map(([rid, r]) => [rid, r.bandit] as const)]) {
+      if (!ready.has(id)) continue;
+      const x = b.x - camX;
+      const y = b.y - camY + 1;
+      ctx.save();
+      ctx.globalAlpha = pulse * 0.35;
+      ctx.fillStyle = '#2ec4b6';
+      ctx.beginPath();
+      ctx.ellipse(x, y, 8, 3.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = pulse;
+      ctx.strokeStyle = '#7ff0e4';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 8, 3.2, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  /** During the 3-2-1 the getaway car's headlights come on, flickering brighter toward GO. */
+  function drawHeadlights(camX: number, camY: number) {
+    if (!lobbyStart) return;
+    const p = Math.max(0, Math.min(1, 1 - (lobbyStart.endsAt - performance.now()) / 3000));
+    const flicker = 0.75 + 0.25 * Math.sin(frame * 0.9) * Math.sin(frame * 0.37);
     ctx.save();
-    ctx.globalAlpha = near ? 1 : 0.75;
-    keyTag('E', 'CUSTOMIZE', sx, sy, near ? '#ffc94a' : '#fff4e6', size);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const hx of [58.4, 61.5]) {
+      const x = hx * ART_TILE - camX;
+      const y = 18.7 * ART_TILE - camY;
+      const r = 10 + 26 * p;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(255, 244, 200, ${0.85 * flicker})`);
+      g.addColorStop(0.35, `rgba(255, 214, 120, ${0.35 * flicker * (0.4 + p)})`);
+      g.addColorStop(1, 'rgba(255, 200, 90, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
     ctx.restore();
+  }
+
+  /** A speech bubble over whoever just waved ("HEY!"), popping in and floating off. */
+  function drawWaves(camX: number, camY: number) {
+    const now = performance.now();
+    const size = Math.round(10 * dpr);
+    for (const [id, w] of waves) {
+      const t = (now - w.at) / WAVE_MS;
+      const b = id === myId ? me : remotes.get(id)?.bandit;
+      if (t >= 1 || !b) {
+        if (t >= 1) waves.delete(id);
+        continue;
+      }
+      const text = WAVE_LINES[w.line] ?? WAVE_LINES[0];
+      const grow = t < 0.12 ? 0.5 + (t / 0.12) * 0.6 : t < 0.2 ? 1.1 - ((t - 0.12) / 0.08) * 0.1 : 1;
+      const sx = (b.x - camX) * scale;
+      const sy = (b.y - DRAW_H - 3 - camY) * scale - size * 2.4 - 8 * dpr - t * 10 * dpr;
+      ctx.save();
+      ctx.globalAlpha = t > 0.8 ? (1 - t) / 0.2 : 1;
+      ctx.translate(sx, sy);
+      ctx.scale(grow, grow);
+      ctx.font = `${size}px "Press Start 2P"`;
+      const w2 = ctx.measureText(text).width + size * 1.6;
+      const h = size * 2.2;
+      ctx.fillStyle = '#fff4e6';
+      ctx.strokeStyle = '#0e0a1a';
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath();
+      ctx.roundRect(-w2 / 2, -h / 2, w2, h, 4 * dpr);
+      ctx.moveTo(-4 * dpr, h / 2);
+      ctx.lineTo(0, h / 2 + 6 * dpr);
+      ctx.lineTo(4 * dpr, h / 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#0e0a1a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, 0, 1);
+      ctx.restore();
+    }
+  }
+
+  /** The safehouse's E signs: the wardrobe, the planning table and the garage door. Each one
+   *  hangs dimmed until you're close enough, then lights up and bobs. */
+  function drawLobbySigns(camX: number, camY: number) {
+    if (lobby.panelOpen) return;
+    const signs: [LobbyJson['wardrobe'] | undefined, string | null, boolean][] = [
+      [lobbyData.wardrobe, 'CUSTOMIZE', nearWardrobe()],
+      [lobbyData.table, lobby.tablePrompt, nearTable()],
+      [lobbyData.car, lobby.carPrompt, nearCar()],
+    ];
+    const size = Math.round(9 * dpr);
+    for (const [box, label, near] of signs) {
+      if (!box || !label) continue;
+      const at = box.prompt ?? { x: box.x + box.w / 2, y: box.y - 1 };
+      const sx = (at.x * ART_TILE - camX) * scale;
+      const sy = (at.y * ART_TILE - camY) * scale + (near ? Math.sin(frame / 8) * 2 * dpr : 0);
+      ctx.save();
+      ctx.globalAlpha = near ? 1 : 0.75;
+      keyTag('E', label, sx, sy, near ? '#ffc94a' : '#fff4e6', size);
+      ctx.restore();
+    }
   }
 
   /** A key cap followed by a label, on a dark plate, centred at (sx, sy) in screen pixels. */
@@ -3763,11 +4142,20 @@ async function boot() {
     requestAnimationFrame(tick);
     acc += Math.min(now - last, 250);
     last = now;
+    // A hit-stop: the world holds still (no catching up after), the camera keeps framing.
+    const frozen = now < hitStopUntil;
+    if (frozen) {
+      acc = 0;
+      if (scene === 'match') frameCamera(false);
+    }
     while (acc >= 1000 / 60) {
       update();
       footsteps();
       acc -= 1000 / 60;
     }
+    // Any HP I lose (any trap, a shot) floats up as a red number beside my head (clear of the name tag).
+    if (scene === 'match' && hp < shownHp && !match?.saboteur) particles.pop(me.x + 14, me.y - DRAW_H + 10, `-${shownHp - hp}`, '#ff6b6b');
+    shownHp = hp;
     setHeistMusic(musicIntensity());
     draw();
     const [show, buttons, stick] = touchLayout();
