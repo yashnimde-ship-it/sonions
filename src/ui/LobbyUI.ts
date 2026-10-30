@@ -293,7 +293,7 @@ export class LobbyUI {
       : '2–9 players · set traps, hide diamonds, and escape';
     this.lobbyHint.textContent = hideSeek
       ? 'Hide & Seek aboard the cruise ship needs 3 or more. Smaller crews play Heist.'
-      : 'Share the code, wait for your crew to get ready, then the host starts.';
+      : 'Share the code. Your crew stands on the lit pad to ready up, then the host starts.';
   }
 
   private get isHost() {
@@ -372,7 +372,7 @@ export class LobbyUI {
     } else if (me?.ready) {
       [button, state, status] = ['\u2714 READY', 'ready', 'Waiting for the host to start. Click to cancel.'];
     } else {
-      [button, state, status] = ['READY UP', 'go', 'Press READY when you are set.'];
+      [button, state, status] = ['READY UP', 'go', 'Stand on the lit pad, or press READY.'];
     }
     for (const c of ['wait', 'go', 'ready']) this.startBtn.classList.toggle(c, c === state);
     this.startBtn.classList.toggle('starting', starting);

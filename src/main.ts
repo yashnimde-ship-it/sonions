@@ -459,6 +459,12 @@ async function boot() {
   let lobbyStart: { endsAt: number; shown: number; stopEngine: () => void } | null = null;
   /** The crew-size pad you're standing on, so stepping onto one acts once. */
   let standingPad: LobbyJson['portals'][number] | null = null;
+  /** On your crew's lit pad (not the host), and whether standing there is what readied you. */
+  let onCrewPad = false;
+  let readiedByPad = false;
+  /** Ready seats on the lit pad last frame, and when each seat lit up (it pops). */
+  let lastSetSeats = 0;
+  const seatPopAt = new Map<number, number>();
   const lobbyCountEl = Object.assign(document.createElement('div'), { id: 'lobby-countdown', hidden: true });
   document.getElementById('lobby')!.append(lobbyCountEl);
   lobbyCountEl.addEventListener('animationend', () => (lobbyCountEl.hidden = true));
@@ -2068,6 +2074,20 @@ async function boot() {
         }
       }
       if (myRoom) lobby.setRoom(myRoom, myId, online);
+      // Standing on the crew's lit pad readies you up; stepping off it (if that's what readied
+      // you) stops. Stepping off during the 3-2-1 calls the start off.
+      const onPad = !!myRoom && myRoom.host !== myId && lobbyData.portals.some((p) => padActive(p) && LobbyMap.inside(p, me.x, me.y));
+      if (onPad !== onCrewPad) {
+        onCrewPad = onPad;
+        const ready = !!myRoom?.members.find((m) => m.id === myId)?.ready;
+        if (onPad && !ready && myRoom?.status === 'waiting') {
+          readiedByPad = true;
+          net.send({ t: 'roomReady', ready: true });
+        } else if (!onPad && readiedByPad) {
+          readiedByPad = false;
+          if (ready) net.send({ t: 'roomReady', ready: false });
+        }
+      }
       if (lobbyStart) {
         const secs = Math.ceil((lobbyStart.endsAt - performance.now()) / 1000);
         if (secs >= 1 && secs <= 3 && secs !== lobbyStart.shown) {
@@ -3805,6 +3825,12 @@ async function boot() {
     particles.burst(me.x, me.y - 6, PORTAL_COLORS[p.size] ?? '#ffffff', 16, 1.4);
   }
 
+  /** The crew in the room (back from any game) and how many of them are set: the host always is. */
+  function padCrew() {
+    const crew = myRoom ? myRoom.members.filter((m) => !m.inGame) : [];
+    return { crew, set: crew.filter((m) => m.id === myRoom!.host || m.ready).length };
+  }
+
   /** The tinted floor of each pad, under the players; it pulses through the 3-2-1. */
   function drawPortalFloors(camX: number, camY: number) {
     for (const p of lobbyData.portals) {
@@ -3862,12 +3888,21 @@ async function boot() {
         ctx.fillRect(dx > 0 ? cx + 1 : cx - 9, dy > 0 ? cy + 1 : cy - 3, 8, 2);
         ctx.fillRect(dx > 0 ? cx + 1 : cx - 3, dy > 0 ? cy + 1 : cy - 9, 2, 8);
       }
-      // One little person per seat: lit for each crew member in the room.
-      const count = active ? myRoom!.members.length : 0;
+      // One little person per seat: in the pad's colour once that crew member is ready (it
+      // hops as it lights), pale while they're in but not ready, faint while the seat is open.
+      const { crew, set } = active ? padCrew() : { crew: [], set: 0 };
+      if (active) {
+        for (let i = lastSetSeats; i < set; i++) seatPopAt.set(i, performance.now());
+        lastSetSeats = set;
+      }
       // Up to 9 seats on the 4+ pad, so they squeeze together to fit.
       const gap = Math.min(13, (w - 20) / Math.max(1, size - 1));
       const left = x + w / 2 - ((size - 1) * gap) / 2;
-      for (let i = 0; i < size; i++) person(left + i * gap, y + h * 0.38, i < count ? color : 'rgba(255,244,230,0.3)');
+      for (let i = 0; i < size; i++) {
+        const t = (performance.now() - (seatPopAt.get(i) ?? 0)) / 320;
+        const hop = active && t < 1 ? Math.sin(t * Math.PI) * 5 : 0;
+        person(left + i * gap, y + h * 0.38 - hop, i < set ? color : i < crew.length ? 'rgba(255,244,230,0.7)' : 'rgba(255,244,230,0.22)');
+      }
       // The sign plate above the pad, hung on two posts.
       ctx.fillStyle = '#6b4529';
       ctx.fillRect(x + 10, y - 4, 2, 4);
@@ -3895,7 +3930,8 @@ async function boot() {
     ctx.fillRect(px - 4, py - 1, 8, 1);
   }
 
-  /** Each pad's sign (2 PLAYERS, 3 PLAYERS, 4+ PLAYERS), and the crew count on the lit one. */
+  /** Each pad's sign (2 PLAYERS, 3 PLAYERS, 4+ PLAYERS); on the lit one, how many are ready,
+   *  or the 3-2-1 once the host starts. */
   function drawPortalLabels(camX: number, camY: number) {
     for (const p of lobbyData.portals) {
       const size = padSize(p);
@@ -3907,19 +3943,37 @@ async function boot() {
       ctx.fillStyle = color;
       ctx.fillText(p.size === CUSTOM_PAD && !padActive(p) ? `${CUSTOM_MIN}+ PLAYERS` : `${size} PLAYERS`, cx, (p.y * ART_TILE - 9 - camY) * scale);
       if (!padActive(p)) continue;
-      const count = `${myRoom!.members.length}/${size}`;
-      const countY = ((p.y + p.h * 0.75) * ART_TILE - camY) * scale;
+      if (lobbyStart) {
+        // The 3-2-1, big in the middle of the pad: each number lands large and settles.
+        const left = (lobbyStart.endsAt - performance.now()) / 1000;
+        const secs = Math.max(1, Math.ceil(left));
+        const settle = Math.max(0, Math.min(1, secs - left));
+        const big = Math.round((30 + 16 * (1 - Math.min(1, settle * 4))) * dpr);
+        const midY = ((p.y + p.h / 2 + 0.3) * ART_TILE - camY) * scale;
+        ctx.font = `${big}px "Press Start 2P"`;
+        ctx.fillStyle = '#0e0a1a';
+        ctx.fillText(String(secs), cx + 3 * dpr, midY + 3 * dpr);
+        ctx.fillStyle = '#fff4e6';
+        ctx.fillText(String(secs), cx, midY);
+        continue;
+      }
+      const { crew, set } = padCrew();
+      const count = `${set}/${size}`;
+      const countY = ((p.y + p.h * 0.64) * ART_TILE - camY) * scale;
       ctx.font = `${Math.round(13 * dpr)}px "Press Start 2P"`;
       ctx.fillStyle = '#0e0a1a';
       ctx.fillText(count, cx + 2 * dpr, countY + 2 * dpr);
       ctx.fillStyle = '#fff4e6';
       ctx.fillText(count, cx, countY);
+      // Under it: STAND HERE if that's what you still need to do, ALL SET once everyone in is.
+      const meReady = myRoom!.host === myId || !!myRoom!.members.find((m) => m.id === myId)?.ready;
+      const note = !meReady ? 'STAND HERE' : set === crew.length && crew.length > 1 ? 'ALL SET' : 'READY';
       ctx.font = `${Math.round(7 * dpr)}px "Press Start 2P"`;
-      const noteY = ((p.y + p.h - 0.4) * ART_TILE - camY) * scale;
+      const noteY = ((p.y + p.h - 1.0) * ART_TILE - camY) * scale;
       ctx.fillStyle = '#0e0a1a';
-      ctx.fillText('YOUR CREW', cx + dpr, noteY + dpr);
-      ctx.fillStyle = '#fff4e6';
-      ctx.fillText('YOUR CREW', cx, noteY);
+      ctx.fillText(note, cx + dpr, noteY + dpr);
+      ctx.fillStyle = !meReady && frame % 50 < 25 ? color : '#fff4e6';
+      ctx.fillText(note, cx, noteY);
     }
   }
 
