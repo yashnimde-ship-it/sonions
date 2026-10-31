@@ -1,6 +1,9 @@
 import { kindLimit, trapSlots } from '../data/round';
 import { TRAP_KINDS, type TrapKind, type TrapKindId } from '../data/trapKinds';
-import { trapSprite } from '../systems/TrapArt';
+import { drawTrapIcon } from '../systems/TrapArt';
+
+/** The icon canvases' own size (px): drawn sharp for 2x screens, shown at the CSS size. */
+const ICON = 96;
 
 const KEY_LABEL: Record<string, string> = { Minus: '-', Equal: '=' };
 
@@ -32,8 +35,8 @@ export class TrapBar {
       key.className = 'trap-key';
       key.textContent = KEY_LABEL[kind.key] ?? kind.key.replace('Digit', '');
       const icon = document.createElement('canvas');
-      icon.width = 40;
-      icon.height = 40;
+      icon.width = ICON;
+      icon.height = ICON;
       icon.className = 'trap-icon';
       const name = document.createElement('span');
       name.className = 'trap-name';
@@ -57,14 +60,9 @@ export class TrapBar {
     for (const kind of TRAP_KINDS) {
       const icon = this.cards.get(kind.id)!.querySelector('canvas')!;
       const g = icon.getContext('2d')!;
-      g.clearRect(0, 0, 40, 40);
-      g.imageSmoothingEnabled = false;
-      const { img } = trapSprite(kind, 'saboteur', nowMs);
-      // Fit the whole sprite into the square, centred.
-      const fit = Math.min(40 / img.width, 40 / img.height, 2);
-      const w = Math.round(img.width * fit);
-      const h = Math.round(img.height * fit);
-      g.drawImage(img, Math.round((40 - w) / 2), Math.round((40 - h) / 2), w, h);
+      g.clearRect(0, 0, ICON, ICON);
+      // The whole sprite fitted into the square, centred (the wide ones sit in a band across it).
+      drawTrapIcon(g, kind, ICON, nowMs);
     }
   }
 

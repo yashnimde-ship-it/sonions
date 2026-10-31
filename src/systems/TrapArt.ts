@@ -1,6 +1,7 @@
-// Pixel art for the twelve traps, painted in code (no image files) and cached as sprites.
-// 'runner' is what Runners see; 'saboteur' adds what only the Saboteur sees (the snare's rope,
-// the fake chest's eye).
+// The twelve traps' art. Each has a painted sprite from the trap art pack (TRAP_ART below); the
+// pixel art painted in code (cached as sprites) is what Runners see of the disguised traps (the
+// Snare, the Fake Loot chest), and stands in for a sprite until its image has loaded.
+// 'runner' is what Runners see; 'saboteur' is everything (the snare's rope, the fake chest's eye).
 
 import { TRAP_KINDS, type TrapKind, type TrapKindId } from '../data/trapKinds';
 
@@ -439,10 +440,86 @@ export function trapSprite(kind: TrapKind, view: TrapView, nowMs: number) {
   return { img, dx: -img.width / 2, dy: -(kind.up + 8 + PAD + kind.h / 2) };
 }
 
-/** Draw a trap centred on art-pixel (x, y), already minus the camera. */
+/**
+ * The trap art pack: one painted sprite per trap, in public/assets/traps (made from the originals
+ * in art/traps by scripts/build-trap-sprites.py). `box` is how big it stands in the world (art
+ * px): the sprite is fitted into it whole ("contain"), centred across the trap's footprint with its
+ * base on (just past) the footprint's bottom edge, so tall parts (the crusher's frame, the laser's
+ * posts) rise above it; a box no taller than the footprint is centred on it instead. The wide ones
+ * (Snare, Oil Slick, Laser Grid) get wide boxes.
+ */
+export const TRAP_ART: Record<TrapKindId, { file: string; box: { w: number; h: number } }> = {
+  shock: { file: 'shock-plate.png', box: { w: 32, h: 32 } },
+  spring: { file: 'spring-floor.png', box: { w: 38, h: 34 } },
+  snare: { file: 'snare.png', box: { w: 46, h: 24 } },
+  glue: { file: 'glue-floor.png', box: { w: 56, h: 52 } },
+  oil: { file: 'oil-slick.png', box: { w: 60, h: 34 } },
+  crusher: { file: 'crusher.png', box: { w: 42, h: 46 } },
+  laser: { file: 'laser-grid.png', box: { w: 56, h: 38 } },
+  boulder: { file: 'rolling-boulder.png', box: { w: 34, h: 34 } },
+  magnet: { file: 'magnet.png', box: { w: 34, h: 40 } },
+  gas: { file: 'confusion-gas.png', box: { w: 50, h: 46 } },
+  blackout: { file: 'blackout.png', box: { w: 30, h: 32 } },
+  fakeLoot: { file: 'fake-loot.png', box: { w: 36, h: 32 } },
+};
+
+const painted = new Map<TrapKindId, HTMLImageElement>();
+
+/** A trap's painted sprite once it has loaded (it starts loading the first time it's asked for). */
+function paintedSprite(id: TrapKindId): HTMLImageElement | null {
+  let img = painted.get(id);
+  if (!img) {
+    img = new Image();
+    img.src = `/assets/traps/${TRAP_ART[id].file}`;
+    painted.set(id, img);
+  }
+  return img.complete && img.naturalWidth ? img : null;
+}
+
+/** Painted art is drawn smoothly (it's scaled down from a big image), then the setting goes back. */
+function drawSmooth(g: G, img: HTMLImageElement, x: number, y: number, w: number, h: number) {
+  const was = g.imageSmoothingEnabled;
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(img, x, y, w, h);
+  g.imageSmoothingEnabled = was;
+}
+
+/** Draw a trap centred on art-pixel (x, y), already minus the camera. Runners see the disguised
+ *  traps (Snare, Fake Loot) as they always have; everything else is the painted sprite. */
 export function drawTrap(g: G, kind: TrapKind, view: TrapView, x: number, y: number, nowMs: number) {
+  const img = view === 'saboteur' || !kind.disguised ? paintedSprite(kind.id) : null;
+  if (img) {
+    const { box } = TRAP_ART[kind.id];
+    const fit = Math.min(box.w / img.naturalWidth, box.h / img.naturalHeight);
+    const w = img.naturalWidth * fit;
+    const h = img.naturalHeight * fit;
+    // Flat ones no taller than their footprint (the Oil Slick, the Snare) sit centred on it.
+    const base = box.h <= kind.h ? y + h / 2 : y + kind.h / 2 + Math.max(0, Math.min(4, (box.h - kind.h) / 2));
+    drawSmooth(g, img, x - w / 2, base - h, w, h);
+    return;
+  }
   const s = trapSprite(kind, view, nowMs);
   g.drawImage(s.img, Math.round(x + s.dx), Math.round(y + s.dy));
+}
+
+/** A trap's icon for its card: the painted sprite fitted whole into a size x size square (or the
+ *  code-painted art until the sprite has loaded). */
+export function drawTrapIcon(g: G, kind: TrapKind, size: number, nowMs: number) {
+  const img = paintedSprite(kind.id);
+  const pad = size * 0.06;
+  const [src, sw, sh] = img ? [img, img.naturalWidth, img.naturalHeight] : (() => {
+    const s = trapSprite(kind, 'saboteur', nowMs).img;
+    return [s, s.width, s.height] as const;
+  })();
+  const fit = Math.min((size - pad * 2) / sw, (size - pad * 2) / sh);
+  const w = sw * fit;
+  const h = sh * fit;
+  if (img) drawSmooth(g, img, (size - w) / 2, (size - h) / 2, w, h);
+  else {
+    g.imageSmoothingEnabled = false;
+    g.drawImage(src, Math.round((size - w) / 2), Math.round((size - h) / 2), Math.round(w), Math.round(h));
+  }
 }
 
 export { TRAP_KINDS };

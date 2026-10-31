@@ -2355,7 +2355,8 @@ kbd {
 .trap-icon {
   width: 40px;
   height: 40px;
-  image-rendering: pixelated;
+  /* Painted sprites (drawn 96px and shown smaller), so smooth scaling, not pixelated. */
+  image-rendering: auto;
 }
 
 .trap-name {
