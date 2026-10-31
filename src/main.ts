@@ -1068,7 +1068,8 @@ async function boot() {
         break;
       }
       case 'roomError':
-        if (msg.reason === 'kicked') titleNote = ROOM_ERRORS.kicked;
+        if (crowd) crowd.showError(msg.reason === 'notFound' ? 'Room not found: it may have closed. Check the code on the big screen.' : ROOM_ERRORS[msg.reason]);
+        else if (msg.reason === 'kicked') titleNote = ROOM_ERRORS.kicked;
         else if (scene === 'title') title.setBusy(false, ROOM_ERRORS[msg.reason]);
         else lobby.nudgeStart(ROOM_ERRORS[msg.reason]);
         break;
