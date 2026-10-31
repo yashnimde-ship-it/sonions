@@ -257,7 +257,8 @@
   "w": 75,
   "h": 158,
   "solid": true,
-  "coverage": 0.94
+  "coverage": 0.94,
+  "place": false
  },
  {
   "id": "garage-shelves-west",

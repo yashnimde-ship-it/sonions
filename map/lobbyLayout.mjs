@@ -76,7 +76,9 @@ export const PROPS = [
   { id: 'lamp-post-east', box: [41.0, 33.3, 42.9, 37.1], solid: true },
   { id: 'plant-stairs-east', box: [46.0, 31.0, 49.5, 36.9], solid: true },
   // Garage
-  { id: 'car', box: [57.8, 9.6, 62.5, 19.5], solid: true },
+  // The reference's car is cut out (its floor filled in) but not put back: the crew's getaway
+  // van (DECOR) is parked there instead.
+  { id: 'car', box: [57.8, 9.6, 62.5, 19.5], solid: true, place: false },
   { id: 'garage-shelves-west', box: [53.0, 8.8, 55.3, 20.3], solid: true },
   { id: 'garage-shelves-east', box: [65.0, 9.6, 66.5, 18.1], solid: true },
   { id: 'compressor', box: [64.0, 18.4, 66.5, 20.3], solid: true },
@@ -202,6 +204,9 @@ export const DECOR = [
   { id: 'north-rooms', file: 'art/lobby/north-rooms.png', x: 1.6, y: 1.1 },
   { id: 'gadget-lab', file: 'art/lobby/gadget-lab.png', x: 1.625, y: 8.0 },
   { id: 'stash', file: 'art/lobby/stash.png', x: 1.375, y: 31.4 },
+  // The getaway van in the garage, where the reference had a car, its rear and side doors open
+  // (scripts/build-getaway-van.py); the getaway scene drives the same sprite.
+  { id: 'getaway-van', file: 'public/assets/lobby/van.png', x: 57.625, y: 8.9375 },
 ];
 
 export const SPAWN = { x: 28.5, y: 23.6 };

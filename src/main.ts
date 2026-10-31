@@ -93,36 +93,37 @@ const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '
 
 // The safehouse's moving parts, in lobby art pixels (where they are in lobby.png): the flames in
 // the hearth, the surveillance room's screens (the monitor wall, then the desk screens), and the
-// getaway car's lights (it faces south: headlights at the bottom, tail-lights at the top).
+// getaway van's lights (it faces south: headlights at the bottom, tail-lights at the top).
 const HEARTH = { x: 561, y: 64, w: 26 };
 const CCTV_SCREENS = [[192, 41, 26, 15], [226, 41, 24, 14], [257, 41, 25, 15], [290, 41, 23, 14], [323, 41, 24, 15], [228, 63, 20, 13], [259, 63, 21, 13], [290, 63, 22, 13], [199, 63, 10, 5], [328, 63, 12, 5]];
 /** Which trap stands on which Gadget Lab pad (left to right, top to bottom). The ones with parts
  *  that stand up (the crusher's piston, the laser's and the fake loot's posts) take the top row,
  *  where those can rise toward the bench; the wide floor ones fill the bottom row. */
 const GADGET_ORDER: TrapKind['id'][] = ['crusher', 'laser', 'fakeLoot', 'blackout', 'shock', 'spring', 'snare', 'magnet', 'glue', 'oil', 'gas', 'boulder'];
-const CAR_HEADLIGHTS = [[940, 297], [985, 297]];
-/** The getaway car's sprite (props/car.png) and where it's parked in lobby.png, art px; the
- *  floor layer under it (floor.png) is drawn over the parked car once it moves. */
-const CAR_BOX = { x: 925, y: 154, w: 75, h: 158 };
-const carImg = Object.assign(new Image(), { src: '/assets/lobby/props/car.png' });
+const CAR_HEADLIGHTS = [[937, 296], [987, 296]];
+/** The getaway van's sprite (van.png, scripts/build-getaway-van.py) and where it's parked in
+ *  lobby.png, art px; the floor layer under it (floor.png) is drawn over it once it moves. */
+const CAR_BOX = { x: 922, y: 143, w: 85, h: 180 };
+const carImg = Object.assign(new Image(), { src: '/assets/lobby/van.png' });
 const garageFloorImg = Object.assign(new Image(), { src: '/assets/lobby/floor.png' });
 /**
- * The getaway, after GO (ms from GO): everyone blinks out, reappears beside the car (two lines,
- * left and right of it), walks to its doors one after another and climbs in; the car revs, then
+ * The getaway, after GO (ms from GO): everyone blinks out, reappears beside the van (two lines
+ * up its right side), walks to its open side door one after another and climbs in; the van revs, then
  * pulls away as the screen goes dark. DEPART_MS (data/rooms.ts) covers it for a crew of nine.
  */
 const DEPART = { blink: 500, appear: 600, walk: 900, stagger: 200, speed: 0.075, rev: 3800, drive: 4300, dark: 5000 };
-/** Where seat i waits, and the door it gets in by (art px). */
-const departSlot = (i: number) => ({ x: (i % 2 ? 63.9 : 56.4) * ART_TILE, y: (11 + Math.floor(i / 2) * 1.9) * ART_TILE });
-const departDoor = (i: number) => ({ x: (i % 2 ? 62.8 : 57.5) * ART_TILE, y: 14.6 * ART_TILE });
-/** When seat i starts walking, and when it's in the car (ms from GO). */
+/** Where seat i waits (two lines up the van's right side, its back is to the wall), and the open
+ *  side door everyone gets in by (art px). */
+const departSlot = (i: number) => ({ x: (i % 2 ? 64.5 : 63.6) * ART_TILE, y: (10 + Math.floor(i / 2)) * ART_TILE });
+const departDoor = (_i: number) => ({ x: 63.4 * ART_TILE, y: 15.3 * ART_TILE });
+/** When seat i starts walking, and when it's in the van (ms from GO). */
 const departWalk = (i: number) => DEPART.walk + i * DEPART.stagger;
 const departBoard = (i: number) => {
   const a = departSlot(i);
   const b = departDoor(i);
   return departWalk(i) + Math.hypot(b.x - a.x, b.y - a.y) / DEPART.speed;
 };
-const CAR_TAILLIGHTS = [[940, 163], [987, 163]];
+const CAR_TAILLIGHTS = [[930, 147], [994, 147]];
 
 // Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
 // that). Bank it by walking into the GETAWAY zone on the street, in tiles.
@@ -487,7 +488,7 @@ async function boot() {
   // The round's start: 3-2-1 in the last seconds of setup, then GO!, and a Runner's camera
   // zooms from the whole map into their character.
   // The safehouse's crew moments: pops when someone joins or readies up, waves over heads,
-  // and the 3-2-1 (with the getaway car starting up) when the host starts.
+  // and the 3-2-1 (with the getaway van starting up) when the host starts.
   const crewPops = new Map<string, { text: string; color: string; at: number }>();
   const waves = new Map<string, { line: number; at: number }>();
   const WAVE_MS = 1700;
@@ -667,7 +668,7 @@ async function boot() {
     // looks round the whole house with a free camera; waiting Runners see all of it.
     const watch = spectated();
     let [tx, ty] = watch ? [watch.bandit.x, watch.bandit.y - DRAW_H / 2] : [me.x, me.y - DRAW_H / 2];
-    // The getaway: the camera pans to the garage and watches the car.
+    // The getaway: the camera pans to the garage and watches the van.
     if (departure && scene === 'lobby') [tx, ty] = [CAR_BOX.x + CAR_BOX.w / 2, CAR_BOX.y + CAR_BOX.h / 2];
     // The play zoom: a character is CHAR_SCREEN_FRACTION of the screen's height, on any screen.
     const play = Math.max(1, (canvas.height * CHAR_SCREEN_FRACTION) / DRAW_H);
@@ -691,7 +692,7 @@ async function boot() {
       [tx, ty] = [w / 2 + (tx - w / 2) * e, h / 2 + (ty - h / 2) * e];
       snap = true;
     } else scale = play;
-    // The getaway: push in on the garage over the first moments, so the crew and the car fill the view.
+    // The getaway: push in on the garage over the first moments, so the crew and the van fill the view.
     if (departure && scene === 'lobby') {
       const k = Math.min(1, (performance.now() - departure.at) / 900);
       scale *= 1 + 1.1 * (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2);
@@ -945,7 +946,7 @@ async function boot() {
         ? `Hide the diamonds and place up to ${trapSlots(msg.size)} traps. Confirm when your setup is ready.`
         : 'The Saboteur is rigging the house. Get ready to go in.';
     banner.innerHTML = `<span class="kicker">ROUND ${msg.round} OF ${msg.rounds} · ${hs ? 'HIDE &amp; SEEK · ' : ''}${MAPS[mapId].name}</span><span class="role-line">You are ${role}</span><span class="crew-list">${job}</span>`;
-    // The role lands hard: the card slams in, the role word stamps down, a sting plays.
+    // The role lands hard: the vand slams in, the role word stamps down, a sting plays.
     const sab = msg.role === 'saboteur';
     banner.className = `match-banner reveal ${sab ? 'is-sab' : 'is-runner'}`;
     if (!msg.resume) {
@@ -1010,10 +1011,10 @@ async function boot() {
       }
       case 'roomStarting':
         if (msg.ms > 0 && scene === 'lobby') {
-          // The host started: 3, 2, 1 while the getaway car starts up.
+          // The host started: 3, 2, 1 while the getaway van starts up.
           endLobbyStart(true);
           const depart = msg.depart ?? 0;
-          // The engine idles through the getaway and revs as the car pulls away.
+          // The engine idles through the getaway and revs as the van pulls away.
           lobbyStart = { endsAt: performance.now() + msg.ms, shown: 0, stopEngine: engineStart(msg.ms + (depart ? DEPART.drive - 300 : 0)), depart };
           lobby.setStarting(msg.ms);
         } else if (msg.ms <= 0) {
@@ -1283,7 +1284,7 @@ async function boot() {
         lobby.setMe(myName, myCharacter, profile);
         resultScreen.showFinal(msg, myId);
         sfx(msg.standings[0]?.id === myId ? 'win' : 'alert');
-        // A chime as each award card pops in (matches the cards' animation delays).
+        // A chime as each award card pops in (matches the vands' animation delays).
         for (let i = 0; i < resultScreen.awardCount; i++) setTimeout(() => sfx('award'), 800 + i * 350);
         break;
       case 'phase':
@@ -2111,7 +2112,7 @@ async function boot() {
       } else {
         me.update(input, lobbyMap);
         // The room is the menu: the wardrobe, the planning table (the map) and the garage door
-        // (the getaway car: start, or ready up).
+        // (the getaway van: start, or ready up).
         // In the Gadget Lab, the pad you're standing on: its card shows, and E sets it off.
         const labPad = gadgetPadAt(me.x, me.y);
         if (input.action) {
@@ -4235,7 +4236,7 @@ async function boot() {
   /**
    * The safehouse breathing: the fire flickers and spits sparks, each lamp wavers on its own beat,
    * the surveillance screens shimmer (a scan line rolls down each, now and then one cuts to another
-   * camera, and REC blinks), and the getaway car idles with its lights on. In art pixels.
+   * camera, and REC blinks), and the getaway van idles with its lights on. In art pixels.
    */
   function drawRoomLife(camX: number, camY: number) {
     const t = performance.now() / 1000;
@@ -4358,7 +4359,7 @@ async function boot() {
     return { x: a.x + dx * k, y: a.y + dy * k, facing, moving: along > 0 && along < dist };
   }
 
-  /** How visible seat i is: fading out at GO, back beside the car, fading into it at the door. */
+  /** How visible seat i is: fading out at GO, back beside the van, fading into it at the door. */
   function departAlpha(i: number, t: number) {
     if (t < DEPART.blink) return 1 - t / DEPART.blink;
     if (t < DEPART.appear) return 0;
@@ -4393,11 +4394,11 @@ async function boot() {
     });
     once('whoosh', () => sfx('whoosh'));
     if (t >= DEPART.appear) once('appear', () => sfx('tap'));
-    // The rev: smoke from the back of the car.
+    // The rev: smoke from the back of the van.
     if (t >= DEPART.rev && t < DEPART.drive && frame % 6 === 0) particles.burst(CAR_BOX.x + CAR_BOX.w / 2 + (Math.random() - 0.5) * 20, CAR_BOX.y + 4, '#8a8f9e', 3, 0.6);
   }
 
-  /** The getaway car: parked (it's in the room's art) until the rev; then it shakes and pulls away. */
+  /** The getaway van: parked (it's in the room's art) until the rev; then it shakes and pulls away. */
   function carShift() {
     const t = departure ? performance.now() - departure.at : 0;
     if (t < DEPART.rev) return { x: 0, y: 0 };
@@ -4414,7 +4415,7 @@ async function boot() {
     ctx.drawImage(carImg, x - camX + s.x, y - camY + s.y);
   }
 
-  /** A character in the safehouse, faded as the getaway needs (gone once in the car). */
+  /** A character in the safehouse, faded as the getaway needs (gone once in the van). */
   function drawLobbyActor(b: Bandit, camX: number, camY: number, lit: boolean) {
     const seat = departure ? departure.crew.findIndex((id) => (id === myId ? me : remotes.get(id)?.bandit) === b) : -1;
     const a = seat >= 0 ? departAlpha(seat, performance.now() - departure!.at) : 1;
@@ -4425,7 +4426,7 @@ async function boot() {
     ctx.globalAlpha = was;
   }
 
-  /** As the car pulls away the screen goes dark, and says where the crew's headed. */
+  /** As the van pulls away the screen goes dark, and says where the crew's headed. */
   function drawDepartureFade() {
     if (!departure) return;
     const t = performance.now() - departure.at;
@@ -4449,7 +4450,7 @@ async function boot() {
     ctx.restore();
   }
 
-  /** During the 3-2-1 the getaway car's headlights come on, flickering brighter toward GO. */
+  /** During the 3-2-1 the getaway van's headlights come on, flickering brighter toward GO. */
   function drawHeadlights(camX: number, camY: number) {
     if (!lobbyStart) return;
     const p = Math.max(0, Math.min(1, 1 - (lobbyStart.endsAt - performance.now()) / 3000));
@@ -4457,11 +4458,11 @@ async function boot() {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const shift = carShift();
-    // As the car pulls away the beams open right up.
+    // As the van pulls away the beams open right up.
     const flare = departure && performance.now() - departure.at > DEPART.rev ? 1.5 : 1;
-    for (const hx of [58.4, 61.5]) {
-      const x = hx * ART_TILE - camX + shift.x;
-      const y = 18.7 * ART_TILE - camY + shift.y;
+    for (const [hx, hy] of CAR_HEADLIGHTS) {
+      const x = hx - camX + shift.x;
+      const y = hy - camY + shift.y;
       const r = (10 + 26 * p) * flare;
       const g = ctx.createRadialGradient(x, y, 0, x, y, r);
       g.addColorStop(0, `rgba(255, 244, 200, ${0.85 * flicker})`);

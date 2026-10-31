@@ -316,7 +316,7 @@ for (const p of L.PROPS) {
       opaque++;
     }
   writeRgba(`props/${p.id}.png`, m.w, m.h, data);
-  props.push({ id: p.id, file: `props/${p.id}.png`, x: m.x0, y: m.y0, w: m.w, h: m.h, solid: p.solid, coverage: +(opaque / (m.w * m.h)).toFixed(2) });
+  props.push({ id: p.id, file: `props/${p.id}.png`, x: m.x0, y: m.y0, w: m.w, h: m.h, solid: p.solid, coverage: +(opaque / (m.w * m.h)).toFixed(2), ...(p.place === false ? { place: false } : {}) });
 }
 
 // Floor layer (props removed), then the room as shown: the floor with every prop placed back.
@@ -329,6 +329,8 @@ const toRgba = (rgb) => {
 writeRgba('floor.png', W, H, toRgba(floor));
 const room = toRgba(floor);
 for (const p of props) {
+  // `place: false`: cut out (so the floor under it is filled in) but left out of the room.
+  if (p.place === false) continue;
   const sprite = decode(fs.readFileSync(path.join(OUT, p.file)));
   for (let y = 0; y < p.h; y++)
     for (let x = 0; x < p.w; x++) {
