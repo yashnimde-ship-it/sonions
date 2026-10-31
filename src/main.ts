@@ -25,7 +25,7 @@ import { InteractionSystem } from './systems/InteractionSystem';
 import { Particles } from './systems/Particles';
 import { AbilitySystem, QUICKSTEP_FRAMES } from './systems/AbilitySystem';
 import { LightingSystem } from './systems/LightingSystem';
-import { drawTrap } from './systems/TrapArt';
+import { drawTrap, trapArtRect } from './systems/TrapArt';
 import { heistMusicLevel, setHeistMusic, setHeistMusicEnabled } from './systems/HeistMusic';
 import { lobbyMusicInfo, setLobbyMusic, setMusicEnabled } from './systems/Music';
 import { surfaceAt } from './data/surfaces';
@@ -1317,6 +1317,12 @@ async function boot() {
           movingTrapId = null;
           movingTrapPending = false;
           toast('Trap repositioned');
+          // My own trap, set down in its new spot: the same ring as placing it.
+          const kind = trapKind(msg.trap.kind);
+          if (kind) {
+            particles.ring(msg.trap.x, msg.trap.y, kind.color, 26);
+            trapBar.flash(kind.id);
+          }
         }
         break;
       case 'trapMoveRejected':
@@ -1989,6 +1995,11 @@ async function boot() {
     trapEnergy -= kind.cost;
     net.send({ t: 'place', trap });
     updateTrapBar();
+    // It goes down with a ring and a burst in its colour, and its card flashes. Only the
+    // Saboteur places, so only the Saboteur's screen shows this.
+    particles.ring(x, y, kind.color, 26);
+    particles.burst(x, y - 4, kind.color, 14, 1.3);
+    trapBar.flash(kind.id);
   }
 
   /** The placed trap under (x, y), topmost first. */
@@ -4094,6 +4105,8 @@ async function boot() {
     labDemos.push({ id: p.kind.id, kind: p.kind.id, x, y, at: performance.now() });
     sfx(p.kind.id);
     particles.burst(x, y, p.kind.color, 14, 1.4);
+    particles.ring(x, y, p.kind.color, 28);
+    labFlashAt.set(p.kind.id, performance.now());
   }
 
   /** The lab's demos, over the lamplight like a heist's; each stays on (just around) its pad. */
@@ -4116,64 +4129,329 @@ async function boot() {
     }
   }
 
+  /** When each lab pad was last set off with E (it flashes for a moment), by trap. */
+  const labFlashAt = new Map<string, number>();
+  /** The lab's floor and its hazard stripe, in lobby art px (from the lab's art, art/lobby). */
+  const LAB_FLOOR = { x0: 66, y0: 228, x1: 306, y1: 384 };
+  const LAB_STRIPE = { x0: 66, y0: 223, x1: 308, y1: 226 };
+
+  /** The lab pad I'm standing on (its card is up), and one I'm right beside. */
+  function labPadsNearMe() {
+    const on = gadgetPadAt(me.x, me.y);
+    const near = on ? null : gadgetPads().find((p) => LobbyMap.inside({ x: p.x - 0.6, y: p.y - 0.6, w: p.w + 1.2, h: p.h + 1.2 }, me.x, me.y)) ?? null;
+    return { on, near };
+  }
+
+  /** The lab's life, behind its pads: a slow light along the hazard stripe, and dust drifting up. */
+  function drawLabAmbience(camX: number, camY: number) {
+    if (reducedMotion.matches || !lobbyData.gadgets) return;
+    const t = performance.now() / 1000;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const s = LAB_STRIPE;
+    const span = s.x1 - s.x0;
+    const at = s.x0 - 36 + ((t / 5) % 1) * (span + 72);
+    ctx.beginPath();
+    ctx.rect(s.x0 - camX, s.y0 - camY, span, s.y1 - s.y0 + 1);
+    ctx.clip();
+    const g = ctx.createLinearGradient(at - 36 - camX, 0, at + 36 - camX, 0);
+    g.addColorStop(0, 'rgba(255, 236, 190, 0)');
+    g.addColorStop(0.5, 'rgba(255, 244, 210, 0.95)');
+    g.addColorStop(1, 'rgba(255, 236, 190, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(at - 36 - camX, s.y0 - camY, 72, s.y1 - s.y0 + 1);
+    ctx.restore();
+    // Motes rising slowly through the lamplight, each on its own path.
+    const f = LAB_FLOOR;
+    ctx.save();
+    for (let i = 0; i < 18; i++) {
+      const rise = f.y1 - f.y0;
+      const k = ((t * (4 + (i % 5)) + i * 37) % rise) / rise;
+      const x = f.x0 + ((i * 53) % (f.x1 - f.x0)) + Math.sin(t / 1.7 + i) * 4;
+      const y = f.y1 - k * rise;
+      ctx.globalAlpha = 0.55 * Math.sin(k * Math.PI);
+      ctx.fillStyle = i % 3 ? '#ffe8c4' : '#ffd08a';
+      ctx.fillRect(Math.round(x - camX), Math.round(y - camY), i % 4 ? 1 : 2, i % 4 ? 1 : 2);
+    }
+    ctx.restore();
+  }
+
   /**
-   * The Gadget Lab's test pads, under the players: a dark plate lit in the trap's colour, corner
-   * brackets, and the trap itself, live (as the Saboteur sees it). Tall parts in the top row may
-   * rise above their plate; everything else stays on it.
+   * The Gadget Lab's test pads, under the players: a dark plate lit from inside in the trap's
+   * colour, its frame and the trap itself, live (as the Saboteur sees it). Idle pads stay quiet;
+   * walking up to one brightens and lifts it; standing on it (its card is up) lights its corners
+   * in its colour and its glow breathes; E flashes it. Tall parts in the top row may rise above
+   * their plate; everything else stays on it.
    */
   function drawGadgetPads(camX: number, camY: number) {
     const now = performance.now();
-    for (const p of gadgetPads()) {
+    drawLabAmbience(camX, camY);
+    const { on, near } = labPadsNearMe();
+    const still = reducedMotion.matches;
+    const pads = gadgetPads();
+    // The showroom: one pad after another catches the light (a sheen sweeps across it).
+    const SHOW_MS = 1500;
+    const showing = still ? -1 : Math.floor(now / SHOW_MS) % pads.length;
+    const showK = (now % SHOW_MS) / SHOW_MS;
+    for (const [i, p] of pads.entries()) {
+      const state = p === on || (on && p.kind.id === on.kind.id) ? 'on' : near && p.kind.id === near.kind.id ? 'near' : 'idle';
+      const lift = still ? 0 : state === 'on' ? 2 : state === 'near' ? 1 : 0;
       const x = Math.round(p.x * ART_TILE - camX);
-      const y = Math.round(p.y * ART_TILE - camY);
+      const y = Math.round(p.y * ART_TILE - camY) - lift;
       const w = Math.round(p.w * ART_TILE);
       const h = Math.round(p.h * ART_TILE);
+      const breathe = still ? 1 : 0.5 + 0.5 * Math.sin((now / 2400) * Math.PI * 2);
+      const flash = Math.max(0, 1 - (now - (labFlashAt.get(p.kind.id) ?? -1e9)) / 450);
       ctx.save();
+      // A lifted pad casts a little shadow where it sat.
+      if (lift) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+        ctx.fillRect(x + 1, y + lift + 1, w, h);
+      }
       ctx.fillStyle = 'rgba(8, 10, 22, 0.6)';
       ctx.fillRect(x, y, w, h);
       ctx.globalCompositeOperation = 'lighter';
-      glowAt(x + w / 2, y + h / 2, w * 0.55, `${p.kind.color}33`);
+      const shine = i === showing && state !== 'on' ? Math.sin(showK * Math.PI) : 0;
+      const glow = state === 'on' ? 0.32 + 0.22 * breathe : state === 'near' ? 0.26 : 0.16 + 0.18 * shine;
+      glowAt(x + w / 2, y + h / 2, w * (state === 'on' ? 0.7 : 0.55), `${p.kind.color}${Math.round(Math.min(1, glow + flash * 0.5) * 255).toString(16).padStart(2, '0')}`);
       ctx.globalCompositeOperation = 'source-over';
       ctx.strokeStyle = '#0e0a1a';
       ctx.lineWidth = 2;
       ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
       ctx.strokeStyle = p.kind.color;
-      ctx.lineWidth = 1;
-      ctx.globalAlpha = 0.55 + 0.2 * Math.sin(now / 600 + p.x);
+      ctx.lineWidth = state === 'on' ? 2 : 1;
+      ctx.globalAlpha = state === 'on' ? 1 : state === 'near' ? 0.9 : 0.45;
+      if (state === 'on') {
+        ctx.shadowColor = p.kind.color;
+        ctx.shadowBlur = (6 + 8 * breathe) * dpr;
+      }
       ctx.strokeRect(x + 2.5, y + 2.5, w - 5, h - 5);
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#fff4e6';
+      ctx.shadowBlur = 0;
+      if (state === 'on') {
+        // A fine white line inside the frame: this is the one you're on.
+        ctx.globalAlpha = 0.7;
+        ctx.strokeStyle = '#fff4e6';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 5.5, y + 5.5, w - 11, h - 11);
+      }
+      // Corner brackets: soft cream while idle, lit in the trap's colour when you're on the pad.
+      const lit = state === 'on';
+      const arm = lit ? 7 : 5;
+      ctx.globalAlpha = lit ? 1 : state === 'near' ? 0.95 : 0.6;
+      ctx.fillStyle = lit ? p.kind.color : '#fff4e6';
+      if (lit) {
+        ctx.shadowColor = p.kind.color;
+        ctx.shadowBlur = 5 * dpr;
+      }
       for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
-        ctx.fillRect(dx > 0 ? cx + 1 : cx - 6, dy > 0 ? cy + 1 : cy - 2, 5, 1);
-        ctx.fillRect(dx > 0 ? cx + 1 : cx - 2, dy > 0 ? cy + 1 : cy - 6, 1, 5);
+        ctx.fillRect(dx > 0 ? cx + 1 : cx - arm - 1, dy > 0 ? cy + 1 : cy - 2, arm, lit ? 2 : 1);
+        ctx.fillRect(dx > 0 ? cx + 1 : cx - (lit ? 3 : 2), dy > 0 ? cy + 1 : cy - arm - 1, lit ? 2 : 1, arm);
+      }
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+      // E just set it off: the plate flashes white-hot in its colour.
+      if (flash > 0) {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = flash * 0.45;
+        ctx.fillStyle = p.kind.color;
+        ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
       }
       ctx.beginPath();
       const rise = p.top ? 30 : 0;
       ctx.rect(x + 3, y + 3 - rise, w - 6, h - 6 + rise);
       ctx.clip();
       // The footprint sits a little low on the plate, so posts and pistons have room above it.
-      drawTrap(ctx, p.kind, 'saboteur', x + w / 2, y + h / 2 + Math.min(p.kind.up / 2, 8) + 1, now);
+      const cx = x + w / 2;
+      const cy = y + h / 2 + Math.min(p.kind.up / 2, 8) + 1;
+      ctx.save();
+      // The spring floor bobs on its spring; the boulder rocks in place.
+      if (!still && p.kind.id === 'spring') ctx.translate(0, Math.round(Math.sin(now / 240) * 1.5));
+      if (!still && p.kind.id === 'boulder') {
+        ctx.translate(cx, cy);
+        ctx.rotate(Math.sin(now / 650) * 0.05);
+        ctx.translate(-cx, -cy);
+      }
+      drawTrap(ctx, p.kind, 'saboteur', cx, cy, now);
+      ctx.restore();
+      const art = trapArtRect(p.kind, cx, cy);
+      if (art && !still) drawPadLife(p.kind.id, art, now);
+      if (shine > 0) {
+        // The sheen: a bright slanted band crossing the plate.
+        const bx = x - 24 + showK * (w + 48);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.3 * shine;
+        const sheen = ctx.createLinearGradient(bx - 8, 0, bx + 8, 0);
+        sheen.addColorStop(0, 'rgba(255, 255, 255, 0)');
+        sheen.addColorStop(0.5, 'rgba(255, 255, 255, 1)');
+        sheen.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = sheen;
+        ctx.beginPath();
+        ctx.moveTo(bx - 8 + h * 0.4, y);
+        ctx.lineTo(bx + 8 + h * 0.4, y);
+        ctx.lineTo(bx + 8 - h * 0.4, y + h);
+        ctx.lineTo(bx - 8 - h * 0.4, y + h);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
+      }
       ctx.restore();
     }
+  }
+
+  /**
+   * Each gadget on its pad keeps going while you look: the Shock Plate's core throbs and sparks
+   * run its arms, the Spring Floor's chevron glows, a glint runs round the Snare's wire, glue drips
+   * from the nozzle, a sheen slides over the oil, the Crusher's beacon blinks, the laser beams
+   * flicker, the Magnet sends out rings, gas wisps rise, the Blackout's lens throbs and the Fake
+   * Loot's diamond twinkles. `r` is where the sprite is drawn; points on it are fractions of it.
+   */
+  function drawPadLife(id: TrapKind['id'], r: { x: number; y: number; w: number; h: number }, now: number) {
+    const t = now / 1000;
+    const at = (fx: number, fy: number) => [r.x + fx * r.w, r.y + fy * r.h] as const;
+    const wave = (period: number, phase = 0) => 0.5 + 0.5 * Math.sin((t / period) * Math.PI * 2 + phase);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    switch (id) {
+      case 'shock': {
+        const [x, y] = at(0.5, 0.5);
+        glowAt(x, y, 5 + 3 * wave(0.6), `rgba(255, 70, 80, ${0.35 + 0.35 * wave(0.6)})`);
+        // A spark racing out along each arm of the cross.
+        for (const [dx, dy, ph] of [[1, 0, 0], [-1, 0, 0.25], [0, 1, 0.5], [0, -1, 0.75]]) {
+          const k = (t * 1.6 + ph) % 1;
+          const [sx, sy] = at(0.5 + dx * k * 0.36, 0.5 + dy * k * 0.36);
+          glowAt(sx, sy, 3, `rgba(120, 200, 255, ${0.8 * (1 - k)})`);
+          ctx.fillStyle = `rgba(220, 245, 255, ${1 - k})`;
+          ctx.fillRect(Math.round(sx), Math.round(sy), 1, 1);
+        }
+        break;
+      }
+      case 'spring': {
+        const [x, y] = at(0.5, 0.24);
+        glowAt(x, y, 6, `rgba(255, 190, 70, ${0.2 + 0.35 * wave(0.48)})`);
+        break;
+      }
+      case 'snare': {
+        // A glint running round the wire loop between its posts.
+        const a = t * 1.7;
+        const [x, y] = at(0.5 + Math.cos(a) * 0.38, 0.46 + Math.sin(a) * 0.22);
+        glowAt(x, y, 3.5, 'rgba(255, 255, 255, 0.8)');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
+        break;
+      }
+      case 'glue': {
+        // A drop gathers at the nozzle, falls, and lands in the pool.
+        const k = (t / 1.8) % 1;
+        const fall = k < 0.55 ? 0 : (k - 0.55) / 0.45;
+        const [x, y] = at(0.86, 0.14 + 0.22 * fall * fall);
+        glowAt(x, y, 2 + 2 * Math.min(1, k / 0.55), `rgba(255, 190, 60, ${fall < 1 ? 0.9 : 0})`);
+        break;
+      }
+      case 'oil': {
+        const k = (t / 3) % 1;
+        const [x, y] = at(0.12 + 0.76 * k, 0.5);
+        glowAt(x, y, 9, `rgba(140, 200, 255, ${0.35 * Math.sin(k * Math.PI)})`);
+        break;
+      }
+      case 'crusher': {
+        const [x, y] = at(0.5, 0.05);
+        const on = (t / 0.9) % 1 < 0.45;
+        glowAt(x, y, on ? 7 : 3, `rgba(255, 170, 40, ${on ? 0.85 : 0.25})`);
+        break;
+      }
+      case 'laser': {
+        // The three beams flicker with heat.
+        for (let k = 0; k < 3; k++) {
+          const [x0, y0] = at(0.14, 0.47 + k * 0.07);
+          const [x1, y1] = at(0.9, 0.14 + k * 0.07);
+          ctx.strokeStyle = `rgba(255, 60, 70, ${0.25 + 0.35 * wave(0.17, k * 2.1)})`;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+        }
+        break;
+      }
+      case 'magnet': {
+        const [x, y] = at(0.46, 0.24);
+        for (const ph of [0, 0.5]) {
+          const k = (t / 1.4 + ph) % 1;
+          ctx.strokeStyle = `rgba(80, 240, 240, ${0.6 * (1 - k)})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(x, y, 2 + 12 * k, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        glowAt(x, y, 5, `rgba(80, 240, 240, ${0.25 + 0.2 * wave(0.7)})`);
+        break;
+      }
+      case 'gas': {
+        // Wisps rising out of the vent and thinning away.
+        for (let i = 0; i < 4; i++) {
+          const k = (t / 2.2 + i / 4) % 1;
+          const [x, y] = at(0.36 + (i % 2) * 0.24 + Math.sin(t * 2 + i) * 0.04, 0.58 - 0.5 * k);
+          glowAt(x, y, 3 + 4 * k, `rgba(190, 110, 255, ${0.45 * (1 - k)})`);
+        }
+        break;
+      }
+      case 'blackout': {
+        const [x, y] = at(0.55, 0.42);
+        glowAt(x, y, 6 + 2 * wave(1.6), `rgba(160, 110, 255, ${0.2 + 0.3 * wave(1.6)})`);
+        const [lx, ly] = at(0.86, 0.17);
+        if ((t / 1.1) % 1 < 0.3) glowAt(lx, ly, 3, 'rgba(210, 160, 255, 0.9)');
+        break;
+      }
+      case 'fakeLoot': {
+        // The diamond twinkles: a little four-point star that grows and fades.
+        const k = wave(1.3);
+        const [x, y] = at(0.5, 0.56);
+        glowAt(x, y, 4 + 2 * k, `rgba(255, 255, 255, ${0.25 + 0.35 * k})`);
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.5 + 0.5 * k})`;
+        const len = Math.round(2 + 3 * k);
+        ctx.fillRect(Math.round(x) - len, Math.round(y), len * 2 + 1, 1);
+        ctx.fillRect(Math.round(x), Math.round(y) - len, 1, len * 2 + 1);
+        break;
+      }
+      case 'boulder':
+        // It rocks in place (drawn turned); a little grit glints under it now and then.
+        if ((t / 1.3) % 1 < 0.15) {
+          const [x, y] = at(0.3 + 0.4 * ((t / 1.3) % 2 > 1 ? 1 : 0), 0.95);
+          glowAt(x, y, 2, 'rgba(255, 230, 190, 0.6)');
+        }
+        break;
+    }
+    ctx.restore();
   }
 
   /** Each pad's name tag, on its bottom edge in the trap's colour; and the lab's sign over the room. */
   function drawGadgetLabels(camX: number, camY: number) {
     const size = Math.round(5 * dpr);
+    const { on, near } = labPadsNearMe();
     for (const p of gadgetPads()) {
+      // The pad you're on fills its tag with its colour; the one beside you lifts with it.
+      const state = on?.kind.id === p.kind.id ? 'on' : near?.kind.id === p.kind.id ? 'near' : 'idle';
+      const lift = reducedMotion.matches ? 0 : state === 'on' ? 2 : state === 'near' ? 1 : 0;
       const sx = ((p.x + p.w / 2) * ART_TILE - camX) * scale;
-      const sy = ((p.y + p.h) * ART_TILE - camY) * scale;
+      const sy = ((p.y + p.h) * ART_TILE - camY - lift) * scale;
       ctx.save();
       ctx.font = `${size}px "Press Start 2P"`;
       const text = p.kind.name.toUpperCase();
       const tw = ctx.measureText(text).width + size * 1.4;
       const th = size * 2;
-      ctx.fillStyle = 'rgba(8, 10, 22, 0.92)';
+      ctx.fillStyle = state === 'on' ? p.kind.color : 'rgba(8, 10, 22, 0.92)';
+      if (state === 'on') {
+        ctx.shadowColor = p.kind.color;
+        ctx.shadowBlur = 8 * dpr;
+      }
       ctx.fillRect(sx - tw / 2, sy - th / 2, tw, th);
-      ctx.strokeStyle = p.kind.color;
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = state === 'on' ? '#fff4e6' : p.kind.color;
       ctx.lineWidth = Math.max(1, dpr);
       ctx.strokeRect(sx - tw / 2 + 0.5, sy - th / 2 + 0.5, tw - 1, th - 1);
-      ctx.fillStyle = p.kind.color;
+      ctx.fillStyle = state === 'on' ? '#0e0a1a' : p.kind.color;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(text, sx, sy + 1);

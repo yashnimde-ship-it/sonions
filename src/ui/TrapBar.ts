@@ -2,8 +2,12 @@ import { kindLimit, trapSlots } from '../data/round';
 import { TRAP_KINDS, type TrapKind, type TrapKindId } from '../data/trapKinds';
 import { drawTrapIcon } from '../systems/TrapArt';
 
-/** The icon canvases' own size (px): drawn sharp for 2x screens, shown at the CSS size. */
-const ICON = 96;
+/** The icon canvases' own size (px): a band wider than tall, so wide traps get room; drawn at 2x
+ *  the CSS size so it's sharp on 2x screens. */
+const ICON_W = 104;
+const ICON_H = 80;
+/** Ambient sparks drifting up behind the cards: left (% of the bar), rise time, delay (s). */
+const SPARKS = [[8, 7, 0], [23, 9, 3.1], [37, 8, 5.6], [52, 10, 1.4], [66, 7.5, 4.2], [79, 9.5, 2.3], [92, 8.5, 6.4]];
 
 const KEY_LABEL: Record<string, string> = { Minus: '-', Equal: '=' };
 
@@ -25,6 +29,14 @@ export class TrapBar {
     // The count gets its own element: rewriting the whole box would wipe the energy readout.
     this.slots.append(this.slotCount, this.energy);
     this.el.append(this.slots);
+    // A few slow sparks behind the cards (purely decoration; the CSS keeps them quiet).
+    for (const [x, d, delay] of SPARKS) {
+      const spark = document.createElement('i');
+      spark.className = 'trap-spark';
+      spark.setAttribute('aria-hidden', 'true');
+      spark.style.cssText = `--x:${x}%;--d:${d}s;--delay:-${delay}s`;
+      this.el.append(spark);
+    }
     for (const kind of TRAP_KINDS) {
       const card = document.createElement('button');
       card.type = 'button';
@@ -35,8 +47,8 @@ export class TrapBar {
       key.className = 'trap-key';
       key.textContent = KEY_LABEL[kind.key] ?? kind.key.replace('Digit', '');
       const icon = document.createElement('canvas');
-      icon.width = ICON;
-      icon.height = ICON;
+      icon.width = ICON_W;
+      icon.height = ICON_H;
       icon.className = 'trap-icon';
       const name = document.createElement('span');
       name.className = 'trap-name';
@@ -60,9 +72,9 @@ export class TrapBar {
     for (const kind of TRAP_KINDS) {
       const icon = this.cards.get(kind.id)!.querySelector('canvas')!;
       const g = icon.getContext('2d')!;
-      g.clearRect(0, 0, ICON, ICON);
-      // The whole sprite fitted into the square, centred (the wide ones sit in a band across it).
-      drawTrapIcon(g, kind, ICON, nowMs);
+      g.clearRect(0, 0, ICON_W, ICON_H);
+      // The whole sprite fitted into the band, centred: square ones fill its height, wide ones its width.
+      drawTrapIcon(g, kind, ICON_W, ICON_H, nowMs);
     }
   }
 
@@ -89,6 +101,15 @@ export class TrapBar {
 
   get visible() {
     return !this.el.hidden;
+  }
+
+  /** A trap just went down: its card flashes in its colour for a moment. */
+  flash(id: string) {
+    const card = this.cards.get(id);
+    if (!card) return;
+    card.classList.remove('placed-flash');
+    void card.offsetWidth;
+    card.classList.add('placed-flash');
   }
 
   select(id: string | null) {

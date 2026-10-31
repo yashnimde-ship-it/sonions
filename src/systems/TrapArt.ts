@@ -485,40 +485,48 @@ function drawSmooth(g: G, img: HTMLImageElement, x: number, y: number, w: number
   g.imageSmoothingEnabled = was;
 }
 
+/** Where a trap's painted sprite is drawn for a trap centred on (x, y): its rectangle, or null
+ *  while the sprite is still loading. Effects that play on the art (the Gadget Lab's) use it. */
+export function trapArtRect(kind: TrapKind, x: number, y: number) {
+  const img = paintedSprite(kind.id);
+  if (!img) return null;
+  const { box } = TRAP_ART[kind.id];
+  const fit = Math.min(box.w / img.naturalWidth, box.h / img.naturalHeight);
+  const w = img.naturalWidth * fit;
+  const h = img.naturalHeight * fit;
+  // Flat ones no taller than their footprint (the Oil Slick, the Snare) sit centred on it.
+  const base = box.h <= kind.h ? y + h / 2 : y + kind.h / 2 + Math.max(0, Math.min(4, (box.h - kind.h) / 2));
+  return { x: x - w / 2, y: base - h, w, h, img };
+}
+
 /** Draw a trap centred on art-pixel (x, y), already minus the camera. Runners see the disguised
  *  traps (Snare, Fake Loot) as they always have; everything else is the painted sprite. */
 export function drawTrap(g: G, kind: TrapKind, view: TrapView, x: number, y: number, nowMs: number) {
-  const img = view === 'saboteur' || !kind.disguised ? paintedSprite(kind.id) : null;
-  if (img) {
-    const { box } = TRAP_ART[kind.id];
-    const fit = Math.min(box.w / img.naturalWidth, box.h / img.naturalHeight);
-    const w = img.naturalWidth * fit;
-    const h = img.naturalHeight * fit;
-    // Flat ones no taller than their footprint (the Oil Slick, the Snare) sit centred on it.
-    const base = box.h <= kind.h ? y + h / 2 : y + kind.h / 2 + Math.max(0, Math.min(4, (box.h - kind.h) / 2));
-    drawSmooth(g, img, x - w / 2, base - h, w, h);
+  const r = view === 'saboteur' || !kind.disguised ? trapArtRect(kind, x, y) : null;
+  if (r) {
+    drawSmooth(g, r.img, r.x, r.y, r.w, r.h);
     return;
   }
   const s = trapSprite(kind, view, nowMs);
   g.drawImage(s.img, Math.round(x + s.dx), Math.round(y + s.dy));
 }
 
-/** A trap's icon for its card: the painted sprite fitted whole into a size x size square (or the
- *  code-painted art until the sprite has loaded). */
-export function drawTrapIcon(g: G, kind: TrapKind, size: number, nowMs: number) {
+/** A trap's icon for its card: the painted sprite fitted whole into a w x h box, centred, with
+ *  barely any margin (the sprites are trimmed tight), so wide ones (Snare, Oil Slick, Laser Grid,
+ *  Glue Floor) use the box's full width. The code-painted art stands in until it has loaded. */
+export function drawTrapIcon(g: G, kind: TrapKind, w: number, h: number, nowMs: number) {
   const img = paintedSprite(kind.id);
-  const pad = size * 0.06;
-  const [src, sw, sh] = img ? [img, img.naturalWidth, img.naturalHeight] : (() => {
-    const s = trapSprite(kind, 'saboteur', nowMs).img;
-    return [s, s.width, s.height] as const;
-  })();
-  const fit = Math.min((size - pad * 2) / sw, (size - pad * 2) / sh);
-  const w = sw * fit;
-  const h = sh * fit;
-  if (img) drawSmooth(g, img, (size - w) / 2, (size - h) / 2, w, h);
+  const pad = Math.round(Math.min(w, h) * 0.03);
+  const src = img ?? trapSprite(kind, 'saboteur', nowMs).img;
+  const sw = img ? img.naturalWidth : src.width;
+  const sh = img ? img.naturalHeight : src.height;
+  const fit = Math.min((w - pad * 2) / sw, (h - pad * 2) / sh);
+  const dw = sw * fit;
+  const dh = sh * fit;
+  if (img) drawSmooth(g, img, (w - dw) / 2, (h - dh) / 2, dw, dh);
   else {
     g.imageSmoothingEnabled = false;
-    g.drawImage(src, Math.round((size - w) / 2), Math.round((size - h) / 2), Math.round(w), Math.round(h));
+    g.drawImage(src, Math.round((w - dw) / 2), Math.round((h - dh) / 2), Math.round(dw), Math.round(dh));
   }
 }
 
