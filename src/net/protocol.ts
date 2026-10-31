@@ -5,6 +5,7 @@ import type { RoomError, RoomInfo, RoomSummary } from '../data/rooms';
 import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node server
 import type { AbilityId } from '../data/characters.ts';
 import type { MapId } from '../data/maps.ts';
+import type { WingmanResult } from '../data/wingman.ts';
 import type { Diamond } from '../data/diamonds.ts';
 import type { GameMode } from '../data/hideSeek.ts';
 import type { Phase } from '../data/round.ts';
@@ -132,8 +133,12 @@ export type ClientMsg =
   | { t: 'unlock'; door: string }
   /** A quick ping on the map for my teammates (TRAP / DIAMOND / LOOK HERE). */
   | { t: 'ping'; x: number; y: number; label: string }
-  /** An ability was used (for effects others should see). */
-  | { t: 'ability'; ability: AbilityId }
+  /** Switch stops her Mend early (Q again, or she moved). */
+  | { t: 'mendStop' }
+  /** Rattle's Shield just absorbed a hit (her game worked out the hit, as for all damage). */
+  | { t: 'shieldHit' }
+  /** An ability was used (for effects others should see). Wingman says which furniture to search. */
+  | { t: 'ability'; ability: AbilityId; spot?: string; facing?: Facing }
   | { t: 'leave' };
 
 /** Server -> game */
@@ -224,12 +229,39 @@ export type ServerMsg =
   | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
   | { t: 'door'; id: string; open: boolean }
   | { t: 'ability'; ability: AbilityId; by: string }
+  /** Scout's knife is flying from `from` to `to` (art px) for `ms`; then its EMP: traps off around (x, y). */
+  | { t: 'knife'; id: string; by: string; deck: MapId; from: [number, number]; to: [number, number]; ms: number }
+  | { t: 'emp'; id: string; by: string; deck: MapId; x: number; y: number; radius: number; ms: number; count: number }
+  /** Scout's knife was refused (nothing spent); private to Scout. */
+  | { t: 'knifeRefused'; reason: string }
+  /** Switch's Mend: started (for `ms`), a tick of heals (who, how much), or over. */
+  | { t: 'mend'; by: string; ms: number }
+  | { t: 'mendTick'; by: string; heals: [string, number][] }
+  | { t: 'mendEnd'; by: string; healed: number }
+  /** Switch's Mend was refused (nothing spent); private to Switch. */
+  | { t: 'mendRefused'; reason: string }
+  /** Latch's Clone is running from `from` to `to` (art px) in `ms`; everyone sees it. */
+  | { t: 'clone'; id: string; by: string; deck: MapId; facing: Facing; from: [number, number]; to: [number, number]; ms: number }
+  /** The clone reached the end of its run, having spotted `found` traps. */
+  | { t: 'cloneDone'; id: string; by: string; found: number }
+  /** Latch's clone charges, and diamonds banked toward refilling them; private to Latch. */
+  | { t: 'cloneCharges'; charges: number; banked: number; need: number }
+  /** Latch's clone was refused (nothing spent); private to Latch. */
+  | { t: 'cloneRefused'; reason: string }
+  /** Rattle's Shield: up or broken, and diamonds banked toward recharging it. `change`: it just broke or came back. */
+  | { t: 'shield'; id: string; up: boolean; banked: number; need: number; change?: 'broke' | 'recharged' }
+  /** Patch's Wingman is off: along `path` (art px) in `travelMs`, then `searchMs` searching `spot`. */
+  | { t: 'wingman'; id: string; by: string; spot: string; deck: MapId; path: [number, number][]; travelMs: number; searchMs: number }
+  /** Patch's Wingman launch was refused (nothing spent); private to Patch. `spot`: it can't get there. */
+  | { t: 'wingmanRefused'; reason: string; spot?: string }
+  /** A Wingman finished: what it turned up (a find drops on the floor at x, y). */
+  | { t: 'wingmanDone'; id: string; by: string; spot: string; result: WingmanResult; x: number; y: number; reason?: string }
   /** A trap plate fired just now: it arms, then shocks whoever is standing on it. */
   | { t: 'trap'; id: string }
   /** A placed trap went off: who set it off (only they and the Saboteur see its reveal). */
   | { t: 'trapFired'; id: string; kind: TrapKindId; x: number; y: number; victim: string }
   /** A live laser tagged this Runner after its initial reveal. */
-  | { t: 'trapReveal'; trap: PlacedTrap }
+  | { t: 'trapReveal'; trap: PlacedTrap; clone?: string }
   /** A hidden Saboteur trap auto-triggered on contact. */
   | { t: 'placedTrapHit'; kind: TrapKindId; damage: number; stunMs: number; knockback?: { x: number; y: number } }
   /** The Saboteur's Tripwire was accepted; private to that Saboteur. */

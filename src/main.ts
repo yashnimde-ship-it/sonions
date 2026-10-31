@@ -4,7 +4,8 @@ import '@fontsource/press-start-2p';
 import '@fontsource/cinzel/600.css';
 import '@fontsource/cinzel/700.css';
 import { ART_TILE, CHAR_GLOW, CHAR_SCREEN_FRACTION, CHARACTERS, type CharacterId, characterSheet, HITBOX } from './config';
-import { CHARACTER_INFO } from './data/characters';
+import { CHARACTER_INFO, carryCapacity, CLONE, HEAVY_CARRY, MEND } from './data/characters';
+import { WINGMAN_RANGE } from './data/wingman';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
 import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
@@ -127,8 +128,8 @@ const departBoard = (i: number) => {
 };
 const CAR_TAILLIGHTS = [[930, 147], [994, 147]];
 
-// Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
-// that). Bank it by walking into the GETAWAY zone on the street, in tiles.
+// Loot: one item in your hands at a time (two for Mule), 35% slower for each one carried
+// (60% less for Mule). Bank it by walking into the GETAWAY zone on the street, in tiles.
 const CARRY_SLOW = 0.35;
 // ---------- This tab's player, across reloads and dropped connections ----------
 // The key is per tab (sessionStorage): it survives a reload, and two tabs on one laptop are two
@@ -484,6 +485,8 @@ async function boot() {
   let keycard: Extract<ServerMsg, { t: 'keycard' }> | null = null;
   /** The red diamond I was last told I'm holding (to say so once). */
   let lastRedId = '';
+  /** How many diamonds I was last told I'm holding (Mule can hold two). */
+  let lastCarried = 0;
   let needN = 0;
   let totalN = 0;
   /** The furniture I'm searching (holding E), and since when. */
@@ -592,6 +595,18 @@ async function boot() {
   let result: Extract<ServerMsg, { t: 'result' }> | null = null;
   /** The diamond in my hands, if any. */
   const myDiamond = () => diamonds.find((d) => d.place.at === 'carried' && d.place.by === myId);
+  /** Everything I'm holding: one diamond, or two for Mule. */
+  const carriedBy = (id: string) => diamonds.filter((d) => d.place.at === 'carried' && d.place.by === id);
+  const myDiamonds = () => carriedBy(myId);
+  /** No room for another diamond. */
+  const handsFull = () => myDiamonds().length >= carryCapacity(myCharacter);
+  /** The HUD's carrying line for what I hold now. */
+  const carryLine = () => {
+    const mine = myDiamonds();
+    if (mine.length > 1) return `CARRYING ${mine.length} DIAMONDS · TAKE THEM TO THE GETAWAY`;
+    if (mine[0]?.kind === 'red') return 'RED DIAMOND · WORTH 3 · HEAVY · TAKE IT TO THE GETAWAY';
+    return mine.length ? 'CARRYING A DIAMOND · TAKE IT TO THE GETAWAY' : null;
+  };
   const diamondIn = (spotId: string) => diamonds.find((d) => d.place.at === 'spot' && d.place.spot === spotId);
   let trapEnergy = 0;
   let maxTrapEnergy = 0;
@@ -618,6 +633,22 @@ async function boot() {
   const MINIMAP_MS = 4000;
   /** Plates jammed by Trap Jam, until when (performance.now ms). */
   const trapJammedUntil = new Map<string, number>();
+  /** Patch's Wingmen out searching: their route (art px), and when they set off (performance.now()). */
+  const wingmen = new Map<string, { by: string; spot: string; deck: MapId; path: [number, number][]; travelMs: number; searchMs: number; at: number }>();
+  /** Scout's knives in the air, and the EMPs they set off (where, when, how many traps went off). */
+  const knives = new Map<string, { deck: MapId; from: [number, number]; to: [number, number]; ms: number; at: number }>();
+  const emps: { deck: MapId; x: number; y: number; radius: number; ms: number; at: number; count: number }[] = [];
+  /** Switch's Mends running: who, since when (performance.now()), for how long; and heal links to draw. */
+  const mending = new Map<string, { at: number; ms: number }>();
+  const mendLinks: { from: string; to: string; at: number }[] = [];
+  /** I asked the server to stop my Mend (moved, or Q again): don't ask twice. */
+  let mendStopSent = false;
+  /** Latch's clones running right now: their run (art px), when they set off, and a body to draw. */
+  const clones = new Map<string, { by: string; deck: MapId; facing: Facing; from: [number, number]; to: [number, number]; ms: number; at: number; body: Bandit }>();
+  /** Rattle's Shield, by player: up, or broken with diamonds banked toward recharging it. */
+  const shields = new Map<string, { up: boolean; banked: number; need: number }>();
+  /** Furniture the Wingman can't fly to this round (walled off): it stops picking them. */
+  const wingmanUnreachable = new Set<string>();
   const tripwireArmed = new Set<string>();
   const doorJammedUntil = new Map<string, number>();
   /** When traps were last checked, so a slow frame can't skip over a plate's live window. */
@@ -914,6 +945,14 @@ async function boot() {
     movingTrapId = null;
     movingTrapPending = false;
     trapJammedUntil.clear();
+    wingmen.clear();
+    wingmanUnreachable.clear();
+    shields.clear();
+    clones.clear();
+    mending.clear();
+    knives.clear();
+    emps.length = 0;
+    mendLinks.length = 0;
     tripwireArmed.clear();
     doorJammedUntil.clear();
     match = { id: msg.matchId, size: msg.size, saboteur: msg.role === 'saboteur', mode: msg.mode ?? 'heist' };
@@ -1176,6 +1215,38 @@ async function boot() {
         if (r && msg.ability === 'quickstep') r.bandit.showTrail(QUICKSTEP_FRAMES + 8);
         break;
       }
+      case 'wingman': {
+        wingmen.set(msg.id, { by: msg.by, spot: msg.spot, deck: msg.deck, path: msg.path, travelMs: msg.travelMs, searchMs: msg.searchMs, at: performance.now() });
+        if (here(msg.deck)) particles.burst(msg.path[0][0], msg.path[0][1] - 12, '#ff8a3d', 10, 1.2);
+        if (msg.by !== myId) break;
+        abilities.resolvePending(true);
+        abilities.busy(msg.travelMs + msg.searchMs);
+        sfx('whoosh');
+        toast(`Wingman is off to the ${[...spots, ...decoys()].find((x) => x.id === msg.spot)?.name ?? 'furniture'}`);
+        break;
+      }
+      case 'wingmanRefused':
+        abilities.resolvePending(false);
+        if (msg.spot) wingmanUnreachable.add(msg.spot);
+        toast(`Wingman: ${msg.reason}`);
+        break;
+      case 'wingmanDone':
+        wingmanDone(msg);
+        break;
+      case 'shield': {
+        shields.set(msg.id, { up: msg.up, banked: msg.banked, need: msg.need });
+        const who = msg.id === myId ? me : remotes.get(msg.id)?.bandit;
+        // My own break was shown the moment it happened (see shieldTakes).
+        if (msg.change === 'broke' && msg.id !== myId && who && here(remotes.get(msg.id)?.state.deck)) shieldBurst(who, false);
+        if (msg.change === 'recharged' && who) {
+          particles.ring(who.x, who.y - 14, '#7fd8ff', 22);
+          particles.burst(who.x, who.y - 14, '#bff0ff', 14, 1.4);
+          particles.pop(who.x, who.y - 40, 'SHIELD UP!', '#7fd8ff');
+          if (msg.id === myId) sfx('shieldUp');
+        }
+        if (msg.id === myId) showShieldState();
+        break;
+      }
       case 'place':
         placed.set(msg.trap.id, msg.trap);
         break;
@@ -1201,10 +1272,12 @@ async function boot() {
         // One diamond from the win (after the bank's own celebration).
         if (phase === 'live' && needN > 0 && needN - bankedN === 1 && !nearWinShown) setTimeout(nearWin, 900);
         {
-          const mine = myDiamond();
-          if (!mine) hud.setCarrying(null);
-          else if (mine.kind === 'red' && mine.id !== lastRedId) hud.setCarrying('RED DIAMOND · WORTH 3 · HEAVY · TAKE IT TO THE GETAWAY');
-          lastRedId = mine?.kind === 'red' ? mine.id : '';
+          // Say what I'm holding when it changes: a red one (once), or a second one (Mule).
+          const mine = myDiamonds();
+          const red = mine.find((d) => d.kind === 'red');
+          if (!mine.length || mine.length !== lastCarried || (red && red.id !== lastRedId)) hud.setCarrying(carryLine());
+          lastRedId = red?.id ?? '';
+          lastCarried = mine.length;
         }
         break;
       }
@@ -1399,6 +1472,99 @@ async function boot() {
       case 'trapReveal':
         placed.set(msg.trap.id, msg.trap);
         revealed.add(msg.trap.id);
+        if (msg.clone && here(msg.trap.deck)) {
+          // Latch's clone ran past it: flag it for the crew.
+          particles.ring(msg.trap.x, msg.trap.y, '#8f7cff', 22);
+          particles.pop(msg.trap.x, msg.trap.y - 18, msg.trap.kind === 'fakeLoot' ? 'FAKE!' : 'TRAP!', '#b9adff');
+          sfx('ping');
+        }
+        break;
+      case 'clone': {
+        const sheet = sheets[remotes.get(msg.by)?.state.character ?? (msg.by === myId ? myCharacter : 'iris')];
+        clones.set(msg.id, { by: msg.by, deck: msg.deck, facing: msg.facing, from: msg.from, to: msg.to, ms: msg.ms, at: performance.now(), body: new Bandit(sheet, msg.from[0], msg.from[1], msg.facing) });
+        if (here(msg.deck)) particles.burst(msg.from[0], msg.from[1] - 14, '#8f7cff', 12, 1.4);
+        if (msg.by === myId) {
+          abilities.resolvePending(true);
+          sfx('whoosh');
+        }
+        break;
+      }
+      case 'cloneDone': {
+        const cl = clones.get(msg.id);
+        clones.delete(msg.id);
+        if (cl && here(cl.deck)) particles.burst(cl.to[0], cl.to[1] - 14, '#8f7cff', 14, 1.2);
+        if (msg.by === myId) toast(msg.found ? `Your clone spotted ${msg.found} trap${msg.found > 1 ? 's' : ''}: marked for the crew` : 'Your clone ran clear: no traps that way');
+        else if (msg.found && !match?.saboteur) toast(`${remotes.get(msg.by)?.state.name ?? 'Latch'}'s clone spotted ${msg.found} trap${msg.found > 1 ? 's' : ''}`);
+        break;
+      }
+      case 'knife':
+        knives.set(msg.id, { deck: msg.deck, from: msg.from, to: msg.to, ms: msg.ms, at: performance.now() });
+        if (msg.by === myId) {
+          abilities.resolvePending(true);
+          sfx('whoosh');
+        }
+        break;
+      case 'emp': {
+        knives.delete(msg.id);
+        emps.push({ deck: msg.deck, x: msg.x, y: msg.y, radius: msg.radius, ms: msg.ms, at: performance.now(), count: msg.count });
+        if (here(msg.deck)) {
+          particles.ring(msg.x, msg.y, '#7fe8ff', msg.radius);
+          particles.burst(msg.x, msg.y, '#bff6ff', 26, 2.4);
+          particles.pop(msg.x, msg.y - 22, msg.count ? `EMP · ${msg.count} TRAP${msg.count > 1 ? 'S' : ''} OFF` : 'EMP · NOTHING THERE', '#7fe8ff');
+          if (Math.hypot(me.x - msg.x, me.y - msg.y) < 260) sfx('emp');
+        }
+        const who = msg.by === myId ? 'Your EMP' : `${remotes.get(msg.by)?.state.name ?? 'Scout'}'s EMP`;
+        if (msg.by === myId || (msg.count && !match?.saboteur)) toast(msg.count ? `${who} knocked out ${msg.count} trap${msg.count > 1 ? 's' : ''} for ${msg.ms / 1000}s` : `${who} hit no traps`);
+        break;
+      }
+      case 'knifeRefused':
+        abilities.resolvePending(false);
+        toast(`EMP Knife: ${msg.reason}`);
+        break;
+      case 'mend':
+        mending.set(msg.by, { at: performance.now(), ms: msg.ms });
+        if (msg.by === myId) {
+          mendStopSent = false;
+          abilities.resolvePending(true);
+          abilities.busy(msg.ms, 'MENDING');
+          sfx('revive');
+          toast('Mending: stand still to keep healing');
+        }
+        break;
+      case 'mendTick': {
+        const healer = msg.by === myId ? me : remotes.get(msg.by)?.bandit;
+        for (const [id, amount] of msg.heals) {
+          const who = id === myId ? me : remotes.get(id)?.bandit;
+          mendLinks.push({ from: msg.by, to: id, at: performance.now() });
+          if (who && (id === myId || here(remotes.get(id)?.state.deck))) {
+            particles.pop(who.x + 10, who.y - DRAW_H - 4, `+${amount}`, '#9be37a');
+            particles.burst(who.x, who.y - 14, '#9be37a', 4, 0.8);
+          }
+          if (id === myId && match && !match.saboteur && !knockedOut) {
+            healMe(Math.min(MAX_HP, hp + amount));
+            if (hp >= MAX_HP) toast(`${remotes.get(msg.by)?.state.name ?? 'Switch'} patched you up to full`);
+          }
+        }
+        if (healer && msg.heals.some(([id]) => id === myId)) sfx('tap');
+        break;
+      }
+      case 'mendEnd':
+        mending.delete(msg.by);
+        if (msg.by === myId) {
+          abilities.busy(0);
+          toast(msg.healed ? `Mend over: ${msg.healed} HP healed` : 'Mend over: nobody needed it');
+        }
+        break;
+      case 'mendRefused':
+        abilities.resolvePending(false);
+        toast(`Mend: ${msg.reason}`);
+        break;
+      case 'cloneCharges':
+        abilities.setCharges(msg.charges, msg.need - msg.banked);
+        break;
+      case 'cloneRefused':
+        abilities.resolvePending(false);
+        toast(`Clone: ${msg.reason}`);
         break;
       case 'trapFired':
         trapFired(msg);
@@ -1510,8 +1676,7 @@ async function boot() {
           particles.pop(to.x, to.y - 34, msg.to === myId ? 'CAUGHT IT!' : 'PASS!', '#5ad8ff');
         }
         sfx('coin');
-        if (msg.to === myId) hud.setCarrying('CARRYING A DIAMOND · TAKE IT TO THE GETAWAY');
-        if (msg.from === myId) hud.setCarrying(null);
+        if (msg.to === myId || msg.from === myId) hud.setCarrying(carryLine());
         hud.alert(`<span class="who">${msg.from === myId ? 'You' : esc(msg.fromName)}</span> <b>passed a diamond to ${msg.to === myId ? 'you' : esc(msg.toName)}</b>`, 'good');
         break;
       }
@@ -1539,11 +1704,12 @@ async function boot() {
       case 'jam': {
         const now = performance.now();
         if (!msg.id) {
-          abilities.resolveTrapJam(false);
+          abilities.resolvePending(false);
           toast('No traps in reach');
           break;
         }
-        abilities.resolveTrapJam(true);
+        // (Scout's EMP sends these too; only Trap Jam waits on them.)
+        if (abilities.has('trapJam')) abilities.resolvePending(true);
         if (msg.trap) {
           // Trap Jam found a trap we couldn't see.
           placed.set(msg.trap.id, msg.trap);
@@ -1718,6 +1884,7 @@ async function boot() {
     return {
       me,
       send: (m: ClientMsg) => net.send(m),
+      knockedOut,
       hp,
       setHp: healMe,
       crew,
@@ -1726,7 +1893,88 @@ async function boot() {
       targetTrapJammed: placedTarget ? trapJammed(placedTarget.id) : targetTrap ? trapJammed(targetTrap.id) : undefined,
       targetDoorId: targetDoor?.id,
       targetPoint: { x: Math.round(mouseX), y: Math.round(mouseY), open: tripOpen },
+      wingmanTarget: wingmanTarget(),
     };
+  }
+
+  /**
+   * Where Patch's Wingman would go: the nearest furniture nobody has searched (a Fake Loot chest
+   * looks just like one) within reach, favouring the way I'm facing; not into a locked vault.
+   */
+  function wingmanTarget(): HidingSpot | undefined {
+    if (!abilities.has('wingman') || !match || match.saboteur || phase !== 'live' || hideSeek() || knockedOut) return undefined;
+    const [fx, fy] = me.facing === 'up' ? [0, -1] : me.facing === 'down' ? [0, 1] : me.facing === 'left' ? [-1, 0] : [1, 0];
+    const vaultShut = keycard && !keycard.unlocked && keycard.deck === deckId ? keycard.vaultRoom : null;
+    let best: HidingSpot | undefined;
+    let bestScore = Infinity;
+    for (const sp of [...spots, ...decoys()]) {
+      // (A chest Latch's clone showed to be fake isn't worth a trip.)
+      if (!here(spotDecks.get(sp.id)) || searched.has(sp.id) || revealed.has(sp.id) || wingmanUnreachable.has(sp.id) || [...wingmen.values()].some((w) => w.spot === sp.id)) continue;
+      if (vaultShut && roomOf(sp) === vaultShut) continue;
+      const c = spotCenter(sp);
+      const dx = c.x - me.x;
+      const dy = c.y - me.y;
+      const d = Math.hypot(dx, dy);
+      if (d > WINGMAN_RANGE) continue;
+      // Straight ahead counts as it is, off to the side half as far again, behind twice as far.
+      const score = d * (1.5 - (0.5 * (dx * fx + dy * fy)) / (d || 1));
+      if (score < bestScore) [best, bestScore] = [sp, score];
+    }
+    return best;
+  }
+
+  /** A Wingman is back from its search: show everyone what it turned up. */
+  function wingmanDone(msg: Extract<ServerMsg, { t: 'wingmanDone' }>) {
+    const w = wingmen.get(msg.id);
+    wingmen.delete(msg.id);
+    const mine = msg.by === myId;
+    if (mine) abilities.busy(0);
+    const spot = spots.find((x) => x.id === msg.spot);
+    const name = spot?.name ?? 'treasure chest';
+    const seen = !!w && here(w.deck);
+    const at = spot ? spotCenter(spot) : { x: msg.x, y: msg.y };
+    const owner = mine ? 'Your Wingman' : `${esc(remotes.get(msg.by)?.state.name ?? 'Patch')}'s Wingman`;
+    if (seen) particles.burst(msg.x, msg.y - 12, '#ff8a3d', 8, 0.9);
+    switch (msg.result) {
+      case 'diamond':
+        if (seen) {
+          fx.push({ kind: 'found', x: at.x, y: at.y, at: performance.now() });
+          particles.burst(msg.x, msg.y, '#5ad8ff', 22, 2);
+          particles.ring(msg.x, msg.y, '#5ad8ff', 26);
+          particles.pop(msg.x, msg.y - 18, 'DIAMOND DROPPED!', '#5ad8ff');
+        }
+        if (mine) {
+          sfx('found');
+          setTimeout(() => sfx('coin'), 120);
+          toast(`Wingman found a diamond in the ${name}! It's on the floor: grab it`);
+        }
+        break;
+      case 'keycard':
+        if (seen) {
+          particles.burst(msg.x, msg.y, '#ffd84a', 22, 2);
+          particles.pop(msg.x, msg.y - 18, '+ KEYCARD', '#ffd84a');
+        }
+        if (!match?.saboteur) sfx('alert');
+        hud.alert(`<span class="who">${owner}</span> <b>found the keycard</b><span class="where">on the floor by the ${esc(name)}</span>`, 'good');
+        break;
+      case 'empty':
+        if (seen) fx.push({ kind: 'empty', x: at.x, y: at.y, at: performance.now() });
+        if (mine) {
+          sfx('empty');
+          toast(`Wingman: nothing in the ${name}`);
+        }
+        break;
+      case 'decoy':
+        if (seen) {
+          particles.burst(msg.x, msg.y, '#ff9a38', 24, 2.2);
+          particles.pop(msg.x, msg.y - 18, 'FAKE LOOT!', '#ff9a38');
+        }
+        if (mine) toast('Wingman set off a Fake Loot chest. Better it than you');
+        break;
+      case 'fizzled':
+        if (mine) toast(`Wingman gave up: ${msg.reason ?? 'it got lost'}`);
+        break;
+    }
   }
 
   /** Back to full health (First Aid); also gets a knocked-out Runner straight back up. */
@@ -1804,13 +2052,50 @@ async function boot() {
   }
 
   /** Damage and a stun; at 0 HP you're knocked out (and the server takes your diamond). */
+  /** Damage and stun from a hit; false if Rattle's Shield took it instead. */
   function hurt(damage: number, stunMs: number) {
+    if (shieldTakes(damage)) return false;
     hp = Math.max(0, hp - damage);
     if (stunMs > 0) me.stun(Math.round((stunMs / 1000) * 60));
     if (hp === 0) {
       beginKnockout();
     }
     hud.setHealth(hp);
+    return true;
+  }
+
+  /**
+   * Rattle's Shield takes a hit that does damage, if it's up: no damage, no stun (whatever else
+   * the hit does still happens). It breaks, and the server is told.
+   */
+  function shieldTakes(damage: number) {
+    const sh = shields.get(myId);
+    if (damage <= 0 || !sh?.up || !match || match.saboteur || phase !== 'live' || knockedOut) return false;
+    sh.up = false;
+    sh.banked = 0;
+    net.send({ t: 'shieldHit' });
+    shieldBurst(me, true);
+    showShieldState();
+    return true;
+  }
+
+  /** The Shield shatters around someone. */
+  function shieldBurst(b: Bandit, mine: boolean) {
+    particles.burst(b.x, b.y - 14, '#7fd8ff', 24, 2.2);
+    particles.burst(b.x, b.y - 14, '#ffffff', 10, 1.4);
+    particles.ring(b.x, b.y - 14, '#7fd8ff', 30);
+    particles.pop(b.x, b.y - 40, mine ? 'BLOCKED!' : 'SHIELD BROKE!', '#7fd8ff');
+    if (mine) {
+      hitStop(70);
+      sfx('shieldBreak');
+    }
+  }
+
+  /** The ability slot's line for my Shield. */
+  function showShieldState() {
+    const sh = shields.get(myId);
+    if (!sh) return;
+    abilities.setStatus(sh.up ? 'SHIELD UP' : `BROKEN · BANK ${sh.need - sh.banked} MORE`, sh.up);
   }
 
   /** Down: the server times the wait (a 'knockout' message says how long). Until it does, wait. */
@@ -1950,7 +2235,7 @@ async function boot() {
       laser: '#ff5264', boulder: '#c0c4d0', magnet: '#55f4ee', gas: '#c379ff', blackout: '#a783ff', fakeLoot: '#ff9a38',
     };
     trapImpact(hitColors[kind], damage >= 30 || kind === 'crusher' || kind === 'spring' ? 6 : 3.5);
-    hurt(damage, stunMs);
+    const landed = hurt(damage, stunMs);
     let effect = '';
     switch (kind) {
       case 'spring':
@@ -1979,7 +2264,9 @@ async function boot() {
     }
     const name = trapKind(kind)?.name ?? 'Trap';
     reportHit(name);
-    trapNotice = `${name}${damage ? ` · ${damage} damage` : ''}${stunMs >= 1000 ? ` · ${stunMs / 1000}s stun` : ''}${effect ? ` · ${effect}` : ''}`;
+    trapNotice = landed
+      ? `${name}${damage ? ` · ${damage} damage` : ''}${stunMs >= 1000 ? ` · ${stunMs / 1000}s stun` : ''}${effect ? ` · ${effect}` : ''}`
+      : `${name} · SHIELD BLOCKED IT${effect ? ` · ${effect}` : ''}`;
     trapNoticeUntil = now + 2500;
   }
 
@@ -2021,8 +2308,7 @@ async function boot() {
       crushers.splice(i, 1);
       if (Math.abs(me.x - c.x) <= 16 && Math.abs(me.y - c.y) <= 16) {
         trapImpact('#ff4b58', 7);
-        hurt(50, 3000);
-        trapNotice = 'Crusher · 50 damage · 3s stun';
+        trapNotice = hurt(50, 3000) ? 'Crusher · 50 damage · 3s stun' : 'Crusher · SHIELD BLOCKED IT';
         trapNoticeUntil = now + 2500;
       }
     }
@@ -2125,8 +2411,10 @@ async function boot() {
       trapImpact(r.damage > 0 ? '#ff5264' : '#a783ff', r.damage >= 25 ? 5 : 3);
       reportHit(SPOT_NAMES[t.kind ?? 'plate'] ?? 'Trap');
       sfx(isPlate(t) ? 'shock' : 'boulder');
-      hp = Math.max(0, hp - r.damage);
-      if (r.stunMs) me.stun(Math.round((r.stunMs / 1000) * 60));
+      if (!shieldTakes(r.damage)) {
+        hp = Math.max(0, hp - r.damage);
+        if (r.stunMs) me.stun(Math.round((r.stunMs / 1000) * 60));
+      }
       if (r.knock) {
         // Away from the trap: a painting swings out from its wall; a rolling stand shoves you
         // off its track; the sarcophagus blasts you back.
@@ -2160,6 +2448,11 @@ async function boot() {
       // In the getaway the crew is moved by the scene's script, the same on every screen.
       if (departure?.crew.includes(id)) continue;
       r.bandit.follow(r.state.x, r.state.y, r.state.facing, r.state.moving, r.state.sprint, r.state.stunned);
+    }
+    // Latch's clones run their straight line, sprinting.
+    for (const cl of clones.values()) {
+      const k = cl.ms ? Math.min(1, (performance.now() - cl.at) / cl.ms) : 1;
+      cl.body.follow(cl.from[0] + (cl.to[0] - cl.from[0]) * k, cl.from[1] + (cl.to[1] - cl.from[1]) * k, cl.facing, k < 1, true);
     }
 
     if (scene === 'lobby') {
@@ -2296,7 +2589,13 @@ async function boot() {
     if (hs && sab && phase === 'live' && keyPressed('KeyR')) net.send({ t: 'reload' });
     // A finished reload: the gun is full again (the server agrees on its next shot).
     if (hs && sab && gun.ammo === 0 && gun.reloadEnd && performance.now() >= gun.reloadEnd) gun = { ...gun, ammo: GUN.ammo, reloadEnd: 0 };
-    if (input.ability && !hud.messageOpen && phase === 'live' && !hs) abilities.use(abilityContext());
+    if (input.ability && !hud.messageOpen && phase === 'live' && !hs) {
+      // Q again during my Mend stops it; otherwise it's the ability.
+      if (mending.has(myId)) stopMend();
+      else abilities.use(abilityContext());
+    }
+    // Mend only runs while Switch stands still.
+    if (mending.has(myId) && me.moving) stopMend();
     // Touch: the Seeker's flashlight points the way they're facing unless they tapped lately.
     if (touch.enabled && hs && sab && performance.now() - lastTapAt > 1500) {
       const [fx, fy] = me.facing === 'up' ? [0, -1] : me.facing === 'down' ? [0, 1] : me.facing === 'left' ? [-1, 0] : [1, 0];
@@ -2357,7 +2656,7 @@ async function boot() {
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
       const now = performance.now();
-      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (myDiamond() ? 1 - (CARRY_SLOW + (myDiamond()!.kind === 'red' ? RED_EXTRA_SLOW : 0)) * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1) * (now < crowdFastUntil ? 1.4 : 1);
+      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (1 - myDiamonds().reduce((slow, d) => slow + CARRY_SLOW + (d.kind === 'red' ? RED_EXTRA_SLOW : 0), 0) * (abilities.has('heavyCarry') ? 1 - HEAVY_CARRY.slowCut : 1)) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1) * (now < crowdFastUntil ? 1.4 : 1);
       // Confusion Gas: left is right and up is down.
       // (In a hiding place you can't move.)
       const move = hiddenIn ? { ...input, dx: 0, dy: 0, sprint: false } : input;
@@ -2396,10 +2695,10 @@ async function boot() {
       }
       return;
     }
-    const mine = myDiamond();
+    const mine = myDiamonds();
     const order = { banked: 0, mine: 1, carried: 2, floor: 3, hidden: 4 } as const;
     const gems = diamonds
-      .map((d) => ({ state: (d.place.at === 'banked' ? 'banked' : d.place.at === 'carried' ? (d === mine ? 'mine' : 'carried') : d.place.at === 'floor' ? 'floor' : 'hidden') as keyof typeof order, kind: d.kind }))
+      .map((d) => ({ state: (d.place.at === 'banked' ? 'banked' : d.place.at === 'carried' ? (mine.includes(d) ? 'mine' : 'carried') : d.place.at === 'floor' ? 'floor' : 'hidden') as keyof typeof order, kind: d.kind }))
       .sort((a, b) => order[a.state] - order[b.state])
       .map((g) => (g.kind ? `${g.state} ${g.kind}` : g.state));
     const sab = !!match?.saboteur;
@@ -2537,7 +2836,7 @@ async function boot() {
       net.send({ t: 'door', id: door.id, open: true });
     }
     // A dropped diamond on the floor nearby: press E to grab it.
-    const dropped = holding ? undefined : diamonds.find((d) => d.place.at === 'floor' && here(d.place.deck) && Math.hypot(d.place.x - me.x, d.place.y - me.y) <= PICKUP_REACH);
+    const dropped = handsFull() ? undefined : diamonds.find((d) => d.place.at === 'floor' && here(d.place.deck) && Math.hypot(d.place.x - me.x, d.place.y - me.y) <= PICKUP_REACH);
     // The nearest piece of furniture in reach (a Fake Loot chest looks just like one).
     let spot: HidingSpot | null = null;
     let best = SEARCH_REACH;
@@ -2603,7 +2902,7 @@ async function boot() {
       prompt = 'E  Grab the dropped diamond';
       if (input.action) net.send({ t: 'pickup', id: dropped.id });
     } else if (spot) {
-      if (holding) prompt = 'Hands full: bank your diamond at the GETAWAY';
+      if (handsFull()) prompt = myDiamonds().length > 1 ? 'Hands full: bank your diamonds at the GETAWAY' : 'Hands full: bank your diamond at the GETAWAY';
       else if (searched.has(spot.id)) prompt = `${spot.name}: already searched, empty`;
       else {
         prompt = `Hold E  Search the ${spot.name}`;
@@ -2842,10 +3141,20 @@ async function boot() {
     drawSpots(camX, camY);
     drawFloorDiamonds(camX, camY);
     drawDiamondFx(camX, camY);
+    drawWingmen(camX, camY);
     particles.draw(ctx, camX, camY, performance.now() >= hitStopUntil);
     drawVault(camX, camY);
-    if (myDiamond()) carriedGem(me, camX, camY, myDiamond());
-    for (const [id, r] of remotes) if (r.state.carrying) carriedGem(r.bandit, camX, camY, diamonds.find((d) => d.place.at === 'carried' && d.place.by === id));
+    drawShields(camX, camY);
+    drawClones(camX, camY);
+    drawMends(camX, camY);
+    drawEmps(camX, camY);
+    myDiamonds().forEach((d, i, all) => carriedGem(me, camX, camY, d, (i - (all.length - 1) / 2) * 10));
+    for (const [id, r] of remotes) {
+      if (!r.state.carrying) continue;
+      const held = carriedBy(id);
+      if (!held.length) carriedGem(r.bandit, camX, camY);
+      held.forEach((d, i) => carriedGem(r.bandit, camX, camY, d, (i - (held.length - 1) / 2) * 10));
+    }
     ctx.restore();
     drawGetawayLabel(camX, camY);
     if (hideSeek() && !result && !isGhost(myId)) drawDarkness(camX, camY);
@@ -3190,12 +3499,12 @@ async function boot() {
     if (html !== crowdHtml) crowdEl.innerHTML = crowdHtml = html;
   }
 
-  /** The teammate I'd hand my diamond to: the nearest Runner up, with free hands, in reach. */
+  /** The teammate I'd hand a diamond to: the nearest Runner up, with a free hand, in reach. */
   function handoffTarget() {
     if (!myDiamond() || hideSeek() || match?.saboteur) return null;
     let best: { id: string; name: string; d: number } | null = null;
     for (const [id, r] of remotes) {
-      if (r.state.hp <= 0 || r.state.carrying || r.state.offline || !here(r.state.deck)) continue;
+      if (r.state.hp <= 0 || carriedBy(id).length >= carryCapacity(r.state.character) || r.state.offline || !here(r.state.deck)) continue;
       const d = Math.hypot(r.bandit.x - me.x, r.bandit.y - me.y);
       if (d <= HANDOFF_REACH && (!best || d < best.d)) best = { id, name: r.state.name, d };
     }
@@ -3406,6 +3715,19 @@ async function boot() {
       ctx.save();
       if (!sab && !result && t.kind !== 'fakeLoot') ctx.globalAlpha = 0.85;
       drawTrap(ctx, kind, sab || result ? 'saboteur' : 'runner', t.x - camX, t.y - camY, now);
+      if (!sab && !result && t.kind === 'fakeLoot' && revealed.has(t.id)) {
+        // Latch's clone found it out: a FAKE tag on the chest.
+        const tx = Math.round(t.x - camX);
+        const ty = Math.round(t.y - kind.h / 2 - 9 - camY);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#ff5264';
+        ctx.fillRect(tx - 12, ty - 4, 24, 9);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 7px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('FAKE', tx, ty + 0.5);
+      }
       if (trapJammed(t.id)) {
         // Jammed (Trap Jam): a blue lock-out over it.
         ctx.globalAlpha = 0.45 + 0.15 * Math.sin(frame / 6);
@@ -3727,8 +4049,251 @@ async function boot() {
   /** A diamond's colour: red ones red, a cursed one purple (only the Saboteur knows which). */
   const gemColor = (d: Diamond | undefined) => (d?.kind === 'red' ? '#ff4b5c' : d?.kind === 'cursed' ? '#9b6bff' : '#7ceaff');
 
-  function carriedGem(b: Bandit, camX: number, camY: number, d?: Diamond) {
-    const x = b.x - camX;
+  /**
+   * Scout's knife spinning through the air; then the EMP: a crackling ring of its reach with the
+   * seconds left and how many traps it caught, and a countdown over every trap that's off.
+   */
+  function drawEmps(camX: number, camY: number) {
+    if (result) return;
+    const now = performance.now();
+    for (const [id, k] of knives) {
+      const t = k.ms ? (now - k.at) / k.ms : 1;
+      if (t > 3) {
+        knives.delete(id);
+        continue;
+      }
+      if (!here(k.deck) || t >= 1) continue;
+      const x = k.from[0] + (k.to[0] - k.from[0]) * t - camX;
+      const y = k.from[1] + (k.to[1] - k.from[1]) * t - 12 - Math.sin(t * Math.PI) * 6 - camY;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(now / 40);
+      ctx.fillStyle = '#d9e6f2';
+      ctx.fillRect(-5, -1, 7, 2);
+      ctx.fillStyle = '#55b8ae';
+      ctx.fillRect(2, -1.5, 3, 3);
+      ctx.restore();
+      ctx.fillStyle = '#7fe8ff';
+      ctx.fillRect(Math.round(x + Math.random() * 4 - 2), Math.round(y + Math.random() * 4 - 2), 1, 1);
+    }
+    for (let i = emps.length - 1; i >= 0; i--) {
+      const e = emps[i];
+      const left = e.ms - (now - e.at);
+      if (left <= 0) {
+        emps.splice(i, 1);
+        continue;
+      }
+      if (!here(e.deck)) continue;
+      const x = e.x - camX;
+      const y = e.y - camY;
+      ctx.save();
+      ctx.globalAlpha = 0.08 + 0.04 * Math.sin(now / 90);
+      ctx.fillStyle = '#7fe8ff';
+      ctx.beginPath();
+      ctx.arc(x, y, e.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.75;
+      ctx.strokeStyle = '#7fe8ff';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([2, 4]);
+      ctx.lineDashOffset = now / 30;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // The time left, as the ring's bright part shrinking.
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, e.radius, -Math.PI / 2, -Math.PI / 2 + (left / e.ms) * Math.PI * 2);
+      ctx.stroke();
+      // The knife stuck in the floor, and the label.
+      ctx.fillStyle = '#d9e6f2';
+      ctx.fillRect(Math.round(x) - 1, Math.round(y) - 6, 2, 6);
+      ctx.fillStyle = '#55b8ae';
+      ctx.fillRect(Math.round(x) - 2, Math.round(y) - 9, 4, 3);
+      ctx.font = 'bold 8px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const label = `${Math.ceil(left / 1000)}s · ${e.count} OFF`;
+      const w = ctx.measureText(label).width + 6;
+      ctx.fillStyle = 'rgba(8, 20, 30, 0.8)';
+      ctx.fillRect(Math.round(x - w / 2), Math.round(y - e.radius - 12), Math.round(w), 10);
+      ctx.fillStyle = '#bff6ff';
+      ctx.fillText(label, Math.round(x), Math.round(y - e.radius - 7));
+      ctx.restore();
+    }
+    // Every trap that's off (an EMP or Trap Jam): the seconds until it's back.
+    for (const [id, until] of trapJammedUntil) {
+      const left = until - now;
+      if (left <= 0) continue;
+      const t = placed.get(id) ?? traps.find((x) => x.id === id);
+      const shown = !!t && (match?.saboteur || !placed.has(id) || revealed.has(id) || placed.get(id)?.kind === 'fakeLoot');
+      if (!t || !shown || !here((t as PlacedTrap).deck)) continue;
+      const x = Math.round(t.x - camX);
+      const y = Math.round(t.y - 16 - camY);
+      ctx.save();
+      ctx.fillStyle = 'rgba(8, 20, 30, 0.85)';
+      ctx.fillRect(x - 7, y - 5, 14, 10);
+      ctx.strokeStyle = '#7fe8ff';
+      ctx.strokeRect(x - 6.5, y - 4.5, 13, 9);
+      ctx.fillStyle = '#bff6ff';
+      ctx.font = 'bold 8px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(Math.ceil(left / 1000)), x, y + 0.5);
+      ctx.restore();
+    }
+  }
+
+  function stopMend() {
+    if (mendStopSent) return;
+    mendStopSent = true;
+    net.send({ t: 'mendStop' });
+  }
+
+  /** Switch's Mend: a pulsing green ring of its reach round her, rising crosses, and a flash of
+   *  green to each teammate as they're healed. */
+  function drawMends(camX: number, camY: number) {
+    if (result) return;
+    const now = performance.now();
+    for (const [id, m] of mending) {
+      const r = id === myId ? null : remotes.get(id);
+      const b = id === myId ? me : r?.bandit;
+      if (!b || (r && !here(r.state.deck))) continue;
+      // The round moved on without an end: let it go.
+      if (now - m.at > m.ms + 3000) {
+        mending.delete(id);
+        continue;
+      }
+      const left = Math.max(0, 1 - (now - m.at) / m.ms);
+      const x = b.x - camX;
+      const y = b.y - camY;
+      ctx.save();
+      ctx.globalAlpha = 0.1 + 0.05 * Math.sin(now / 180);
+      ctx.fillStyle = '#9be37a';
+      ctx.beginPath();
+      ctx.ellipse(x, y, MEND.reach, MEND.reach * 0.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.7;
+      ctx.strokeStyle = '#9be37a';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.lineDashOffset = -now / 40;
+      ctx.stroke();
+      // How long is left: an arc above her head that empties.
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.95;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y - DRAW_H - 12, 4, -Math.PI / 2, -Math.PI / 2 + left * Math.PI * 2);
+      ctx.stroke();
+      // Little crosses floating up.
+      for (let k = 0; k < 3; k++) {
+        const t = ((now / 900 + k / 3) % 1);
+        const cx = x + Math.sin(k * 2.1 + now / 400) * 10;
+        const cy = y - 8 - t * 26;
+        ctx.globalAlpha = 0.8 * (1 - t);
+        ctx.fillStyle = '#c8f5b0';
+        ctx.fillRect(Math.round(cx) - 2, Math.round(cy), 5, 1);
+        ctx.fillRect(Math.round(cx), Math.round(cy) - 2, 1, 5);
+      }
+      ctx.restore();
+    }
+    for (let i = mendLinks.length - 1; i >= 0; i--) {
+      const l = mendLinks[i];
+      const t = (now - l.at) / 350;
+      if (t >= 1) {
+        mendLinks.splice(i, 1);
+        continue;
+      }
+      const a = l.from === myId ? me : remotes.get(l.from)?.bandit;
+      const b = l.to === myId ? me : remotes.get(l.to)?.bandit;
+      if (!a || !b) continue;
+      ctx.save();
+      ctx.globalAlpha = 0.8 * (1 - t);
+      ctx.strokeStyle = '#c8f5b0';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(a.x - camX, a.y - 14 - camY);
+      ctx.lineTo(b.x - camX, b.y - 14 - camY);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  /** Latch's clones: a see-through Latch sprinting ahead, with the strip it's scanning lit behind it. */
+  function drawClones(camX: number, camY: number) {
+    if (result) return;
+    const now = performance.now();
+    for (const [id, cl] of clones) {
+      // The round moved on without an end: let it go.
+      if (now - cl.at > cl.ms + 3000) {
+        clones.delete(id);
+        continue;
+      }
+      if (!here(cl.deck)) continue;
+      const b = cl.body;
+      const horizontal = cl.from[1] === cl.to[1];
+      const [x0, x1] = [Math.min(cl.from[0], b.x), Math.max(cl.from[0], b.x)];
+      const [y0, y1] = [Math.min(cl.from[1], b.y), Math.max(cl.from[1], b.y)];
+      ctx.save();
+      // The scanned strip: a tile either side of its line.
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = '#8f7cff';
+      if (horizontal) ctx.fillRect(x0 - camX, cl.from[1] - CLONE.scan - camY, x1 - x0, CLONE.scan * 2);
+      else ctx.fillRect(cl.from[0] - CLONE.scan - camX, y0 - camY, CLONE.scan * 2, y1 - y0);
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = '#b9adff';
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(cl.from[0] - camX, cl.from[1] - camY);
+      ctx.lineTo(b.x - camX, b.y - camY);
+      ctx.stroke();
+      // The clone itself, flickering a little.
+      ctx.globalAlpha = 0.45 + 0.15 * Math.sin(now / 50);
+      b.draw(ctx, camX, camY, false);
+      ctx.restore();
+    }
+  }
+
+  /** Rattle's Shield while it's up: a shimmering bubble around her, for everyone to see. */
+  function drawShields(camX: number, camY: number) {
+    if (result || phase !== 'live') return;
+    const now = performance.now();
+    for (const [id, sh] of shields) {
+      if (!sh.up) continue;
+      const r = id === myId ? null : remotes.get(id);
+      const b = id === myId ? me : r?.bandit;
+      if (!b || (r && (!here(r.state.deck) || r.state.hp <= 0)) || (id === myId && knockedOut)) continue;
+      const x = b.x - camX;
+      const y = b.y - DRAW_H / 2 - 2 - camY - b.hop;
+      const rx = DRAW_W / 2 + 5;
+      const ry = DRAW_H / 2 + 5;
+      const pulse = 0.5 + 0.5 * Math.sin(now / 260);
+      ctx.save();
+      ctx.globalAlpha = 0.1 + 0.06 * pulse;
+      ctx.fillStyle = '#7fd8ff';
+      ctx.beginPath();
+      ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.55 + 0.3 * pulse;
+      ctx.strokeStyle = '#9fe4ff';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      // A glint running round the rim.
+      const a = (now / 700) % (Math.PI * 2);
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.ellipse(x, y, rx, ry, 0, a, a + 0.6);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  /** A carried diamond over someone's head; `dx` sets a second one (Mule) beside the first. */
+  function carriedGem(b: Bandit, camX: number, camY: number, d?: Diamond, dx = 0) {
+    const x = b.x - camX + dx;
     const y = b.y - DRAW_H - 6 - camY + Math.sin(frame / 10) * 1.5 - b.hop;
     // It turns slowly (like a coin on its edge), with a glint each time it faces us.
     const turn = Math.cos(frame / 14);
@@ -3810,6 +4375,131 @@ async function boot() {
           ctx.strokeRect(x + 0.5 + jx, y + 0.5, w - 1, h - 1);
         }
       }
+      ctx.restore();
+    }
+  }
+
+  /**
+   * Patch's Wingmen: a little hovering drone flying its route, then scanning the furniture with
+   * a fill ring (as long as a search takes). For Patch, brackets on where Q would send it.
+   */
+  function drawWingmen(camX: number, camY: number) {
+    if (result) return;
+    const now = performance.now();
+    const target = abilities.ready ? wingmanTarget() : undefined;
+    if (target) {
+      const b = spotBox(target);
+      const pad = 3 + Math.sin(now / 160) * 1.5;
+      const [x0, y0, x1, y1] = [b.x0 - camX - pad, b.y0 - camY - pad, b.x1 - camX + pad, b.y1 - camY + pad];
+      const arm = Math.min(6, (x1 - x0) / 3);
+      ctx.save();
+      ctx.strokeStyle = '#ff8a3d';
+      ctx.globalAlpha = 0.75 + 0.25 * Math.sin(now / 160);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (const [cx, cy, sx, sy] of [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]) {
+        ctx.moveTo(cx + sx * arm, cy);
+        ctx.lineTo(cx, cy);
+        ctx.lineTo(cx, cy + sy * arm);
+      }
+      ctx.stroke();
+      // The key, in a little tag over the top.
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#ff8a3d';
+      ctx.fillRect(Math.round((x0 + x1) / 2) - 4, Math.round(y0) - 11, 9, 8);
+      ctx.fillStyle = '#1a0f08';
+      ctx.font = 'bold 7px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Q', Math.round((x0 + x1) / 2) + 0.5, Math.round(y0) - 6.5);
+      ctx.restore();
+    }
+    for (const [id, w] of wingmen) {
+      const t = now - w.at;
+      // The round moved on without a result: let it go.
+      if (t > w.travelMs + w.searchMs + 3000) {
+        wingmen.delete(id);
+        continue;
+      }
+      if (!here(w.deck)) continue;
+      // Where along the route: so far, as a share of the whole length.
+      const legs = w.path.slice(1).map((p, k) => Math.hypot(p[0] - w.path[k][0], p[1] - w.path[k][1]));
+      const total = legs.reduce((a, b) => a + b, 0);
+      let left = w.travelMs ? Math.min(1, t / w.travelMs) * total : total;
+      let [x, y] = w.path[w.path.length - 1];
+      let dir = 1;
+      for (let k = 0; k < legs.length; k++) {
+        const [ax, ay] = w.path[k];
+        const [bx, by] = w.path[k + 1];
+        if (bx !== ax) dir = Math.sign(bx - ax);
+        if (left <= legs[k]) {
+          const f = legs[k] ? left / legs[k] : 1;
+          [x, y] = [ax + (bx - ax) * f, ay + (by - ay) * f];
+          break;
+        }
+        left -= legs[k];
+      }
+      const flying = t < w.travelMs;
+      const hover = 12 + Math.sin(now / 140) * 1.5;
+      const sx = x - camX;
+      const sy = y - camY;
+      ctx.save();
+      // Shadow on the floor.
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, 5, 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      const dy = sy - hover;
+      if (flying) {
+        // A short orange wake.
+        for (let k = 1; k <= 3; k++) {
+          ctx.globalAlpha = 0.35 / k;
+          ctx.fillStyle = '#ff8a3d';
+          ctx.beginPath();
+          ctx.arc(sx - dir * k * 4, dy + 1, 2.2 - k * 0.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      } else {
+        // Scanning: a flickering beam down onto the furniture and a ring filling up.
+        const p = Math.min(1, (t - w.travelMs) / w.searchMs);
+        const spot = [...spots, ...decoys()].find((s) => s.id === w.spot);
+        const c = spot ? spotCenter(spot) : { x, y: y + 6 };
+        ctx.globalAlpha = 0.18 + 0.12 * Math.sin(now / 45);
+        ctx.fillStyle = '#7ceaff';
+        ctx.beginPath();
+        ctx.moveTo(sx - 1.5, dy + 3);
+        ctx.lineTo(c.x - camX - 7, c.y - camY);
+        ctx.lineTo(c.x - camX + 7, c.y - camY);
+        ctx.lineTo(sx + 1.5, dy + 3);
+        ctx.fill();
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(sx, dy - 12, 4, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = '#ffe39a';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(sx, dy - 12, 4, -Math.PI / 2, -Math.PI / 2 + p * Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      // The drone: a dark shell with Patch's orange band, a cyan eye, and spinning rotors.
+      const spin = Math.abs(Math.sin(now / 25));
+      ctx.fillStyle = '#c9ccd6';
+      ctx.fillRect(Math.round(sx - 7), Math.round(dy - 5), Math.round(1 + 4 * spin), 1);
+      ctx.fillRect(Math.round(sx + 6 - 4 * spin), Math.round(dy - 5), Math.round(1 + 4 * spin), 1);
+      ctx.fillStyle = '#1b1f2a';
+      ctx.fillRect(Math.round(sx - 5), Math.round(dy - 4), 10, 6);
+      ctx.fillRect(Math.round(sx - 4), Math.round(dy + 2), 8, 1);
+      ctx.fillStyle = '#ff8a3d';
+      ctx.fillRect(Math.round(sx - 5), Math.round(dy - 1), 10, 1);
+      ctx.fillStyle = flying ? '#7ceaff' : now % 300 < 150 ? '#ffffff' : '#7ceaff';
+      ctx.fillRect(Math.round(sx + dir * 2 - 1), Math.round(dy - 3), 2, 2);
       ctx.restore();
     }
   }

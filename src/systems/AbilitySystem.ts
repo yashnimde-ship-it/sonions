@@ -13,6 +13,8 @@ const NEEDS_LABEL = { traps: 'traps', energy: 'energy', loot: 'loot carrying', s
 export interface AbilityContext {
   me: Bandit;
   send: (msg: ClientMsg) => void;
+  /** I'm knocked out (waiting to get back up). */
+  knockedOut?: boolean;
   /** My health, and a way to set it (First Aid on myself). */
   hp?: number;
   setHp?: (hp: number) => void;
@@ -26,6 +28,8 @@ export interface AbilityContext {
   targetDoorId?: string;
   /** Where the Saboteur's cursor is (art px), and whether a trip line fits there (Tripwire). */
   targetPoint?: { x: number; y: number; open: boolean };
+  /** The furniture Wingman would search (nearest unsearched, the way I'm facing). */
+  wingmanTarget?: { id: string; name: string };
 }
 
 /**
@@ -40,8 +44,15 @@ export class AbilitySystem {
   private usesLeft = Infinity;
   private noteUntil = 0;
   private waitingForServer = false;
-  /** When Trap Jam started waiting for the server; after a while it stops waiting. */
+  /** When Trap Jam or Wingman started waiting for the server; after a while it stops waiting. */
   private waitingSince = 0;
+  /** Wingman out searching, or Mend channelling, until then (for the slot's state). */
+  private busyUntil = 0;
+  private busyLabel = 'SEARCHING';
+  /** What the slot says with no uses left, when it isn't the end of the round (Clone: bank to recharge). */
+  private spentNote: string | null = null;
+  /** A passive's own state line (Shield: up, or broken and recharging), shown instead of "Passive". */
+  private status: { text: string; on: boolean } | null = null;
   private overclock: { startsAt: number; endsAt: number } | null = null;
   private root = document.getElementById('ability')!;
   private roleEl = document.getElementById('ability-role')!;
@@ -55,15 +66,24 @@ export class AbilitySystem {
     this.readyAt = 0;
     this.usesLeft = this.ability.perRound ?? Infinity;
     this.waitingForServer = false;
+    this.busyUntil = 0;
+    this.status = null;
+    this.spentNote = null;
     this.overclock = null;
     this.root.dataset.role = role;
     this.roleEl.textContent = role === 'runner' ? 'RUNNER' : 'SABOTEUR';
     this.nameEl.textContent = this.ability.name;
   }
 
-  /** Is this the ability in play this round (for passives like Steady Carry)? */
+  /** Is this the ability in play this round (for passives like Heavy Carry)? */
   has(id: Ability['id']) {
     return this.ability?.id === id;
+  }
+
+  /** Could Q go off right now (off cooldown, uses left, not waiting, nothing out)? */
+  get ready() {
+    const now = performance.now();
+    return !!this.ability && !this.waitingForServer && now >= this.readyAt && now >= this.busyUntil && this.usesLeft > 0;
   }
 
   get overclockWindow() {
@@ -79,14 +99,15 @@ export class AbilitySystem {
     if (a.passive) return this.note('Always on');
     // No answer from the server in 2s (the round ended, the connection blipped): try again.
     if (this.waitingForServer && now - this.waitingSince > 2000) this.waitingForServer = false;
+    if (this.usesLeft <= 0 && this.spentNote) return this.note(this.spentNote);
     if (this.waitingForServer || now < this.readyAt || this.usesLeft <= 0) return;
     // Stunned bandits can't use abilities, except the one that breaks the stun.
     if (ctx.me.stunned && a.id !== 'shakeItOff') return this.note('Stunned!');
     const fail = this.apply(a, ctx);
     if (fail) return this.note(fail);
-    // Trap Jam's target is hidden from the client. Wait for the server to confirm it found a
-    // trap before spending a use or starting cooldown; a failed attempt can then be retried.
-    if (a.id === 'trapJam') {
+    // Trap Jam's target is hidden from the client, and Wingman's might be gone by now. Wait for
+    // the server to confirm before spending a use or starting cooldown; a refusal can be retried.
+    if (a.id === 'trapJam' || a.id === 'wingman' || a.id === 'clone' || a.id === 'mend' || a.id === 'empKnife') {
       this.waitingForServer = true;
       this.waitingSince = now;
       return;
@@ -96,13 +117,15 @@ export class AbilitySystem {
     if (a.id !== 'tripwire' && a.id !== 'trapRefresh' && a.id !== 'doorJam') ctx.send({ t: 'ability', ability: a.id });
   }
 
-  /** Resolve a server-validated Trap Jam attempt. */
-  resolveTrapJam(success: boolean) {
-    if (!this.waitingForServer || this.ability?.id !== 'trapJam') return;
+  /** Resolve an attempt the server had to accept first (Trap Jam, Wingman, Clone, Mend, EMP Knife). */
+  resolvePending(success: boolean) {
+    const id = this.ability?.id;
+    if (!this.waitingForServer || !this.ability || (id !== 'trapJam' && id !== 'wingman' && id !== 'clone' && id !== 'mend' && id !== 'empKnife')) return;
     this.waitingForServer = false;
     if (!success) return;
     this.readyAt = performance.now() + this.ability.cooldown * 1000;
-    this.usesLeft = Math.max(0, this.usesLeft - 1);
+    // Clone charges come from the server (they refill by banking).
+    if (this.ability.id !== 'clone') this.usesLeft = Math.max(0, this.usesLeft - 1);
   }
 
   /** Runs the effect; returns why it couldn't, if it couldn't. */
@@ -124,6 +147,8 @@ export class AbilitySystem {
         ctx.send({ t: 'doorJam', id: ctx.targetDoorId });
         return null;
       case 'quickstep':
+        // Not while knocked out: the dash would slide the downed body (and spend a use).
+        if (ctx.knockedOut) return 'Knocked out';
         ctx.me.dash(QUICKSTEP_DISTANCE, QUICKSTEP_FRAMES);
         return null;
       case 'firstAid': {
@@ -145,6 +170,26 @@ export class AbilitySystem {
         if (!ctx.me.stunned) return 'Not stunned';
         ctx.me.stunFrames = 0;
         return null;
+      case 'wingman':
+        if (ctx.knockedOut) return 'Knocked out';
+        if (!ctx.wingmanTarget) return 'No unsearched furniture in reach';
+        ctx.send({ t: 'ability', ability: 'wingman', spot: ctx.wingmanTarget.id });
+        return null;
+      case 'empKnife':
+        // Straight ahead; the server flies it and sets off the EMP where it lands.
+        if (ctx.knockedOut) return 'Knocked out';
+        ctx.send({ t: 'ability', ability: 'empKnife', facing: ctx.me.facing });
+        return null;
+      case 'mend':
+        // The server checks for hurt teammates in reach, then heals them while she stands still.
+        if (ctx.knockedOut) return 'Knocked out';
+        ctx.send({ t: 'ability', ability: 'mend' });
+        return null;
+      case 'clone':
+        // Straight ahead, the way I'm facing; the server runs it and says what it finds.
+        if (ctx.knockedOut) return 'Knocked out';
+        ctx.send({ t: 'ability', ability: 'clone', facing: ctx.me.facing });
+        return null;
       case 'trapJam':
         // Every trap in reach, seen or not; the server works out which (and shows them to you).
         ctx.send({ t: 'jam', x: ctx.me.x, y: ctx.me.y });
@@ -152,6 +197,23 @@ export class AbilitySystem {
       default:
         return 'Not ready yet';
     }
+  }
+
+  /** Latch's clone charges (from the server), and what to bank for more once they're gone. */
+  setCharges(charges: number, bankMore: number) {
+    this.usesLeft = charges;
+    this.spentNote = `BANK ${bankMore} MORE`;
+  }
+
+  /** A passive's state for the slot: `on` lights it up (Shield up). */
+  setStatus(text: string, on: boolean) {
+    this.status = { text, on };
+  }
+
+  /** Wingman is out, or Mend is running, for `ms` (0: it's over). */
+  busy(ms: number, label = 'SEARCHING') {
+    this.busyUntil = performance.now() + ms;
+    this.busyLabel = label;
   }
 
   private note(text: string) {
@@ -169,17 +231,20 @@ export class AbilitySystem {
     this.cdEl.style.height = spent ? '100%' : `${(left / (a.cooldown * 1000 || 1)) * 100}%`;
     this.root.classList.toggle('ready', !left && !spent && !a.needs);
     const overclockLeft = this.overclock ? Math.max(0, this.overclock.endsAt - now) : 0;
-    this.root.classList.toggle('active', a.id === 'overclock' && overclockLeft > 0);
+    const busyLeft = Math.max(0, this.busyUntil - now);
+    this.root.classList.toggle('active', (a.id === 'overclock' && overclockLeft > 0) || busyLeft > 0 || !!this.status?.on);
     if (now < this.noteUntil) return;
     const usesNote = Number.isFinite(this.usesLeft) && !spent ? ` · ${this.usesLeft} LEFT` : '';
     this.stateEl.textContent = (a.id === 'overclock' && overclockLeft > 0
       ? `ACTIVE ${Math.ceil(overclockLeft / 1000)}s`
+      : busyLeft
+      ? `${this.busyLabel} ${Math.ceil(busyLeft / 1000)}s`
       : a.needs
       ? 'Coming soon'
       : a.passive
-        ? 'Passive'
+        ? this.status?.text ?? 'Passive'
         : spent
-          ? 'No uses left'
+          ? this.spentNote ?? 'No uses left'
           : left
             ? `${Math.ceil(left / 1000)}s`
             : 'READY') + usesNote;

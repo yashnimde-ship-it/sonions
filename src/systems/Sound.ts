@@ -5,7 +5,7 @@
 import type { Surface } from '../data/surfaces';
 import type { TrapKindId } from '../data/trapKinds';
 
-export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen' | 'award' | 'revive' | 'coin' | 'combo' | 'ping' | 'count' | 'go' | 'knockout' | 'down' | 'revealSab' | 'revealRunner' | 'nearWin' | 'whoosh' | 'unlock' | 'join' | 'leave' | 'readyUp' | 'wave' | 'tap';
+export type SoundId = TrapKindId | 'found' | 'banked' | 'dropped' | 'empty' | 'hide' | 'win' | 'lose' | 'tick' | 'alert' | 'huntStart' | 'gunshot' | 'reload' | 'caught' | 'click' | 'flare' | 'heartbeat' | 'boost' | 'hurt' | 'footstep' | 'hideIn' | 'hideOut' | 'gateOpen' | 'award' | 'revive' | 'coin' | 'combo' | 'ping' | 'count' | 'go' | 'knockout' | 'down' | 'revealSab' | 'revealRunner' | 'nearWin' | 'whoosh' | 'unlock' | 'join' | 'leave' | 'readyUp' | 'wave' | 'tap' | 'shieldBreak' | 'shieldUp' | 'emp';
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -338,6 +338,23 @@ export function play(id: SoundId) {
       break;
     case 'whoosh':
       noise(a, 0.28, 0, 0.18, 'bandpass', 2600);
+      break;
+    case 'shieldBreak':
+      // Rattle's Shield takes the hit and shatters: a glassy crack and falling shards.
+      noise(a, 0.25, 0, 0.35, 'highpass', 3000);
+      [1760, 1397, 1175, 880].forEach((f, i) => tone(a, 'triangle', f, f * 0.9, 0.12, i * 0.045, 0.16));
+      tone(a, 'sine', 300, 120, 0.25, 0, 0.3);
+      break;
+    case 'emp':
+      // Scout's EMP: a crackling zap, then everything powering down.
+      noise(a, 0.18, 0, 0.35, 'bandpass', 3200);
+      for (let i = 0; i < 3; i++) tone(a, 'square', 1400 - i * 300, 900 - i * 200, 0.05, i * 0.04, 0.12);
+      tone(a, 'sawtooth', 520, 60, 0.6, 0.08, 0.2);
+      break;
+    case 'shieldUp':
+      // It's back: a rising shimmer.
+      [659, 880, 1175, 1568].forEach((f, i) => tone(a, 'triangle', f, f * 1.01, 0.18, i * 0.06, 0.16));
+      noise(a, 0.3, 0.05, 0.12, 'highpass', 4000);
       break;
     case 'tap':
       // A menu button: a soft, short tick.

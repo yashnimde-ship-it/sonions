@@ -60,9 +60,9 @@ export const GADGETS: Record<TrapKindId, GadgetInfo> = {
     tip: 'One of the biggest hits: use it on a busy route.',
   },
   magnet: {
-    does: 'When someone sets it off, it pulls every Runner within 4 tiles toward it and yanks the diamonds out of their hands.',
+    does: 'When someone sets it off, it pulls every Runner within 4 tiles toward it and yanks a diamond out of their hands.',
     stats: ['REACH 4 TILES', 'DROPS LOOT'],
-    tip: 'Best by a vault or the GETAWAY route. Mule’s Steady Carry holds on through it.',
+    tip: 'Best by a vault or the GETAWAY route.',
   },
   gas: {
     does: 'A cloud that reverses the controls of every Runner within about 3 tiles.',

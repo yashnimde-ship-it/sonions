@@ -10,8 +10,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
-import { ABILITIES, type AbilityId, CHARACTER_INFO, DOOR_JAM_DURATION_MS } from '../src/data/characters.ts';
-import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_REACH, spotRoom, valueOf } from '../src/data/diamonds.ts';
+import { ABILITIES, type AbilityId, CHARACTER_INFO, carryCapacity, CLONE, DOOR_JAM_DURATION_MS, EMP, MEND, RECHARGE_BANKS } from '../src/data/characters.ts';
+import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_MS, SEARCH_REACH, spotCenter, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
@@ -20,7 +20,8 @@ import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts
 import { CHAOS, CHAOS_CARDS, type ChaosId, chaosOptions, isChaosId } from '../src/data/chaos.ts';
 import { DEPART_MS, normalizeCode, QUICK_PLAY_SIZE, ROOM_CODE_CHARS, ROOM_CODE_LENGTH, ROOM_MAX, ROOM_MIN, START_COUNTDOWN_MS, WAVE_LINES, type RoomInfo, type RoomSummary } from '../src/data/rooms.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
-import { NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type WatchInfo, type WatchPlayer, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
+import { WINGMAN_MAX_PATH, WINGMAN_RANGE, WINGMAN_SPEED, type WingmanResult } from '../src/data/wingman.ts';
+import { type Facing, NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type WatchInfo, type WatchPlayer, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.PORT ?? 3001);
@@ -418,6 +419,11 @@ const phases = new Map<string, { phase: Phase; endsAt: number }>();
 const lastTrapHit = new Map<string, number>();
 /** Per match: ability uses spent this round, keyed by player id and ability. */
 const abilityUses = new Map<string, Map<string, number>>();
+/** Per match: when each player's cooldown abilities (Quickstep, Wingman) are ready again this
+ *  round (ms), keyed by player id and ability. */
+const abilityReadyAt = new Map<string, Map<string, number>>();
+/** Slack on the server's cooldown check for network jitter: a dash sent a touch early still counts. */
+const COOLDOWN_SLACK_MS = 300;
 
 /** Spend one use of an ability; false once its uses for the round are gone. */
 function spendUse(c: Client, ability: AbilityId) {
@@ -495,10 +501,10 @@ function firePlaced(matchId: string, trap: PlacedTrap, victim: Client, fromX: nu
     if (member) send(member, { t: 'trapFired', id: trap.id, kind: trap.kind, x: trap.x, y: trap.y, victim: s.id });
   }
   if (trap.kind === 'magnet') {
-    // Yanks the diamonds out of every Runner's hands nearby (Mule's Steady Carry holds on).
+    // Yanks a diamond out of every Runner's hands nearby.
     for (const id of matches.get(matchId) ?? []) {
       const c = clients.get(id);
-      if (!c || id === saboteurs.get(matchId) || (c.state.character === 'zoya' && CHARACTER_INFO.zoya.runner === 'steadyCarry')) continue;
+      if (!c || id === saboteurs.get(matchId)) continue;
       if (deckOf(c) === onDeck(matchId, trap.deck) && Math.hypot(c.state.x - trap.x, c.state.y - trap.y) <= MAGNET_REACH) dropDiamond(matchId, id, trap.x, trap.y + 10);
     }
   } else if (DROPS_DIAMOND.has(trap.kind)) dropDiamond(matchId, s.id, knockback?.x ?? s.x, knockback?.y ?? s.y);
@@ -560,7 +566,7 @@ function leaveMatch(c: Client) {
   const match = matches.get(c.room);
   if (!match) return;
   const matchId = c.room;
-  dropDiamond(matchId, c.state.id, c.state.x, c.state.y);
+  dropDiamond(matchId, c.state.id, c.state.x, c.state.y, true);
   dropKeycard(matchId, c);
   match.delete(c.state.id);
   for (const id of match) {
@@ -600,6 +606,13 @@ function endMatch(matchId: string) {
   vaults.delete(matchId);
   phases.delete(matchId);
   abilityUses.delete(matchId);
+  abilityReadyAt.delete(matchId);
+  wingmen.delete(matchId);
+  shields.delete(matchId);
+  cloneCharges.delete(matchId);
+  clonesOut.delete(matchId);
+  for (const m of mends.get(matchId)?.values() ?? []) clearInterval(m.timer);
+  mends.delete(matchId);
   series.delete(matchId);
   matchModes.delete(matchId);
   hunts.delete(matchId);
@@ -696,12 +709,27 @@ function startRound(matchId: string) {
   doorJamReadyAt.set(matchId, 0);
   doorLocks.set(matchId, new Map());
   abilityUses.set(matchId, new Map());
+  abilityReadyAt.set(matchId, new Map());
+  wingmen.set(matchId, new Map());
+  // Rattle's Shield starts every heist round charged.
+  const roundShields = new Map<string, Shield>();
+  if (!isHideSeek(matchId)) for (const c of crew) if (c.state.id !== saboteur && CHARACTER_INFO[c.state.character].runner === 'shield') roundShields.set(c.state.id, { up: true, banked: 0 });
+  shields.set(matchId, roundShields);
+  // Latch starts every heist round with both clone charges.
+  const roundCharges = new Map<string, CloneCharge>();
+  if (!isHideSeek(matchId)) for (const c of crew) if (c.state.id !== saboteur && CHARACTER_INFO[c.state.character].runner === 'clone') roundCharges.set(c.state.id, { charges: CLONE.charges, banked: 0 });
+  cloneCharges.set(matchId, roundCharges);
+  clonesOut.set(matchId, new Set());
+  for (const m of mends.get(matchId)?.values() ?? []) clearInterval(m.timer);
+  mends.set(matchId, new Map());
   sr.nextAt = null;
   for (const c of crew) {
     send(c, matchMsg(c, matchId));
     send(c, diamondsMsg(c, matchId));
     const key = keycardMsg(c, matchId);
     if (key) send(c, key);
+    for (const msg of shieldMsgs(matchId)) send(c, msg);
+    sendCharges(c);
   }
   console.log(`${matchId}: round ${sr.round + 1}/${sr.rounds} on ${MAPS[map].name}, Saboteur ${clients.get(saboteur)?.state.name}`);
 }
@@ -1039,7 +1067,8 @@ function handle(c: Client, msg: ClientMsg) {
       s.moving = msg.moving;
       s.sprint = msg.sprint;
       // The server knows who holds a diamond; a Runner knocked out drops theirs.
-      const held = c.room !== 'lobby' ? carrierOf(vaults.get(c.room), s.id) : undefined;
+      const carried = c.room !== 'lobby' ? carriedBy(vaults.get(c.room), s.id) : [];
+      const held = carried.find((d) => d.kind === 'red') ?? carried[0];
       s.carrying = !!held;
       const hpBefore = s.hp;
       const claimedHp = Math.max(0, Math.min(MAX_HP, Number(msg.hp) || 0));
@@ -1054,7 +1083,7 @@ function handle(c: Client, msg: ClientMsg) {
       // Heists: sprinting is loud. The Saboteur sees a ring where it happened.
       if (heistRunner && s.hp > 0 && msg.sprint && msg.moving && phases.get(c.room)?.phase === 'live') makeNoise(c, 'step');
       s.stunned = !!msg.stunned;
-      if (held && s.hp === 0) dropDiamond(c.room, s.id, s.x, s.y);
+      if (held && s.hp === 0) dropDiamond(c.room, s.id, s.x, s.y, true);
       const hunt = hunts.get(c.room);
       if (hunt && saboteurs.get(c.room) !== s.id) {
         // Hide & Seek: in a hiding place you stay put; on the gangway at the end you get out;
@@ -1155,7 +1184,7 @@ function handle(c: Client, msg: ClientMsg) {
     case 'search': {
       // A Runner who held E next to a piece of furniture: is a diamond in there?
       const vault = vaults.get(c.room);
-      if (!vault || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || carrierOf(vault, s.id) || s.hp <= 0) break;
+      if (!vault || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || handsFull(vault, c) || s.hp <= 0) break;
       const spot = spotsOf(c.room).find((x) => x.id === msg.spot && spotDeck(c.room, x) === deckOf(c));
       const now = Date.now();
       // A Fake Loot chest looks like somewhere to search. It isn't.
@@ -1189,7 +1218,7 @@ function handle(c: Client, msg: ClientMsg) {
     case 'pickup': {
       const vault = vaults.get(c.room);
       const d = vault?.diamonds.find((x) => x.id === msg.id);
-      if (!vault || !d || d.place.at !== 'floor' || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || carrierOf(vault, s.id) || s.hp <= 0) break;
+      if (!vault || !d || d.place.at !== 'floor' || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || handsFull(vault, c) || s.hp <= 0) break;
       if (onDeck(c.room, d.place.deck) !== deckOf(c) || Math.hypot(d.place.x - s.x, d.place.y - s.y) > PICKUP_REACH + 10) break;
       d.place = { at: 'carried', by: s.id };
       sendDiamonds(c.room);
@@ -1223,28 +1252,60 @@ function handle(c: Client, msg: ClientMsg) {
       break;
     }
     case 'bank': {
-      // Carrying a diamond into the getaway banks it; enough banked wins the heist.
+      // Carrying diamonds into the getaway banks them (all of them, for Mule); enough banked wins the heist.
       const vault = vaults.get(c.room);
-      const d = vault && carrierOf(vault, s.id);
+      const carried = carriedBy(vault, s.id);
       const g = MAPS[deckOf(c)].getaway;
-      if (!vault || !d || phases.get(c.room)?.phase !== 'live' || s.hp <= 0) break;
+      if (!vault || !carried.length || phases.get(c.room)?.phase !== 'live' || s.hp <= 0) break;
       if (s.x < g.x * TILE || s.x > (g.x + g.w) * TILE || s.y < g.y * TILE || s.y > (g.y + g.h) * TILE) break;
-      d.place = { at: 'banked', by: s.id };
-      if (d.kind === 'cursed') {
+      for (const d of carried) {
+        d.place = { at: 'banked', by: s.id };
+        vault.banked += valueOf(d);
+      }
+      // The new count first, so the pop-up that follows shows it.
+      sendDiamonds(c.room);
+      if (carried.some((d) => d.kind !== 'cursed')) announce(c.room, 'banked', c, 'the getaway');
+      if (carried.some((d) => d.kind === 'cursed')) {
         // A fake. It's worth nothing, and the alarm goes off: every trap is ready again.
         for (const [id, trap] of trapState.get(c.room) ?? []) {
           if (trap.firedAt == null || (trap.activeUntil !== undefined && Date.now() < trap.activeUntil)) continue;
           resetTrap(c.room, id, trap);
         }
-        sendDiamonds(c.room);
         announce(c.room, 'alarm', c, 'the getaway');
+      }
+      // Rattle's broken Shield counts real diamonds she banks toward coming back.
+      const shield = shields.get(c.room)?.get(s.id);
+      const real = carried.filter((d) => d.kind !== 'cursed').length;
+      if (shield && !shield.up && real) {
+        shield.banked += real;
+        const back = shield.banked >= RECHARGE_BANKS;
+        if (back) [shield.up, shield.banked] = [true, 0];
+        sendShield(c.room, s.id, back ? 'recharged' : undefined);
+      }
+      // Latch's spent clone charges refill once she's banked enough real diamonds.
+      const charge = cloneCharges.get(c.room)?.get(s.id);
+      if (charge && charge.charges < CLONE.charges && real) {
+        charge.banked += real;
+        if (charge.banked >= RECHARGE_BANKS) [charge.charges, charge.banked] = [CLONE.charges, 0];
+        sendCharges(c);
+      }
+      if (vault.banked >= vault.need) finish(c.room, 'runners');
+      break;
+    }
+    case 'mendStop':
+      endMend(c.room, s.id);
+      break;
+    case 'shieldHit': {
+      // Rattle's game absorbed a hit with the Shield: it breaks, if it was up (a repeat is ignored).
+      const shield = shields.get(c.room)?.get(s.id);
+      if (!shield || phases.get(c.room)?.phase !== 'live' || s.hp <= 0) break;
+      if (!shield.up) {
+        sendShield(c.room, s.id);
         break;
       }
-      vault.banked += valueOf(d);
-      // The new count first, so the pop-up that follows shows it.
-      sendDiamonds(c.room);
-      announce(c.room, 'banked', c, 'the getaway');
-      if (vault.banked >= vault.need) finish(c.room, 'runners');
+      shield.up = false;
+      shield.banked = 0;
+      sendShield(c.room, s.id, 'broke');
       break;
     }
     case 'portal':
@@ -1443,16 +1504,16 @@ function handle(c: Client, msg: ClientMsg) {
       break;
     }
     case 'handoff': {
-      // A Runner passes their diamond to an empty-handed teammate right next to them.
+      // A Runner passes a diamond to a teammate right next to them with a free hand.
       const vault = vaults.get(c.room);
       const target = clients.get(msg.target);
       const sab = saboteurs.get(c.room);
       const d = carrierOf(vault, s.id);
       if (!vault || !d || !target || target === c || target.room !== c.room || !sab || sab === s.id || msg.target === sab || isHideSeek(c.room)) break;
-      if (phases.get(c.room)?.phase !== 'live' || s.hp <= 0 || target.state.hp <= 0 || carrierOf(vault, target.state.id) || deckOf(target) !== deckOf(c)) break;
+      if (phases.get(c.room)?.phase !== 'live' || s.hp <= 0 || target.state.hp <= 0 || handsFull(vault, target) || deckOf(target) !== deckOf(c)) break;
       if (Math.hypot(target.state.x - s.x, target.state.y - s.y) > HANDOFF_REACH + 16) break;
       d.place = { at: 'carried', by: target.state.id };
-      s.carrying = false;
+      s.carrying = !!carrierOf(vault, s.id);
       target.state.carrying = true;
       sendDiamonds(c.room);
       for (const id of matches.get(c.room) ?? []) {
@@ -1500,27 +1561,12 @@ function handle(c: Client, msg: ClientMsg) {
       const near = Number.isFinite(msg.x) && Number.isFinite(msg.y) && Math.hypot(msg.x - s.x, msg.y - s.y) <= 48;
       const [jx, jy] = near ? [msg.x, msg.y] : [s.x, s.y];
       const deck = deckOf(c);
-      const placed = [...(placedTraps.get(c.room)?.values() ?? [])].filter((t) => onDeck(c.room, t.deck) === deck && Math.hypot(t.x - jx, t.y - jy) <= JAM_REACH);
-      const fixed = trapsOn(c.room, deck).filter((t) => Math.hypot(t.x - jx, t.y - jy) <= JAM_REACH);
+      const { placed, fixed } = trapsAround(c.room, deck, jx, jy, JAM_REACH);
       if (!states || (!placed.length && !fixed.length) || !spendUse(c, 'trapJam')) {
         send(c, { t: 'jam', id: '', ms: 0 });
         break;
       }
-      for (const t of [...placed, ...fixed]) {
-        const st = states.get(t.id);
-        if (!st) continue;
-        st.jammedUntil = now + JAM_MS;
-        st.tripwired = false;
-        st.activeFrom = undefined;
-        st.activeUntil = undefined;
-        st.pendingLaser = undefined;
-      }
-      for (const id of matches.get(c.room) ?? []) {
-        const member = clients.get(id);
-        if (!member) continue;
-        for (const t of fixed) send(member, { t: 'jam', id: t.id, ms: JAM_MS });
-        for (const t of placed) send(member, { t: 'jam', id: t.id, ms: JAM_MS, ...(member === c || id === saboteurs.get(c.room) ? { trap: t } : {}) });
-      }
+      jamTraps(c.room, placed, fixed, now + JAM_MS, (id) => id === s.id || id === saboteurs.get(c.room));
       break;
     }
     case 'map':
@@ -1633,6 +1679,33 @@ function handle(c: Client, msg: ClientMsg) {
         break;
       }
       if (msg.ability === 'overclock') break;
+      if (msg.ability === 'empKnife') {
+        throwKnife(c, msg.facing);
+        break;
+      }
+      if (msg.ability === 'mend') {
+        startMend(c);
+        break;
+      }
+      if (msg.ability === 'clone') {
+        launchClone(c, msg.facing);
+        break;
+      }
+      if (msg.ability === 'wingman') {
+        // Patch's drone: the server flies it and does the search (everyone sees it go).
+        launchWingman(c, typeof msg.spot === 'string' ? msg.spot : '');
+        break;
+      }
+      if (msg.ability === 'quickstep') {
+        // Zip's dash: hers only, as a heist Runner, while the heist is live and she's up, once
+        // its cooldown is over and with uses left this round. (Where she ends up is her own
+        // position report, like all movement; this decides whether the dash counts and is shown.)
+        const now = Date.now();
+        const ready = abilityReadyAt.get(c.room);
+        if (CHARACTER_INFO[s.character].runner !== 'quickstep' || isHideSeek(c.room) || phases.get(c.room)?.phase !== 'live' || s.hp <= 0) break;
+        if (!ready || now < (ready.get(`${s.id}:quickstep`) ?? 0) - COOLDOWN_SLACK_MS || !spendUse(c, 'quickstep')) break;
+        ready.set(`${s.id}:quickstep`, now + ABILITIES.quickstep.cooldown * 1000);
+      }
       if (msg.ability === 'firstAid') {
         // First Aid heals me (or, just after, a teammate: see 'heal'). Spent here, once.
         if (!spendUse(c, 'firstAid')) break;
@@ -1688,6 +1761,10 @@ const spotRoomOf = (matchId: string, spot: HidingSpot) => {
 /** A room's key for the two-per-room rule: on the ship, rooms on different decks are different. */
 const roomKey = (matchId: string, spot: HidingSpot) => `${spotDeck(matchId, spot)}:${spotRoomOf(matchId, spot)}`;
 const carrierOf = (vault: Vault | undefined, playerId: string) => vault?.diamonds.find((d) => d.place.at === 'carried' && d.place.by === playerId);
+/** Every diamond this player is holding (more than one only for Mule). */
+const carriedBy = (vault: Vault | undefined, playerId: string) => vault?.diamonds.filter((d) => d.place.at === 'carried' && d.place.by === playerId) ?? [];
+/** No room for another diamond: one for most Runners, two for Mule. */
+const handsFull = (vault: Vault, c: Client) => carriedBy(vault, c.state.id).length >= carryCapacity(c.state.character);
 /** Diamonds hidden in a room, not counting `except`. */
 function roomCount(matchId: string, vault: Vault, room: string, except?: Diamond) {
   return vault.diamonds.filter((d) => d !== except && d.place.at === 'spot' && roomKey(matchId, spotsOf(matchId).find((x) => x.id === (d.place as { spot: string }).spot)!) === room).length;
@@ -1813,6 +1890,437 @@ function knockOut(c: Client, held: Diamond | undefined) {
 }
 
 /** Heists: a noise only the Saboteur hears (a ring where it happened). Sprinting at most every 600 ms. */
+// ---------- Shield (Rattle) ----------
+
+/** Rattle's Shield this round: up, or broken with diamonds banked toward recharging it. */
+interface Shield {
+  up: boolean;
+  banked: number;
+}
+/** Per match: each Rattle's Shield this round, by player id. */
+const shields = new Map<string, Map<string, Shield>>();
+
+const shieldMsg = (id: string, sh: Shield, change?: 'broke' | 'recharged'): ServerMsg => ({ t: 'shield', id, up: sh.up, banked: sh.banked, need: RECHARGE_BANKS, ...(change ? { change } : {}) });
+const shieldMsgs = (matchId: string) => [...(shields.get(matchId) ?? [])].map(([id, sh]) => shieldMsg(id, sh));
+
+/** Everyone sees Rattle's Shield (the Saboteur too). */
+function sendShield(matchId: string, id: string, change?: 'broke' | 'recharged') {
+  const sh = shields.get(matchId)?.get(id);
+  if (!sh) return;
+  for (const mid of matches.get(matchId) ?? []) {
+    const member = clients.get(mid);
+    if (member) send(member, shieldMsg(id, sh, change));
+  }
+}
+
+// ---------- Trap jams (Trap Jam, Scout's EMP Knife) ----------
+
+/** The placed and fixed traps on a deck within `reach` of (x, y). */
+function trapsAround(matchId: string, deck: MapId, x: number, y: number, reach: number) {
+  const placed = [...(placedTraps.get(matchId)?.values() ?? [])].filter((t) => onDeck(matchId, t.deck) === deck && Math.hypot(t.x - x, t.y - y) <= reach);
+  const fixed = trapsOn(matchId, deck).filter((t) => Math.hypot(t.x - x, t.y - y) <= reach);
+  return { placed, fixed };
+}
+
+/**
+ * These traps can't fire until `until` (and anything pending is called off). Everyone is told;
+ * a placed trap's details go to those `shown` (they'll see it).
+ */
+function jamTraps(matchId: string, placed: PlacedTrap[], fixed: TrapSpot[], until: number, shown: (id: string) => boolean) {
+  const states = trapState.get(matchId);
+  for (const t of [...placed, ...fixed]) {
+    const st = states?.get(t.id);
+    if (!st) continue;
+    st.jammedUntil = until;
+    st.tripwired = false;
+    st.activeFrom = undefined;
+    st.activeUntil = undefined;
+    st.pendingLaser = undefined;
+  }
+  const ms = Math.max(0, until - Date.now());
+  for (const id of matches.get(matchId) ?? []) {
+    const member = clients.get(id);
+    if (!member) continue;
+    for (const t of fixed) send(member, { t: 'jam', id: t.id, ms });
+    for (const t of placed) send(member, { t: 'jam', id: t.id, ms, ...(shown(id) ? { trap: t } : {}) });
+  }
+}
+
+// ---------- EMP Knife (Scout) ----------
+
+let nextKnife = 1;
+
+/**
+ * Scout throws straight ahead: the knife flies until a wall, furniture or a closed door, or its
+ * range. Where it lands, every trap in the EMP's radius is off for 5 s, and hidden ones are
+ * shown to every Runner. A throw that hits nothing still counts.
+ */
+function throwKnife(c: Client, facing: unknown) {
+  const s = c.state;
+  const refuse = (reason: string) => send(c, { t: 'knifeRefused', reason });
+  const matchId = c.room;
+  const now = Date.now();
+  const ready = abilityReadyAt.get(matchId);
+  if (CHARACTER_INFO[s.character].runner !== 'empKnife' || isHideSeek(matchId) || saboteurs.get(matchId) === s.id || phases.get(matchId)?.phase !== 'live' || s.hp <= 0 || !ready) return refuse('Not right now');
+  if (now < (ready.get(`${s.id}:empKnife`) ?? 0) - COOLDOWN_SLACK_MS) return refuse('Not ready yet');
+  if (!spendUse(c, 'empKnife')) return refuse('No uses left');
+  ready.set(`${s.id}:empKnife`, now + ABILITIES.empKnife.cooldown * 1000);
+  const dir: Facing = typeof facing === 'string' && facing in STEPS ? (facing as Facing) : s.facing;
+  const [dx, dy] = STEPS[dir];
+  const deck = deckOf(c);
+  const [fx, fy] = [Math.round(s.x), Math.round(s.y)];
+  let len = 0;
+  while (len + 4 <= EMP.range && !blocksShot(matchId, deck, fx + dx * (len + 4), fy - 8 + dy * (len + 4))) len += 4;
+  const to: [number, number] = [fx + dx * len, fy + dy * len];
+  const ms = Math.round((len / EMP.speed) * 1000);
+  const id = `knife${nextKnife++}`;
+  for (const mid of matches.get(matchId) ?? []) {
+    const member = clients.get(mid);
+    if (member) send(member, { t: 'knife', id, by: s.id, deck, from: [fx, fy], to, ms });
+  }
+  setTimeout(() => {
+    if (phases.get(matchId)?.phase !== 'live') return;
+    const { placed, fixed } = trapsAround(matchId, deck, to[0], to[1], EMP.radius);
+    const sab = saboteurs.get(matchId);
+    // Hidden traps it caught are shown to the whole crew (and stay known, like any reveal).
+    for (const t of placed) {
+      const runtime = trapState.get(matchId)?.get(t.id);
+      for (const mid of matches.get(matchId) ?? []) if (mid !== sab && runtime) (runtime.revealedTo ??= new Set()).add(mid);
+    }
+    jamTraps(matchId, placed, fixed, Date.now() + EMP.ms, () => true);
+    for (const mid of matches.get(matchId) ?? []) {
+      const member = clients.get(mid);
+      if (member) send(member, { t: 'emp', id, by: s.id, deck, x: to[0], y: to[1], radius: EMP.radius, ms: EMP.ms, count: placed.length + fixed.length });
+    }
+  }, ms);
+}
+
+// ---------- Mend (Switch) ----------
+
+/** Switch's Mend in progress: where she stood, when it ends, the tick timer, HP handed out. */
+interface Mend {
+  x: number;
+  y: number;
+  until: number;
+  timer: ReturnType<typeof setInterval>;
+  healed: number;
+}
+/** Per match: Mends in progress, by Switch's player id. */
+const mends = new Map<string, Map<string, Mend>>();
+
+/** Teammates Switch can heal from (x, y): Runners up and hurt, in reach, on her deck. Never herself. */
+function mendTargets(matchId: string, by: Client) {
+  const sab = saboteurs.get(matchId);
+  return [...(matches.get(matchId) ?? [])]
+    .map((id) => clients.get(id))
+    .filter((t): t is Client => !!t && t !== by && t.state.id !== sab && t.state.hp > 0 && t.state.hp < MAX_HP && deckOf(t) === deckOf(by))
+    .filter((t) => Math.hypot(t.state.x - by.state.x, t.state.y - by.state.y) <= MEND.reach);
+}
+
+function startMend(c: Client) {
+  const s = c.state;
+  const refuse = (reason: string) => send(c, { t: 'mendRefused', reason });
+  const matchId = c.room;
+  const now = Date.now();
+  const ready = abilityReadyAt.get(matchId);
+  const running = mends.get(matchId);
+  if (CHARACTER_INFO[s.character].runner !== 'mend' || isHideSeek(matchId) || saboteurs.get(matchId) === s.id || phases.get(matchId)?.phase !== 'live' || s.hp <= 0 || s.stunned || !ready || !running) return refuse('Not right now');
+  if (running.has(s.id) || now < (ready.get(`${s.id}:mend`) ?? 0) - COOLDOWN_SLACK_MS) return refuse('Not ready yet');
+  if ((abilityUses.get(matchId)?.get(`${s.id}:mend`) ?? 0) >= (ABILITIES.mend.perRound ?? Infinity)) return refuse('No uses left');
+  if (!mendTargets(matchId, c).length) return refuse('Nobody hurt in reach');
+  spendUse(c, 'mend');
+  ready.set(`${s.id}:mend`, now + ABILITIES.mend.cooldown * 1000);
+  const m: Mend = { x: s.x, y: s.y, until: now + MEND.ms, healed: 0, timer: setInterval(() => tickMend(matchId, c, m), MEND.tickMs) };
+  running.set(s.id, m);
+  for (const id of matches.get(matchId) ?? []) {
+    const member = clients.get(id);
+    if (member) send(member, { t: 'mend', by: s.id, ms: MEND.ms });
+  }
+}
+
+/** Every half second: a little health to each teammate in reach, unless Switch moved, went down or got stunned. */
+function tickMend(matchId: string, c: Client, m: Mend) {
+  const s = c.state;
+  if (mends.get(matchId)?.get(s.id) !== m) return clearInterval(m.timer);
+  if (c.room !== matchId || s.hp <= 0 || s.stunned || phases.get(matchId)?.phase !== 'live' || Math.hypot(s.x - m.x, s.y - m.y) > MEND.still) return endMend(matchId, s.id);
+  const heals: [string, number][] = [];
+  for (const t of mendTargets(matchId, c)) {
+    const amount = Math.min(MEND.perTick, MAX_HP - t.state.hp);
+    // Their game may claim the new total (the same grant as any heal; it never revives).
+    grantHp(t, t.state.hp + amount);
+    heals.push([t.state.id, amount]);
+    m.healed += amount;
+  }
+  if (heals.length) {
+    for (const id of matches.get(matchId) ?? []) {
+      const member = clients.get(id);
+      if (member) send(member, { t: 'mendTick', by: s.id, heals });
+    }
+  }
+  if (Date.now() >= m.until - 50) endMend(matchId, s.id);
+}
+
+function endMend(matchId: string, by: string) {
+  const m = mends.get(matchId)?.get(by);
+  if (!m) return;
+  clearInterval(m.timer);
+  mends.get(matchId)!.delete(by);
+  for (const id of matches.get(matchId) ?? []) {
+    const member = clients.get(id);
+    if (member) send(member, { t: 'mendEnd', by, healed: m.healed });
+  }
+}
+
+// ---------- Clone (Latch) ----------
+
+/** Latch's clone charges this round, and real diamonds banked toward refilling them. */
+interface CloneCharge {
+  charges: number;
+  banked: number;
+}
+/** Per match: each Latch's charges this round, by player id. */
+const cloneCharges = new Map<string, Map<string, CloneCharge>>();
+/** Per match: who has a clone running right now. */
+const clonesOut = new Map<string, Set<string>>();
+let nextClone = 1;
+const STEPS: Record<Facing, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+
+function sendCharges(c: Client) {
+  const ch = cloneCharges.get(c.room)?.get(c.state.id);
+  if (ch) send(c, { t: 'cloneCharges', charges: ch.charges, banked: ch.banked, need: RECHARGE_BANKS });
+}
+
+/**
+ * Latch's clone runs straight ahead (no turning, no searching) until a wall, furniture or a
+ * closed door, or its full range. Placed traps within a tile of its path are shown to every
+ * Runner as it passes them; none of them go off.
+ */
+function launchClone(c: Client, facing: unknown) {
+  const s = c.state;
+  const refuse = (reason: string) => send(c, { t: 'cloneRefused', reason });
+  const matchId = c.room;
+  const ch = cloneCharges.get(matchId)?.get(s.id);
+  const out = clonesOut.get(matchId);
+  if (!ch || !out || phases.get(matchId)?.phase !== 'live' || s.hp <= 0) return refuse('Not right now');
+  if (out.has(s.id)) return refuse('Your clone is still running');
+  if (ch.charges <= 0) return refuse(`Bank ${RECHARGE_BANKS - ch.banked} more to recharge`);
+  const dir: Facing = typeof facing === 'string' && facing in STEPS ? (facing as Facing) : s.facing;
+  const [dx, dy] = STEPS[dir];
+  const deck = deckOf(c);
+  const [fx, fy] = [Math.round(s.x), Math.round(s.y)];
+  let len = 0;
+  while (len + 4 <= CLONE.range && !blocksShot(matchId, deck, fx + dx * (len + 4), fy - 4 + dy * (len + 4))) len += 4;
+  if (len < 16) return refuse('No room to run that way');
+  ch.charges--;
+  sendCharges(c);
+  const id = `clone${nextClone++}`;
+  const to: [number, number] = [fx + dx * len, fy + dy * len];
+  const ms = Math.round((len / CLONE.speed) * 1000);
+  out.add(s.id);
+  for (const mid of matches.get(matchId) ?? []) {
+    const member = clients.get(mid);
+    if (member) send(member, { t: 'clone', id, by: s.id, deck, facing: dir, from: [fx, fy], to, ms });
+  }
+  let found = 0;
+  for (const trap of placedTraps.get(matchId)?.values() ?? []) {
+    if (onDeck(matchId, trap.deck) !== deck || distanceToSegment(trap.x, trap.y, fx, fy, to[0], to[1]) > CLONE.scan) continue;
+    const along = Math.max(0, (trap.x - fx) * dx + (trap.y - fy) * dy);
+    setTimeout(() => {
+      // Still there (not set off, the round still on): every Runner learns of it.
+      if (placedTraps.get(matchId)?.get(trap.id) !== trap || phases.get(matchId)?.phase !== 'live') return;
+      found++;
+      const runtime = trapState.get(matchId)?.get(trap.id);
+      for (const mid of matches.get(matchId) ?? []) {
+        const member = clients.get(mid);
+        if (!member || mid === saboteurs.get(matchId)) continue;
+        if (runtime) (runtime.revealedTo ??= new Set()).add(mid);
+        send(member, { t: 'trapReveal', trap, clone: id });
+      }
+    }, Math.round((Math.min(along, len) / CLONE.speed) * 1000));
+  }
+  setTimeout(() => {
+    if (clonesOut.get(matchId) !== out) return; // the round moved on
+    out.delete(s.id);
+    for (const mid of matches.get(matchId) ?? []) {
+      const member = clients.get(mid);
+      if (member) send(member, { t: 'cloneDone', id, by: s.id, found });
+    }
+  }, ms + 50);
+}
+
+// ---------- Wingman (Patch) ----------
+
+/** A Wingman out on a search: whose, which furniture, and where it hovers to search it. */
+interface Wingman {
+  id: string;
+  by: string;
+  spot: string;
+  deck: MapId;
+  x: number;
+  y: number;
+}
+/** Per match: the Wingmen out this round, by id. */
+const wingmen = new Map<string, Map<string, Wingman>>();
+let nextWingman = 1;
+
+/**
+ * The Wingman's route across a deck, as art px corners, from (x, y) to the first open cell
+ * `arrived` accepts; null if there's none within a flight. It flies over traps and slips under
+ * doors, except a vault door that's still locked.
+ */
+function flightPath(matchId: string, deck: MapId, x: number, y: number, arrived: (x: number, y: number) => boolean): [number, number][] | null {
+  const { cell, width, height } = mapData[deck].collision;
+  const solid = mapCollision[deck];
+  const key = keycards.get(matchId);
+  const doors = mapData[deck].doors as { id: string; cells?: number[] }[];
+  const doorCells = new Set(doors.flatMap((d) => d.cells ?? []));
+  const locked = new Set(doors.filter((d) => key && !key.unlocked && key.deck === deck && key.doors.includes(d.id)).flatMap((d) => d.cells ?? []));
+  const open = (i: number) => !locked.has(i) && (solid[i] === 0 || doorCells.has(i));
+  const sx = Math.floor(x / cell);
+  const sy = Math.floor(y / cell);
+  if (sx < 0 || sy < 0 || sx >= width || sy >= height) return null;
+  const centre = (i: number): [number, number] => [(i % width) * cell + cell / 2, Math.floor(i / width) * cell + cell / 2];
+  const from = new Int32Array(width * height).fill(-1);
+  const start = sy * width + sx;
+  from[start] = start;
+  let frontier = [start];
+  let goal = -1;
+  // Breadth first, eight ways (no cutting corners), a flight's worth of cells at most.
+  for (let step = 0; frontier.length && goal < 0 && step <= WINGMAN_MAX_PATH / cell; step++) {
+    const next: number[] = [];
+    for (const i of frontier) {
+      if (arrived(...centre(i))) {
+        goal = i;
+        break;
+      }
+      const cx = i % width;
+      const cy = Math.floor(i / width);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const n = ny * width + nx;
+        if (from[n] >= 0 || !open(n)) continue;
+        if (dx && dy && (!open(cy * width + nx) || !open(ny * width + cx))) continue;
+        from[n] = i;
+        next.push(n);
+      }
+    }
+    frontier = next;
+  }
+  if (goal < 0) return null;
+  const cells = [goal];
+  while (cells[cells.length - 1] !== start) cells.push(from[cells[cells.length - 1]]);
+  cells.reverse();
+  // Corners only: drop the cells where the way doesn't turn.
+  const path: [number, number][] = [[Math.round(x), Math.round(y)]];
+  for (let k = 1; k < cells.length; k++) {
+    const turns = k === cells.length - 1 || cells[k] - cells[k - 1] !== cells[k + 1] - cells[k];
+    if (turns) path.push(centre(cells[k]));
+  }
+  // Already in reach: it pops up and drops straight onto the spot.
+  if (path.length === 1) path.push(centre(goal));
+  let length = 0;
+  for (let k = 1; k < path.length; k++) length += Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]);
+  return length <= WINGMAN_MAX_PATH ? path : null;
+}
+
+/** Patch sends the Wingman to search `target`: furniture, or a Fake Loot chest posing as it. */
+function launchWingman(c: Client, target: string) {
+  const s = c.state;
+  const refuse = (reason: string, spot?: string) => send(c, { t: 'wingmanRefused', reason, ...(spot ? { spot } : {}) });
+  const now = Date.now();
+  const ready = abilityReadyAt.get(c.room);
+  const out = wingmen.get(c.room);
+  const vault = vaults.get(c.room);
+  if (CHARACTER_INFO[s.character].runner !== 'wingman' || isHideSeek(c.room) || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || s.hp <= 0 || !ready || !out || !vault) return refuse('Not right now');
+  // One out at a time, and the cooldown (a few hundred ms early is network lag, not cheating).
+  if (now < (ready.get(`${s.id}:wingman`) ?? 0) - COOLDOWN_SLACK_MS || [...out.values()].some((w) => w.by === s.id)) return refuse('Wingman is busy');
+  if ((abilityUses.get(c.room)?.get(`${s.id}:wingman`) ?? 0) >= (ABILITIES.wingman.perRound ?? Infinity)) return refuse('No uses left');
+  const deck = deckOf(c);
+  const spot = spotsOf(c.room).find((x) => x.id === target && spotDeck(c.room, x) === deck);
+  const trap = placedTraps.get(c.room)?.get(target);
+  const decoy = trap?.kind === 'fakeLoot' && onDeck(c.room, trap.deck) === deck ? trap : undefined;
+  if (!spot && !decoy) return refuse('Nothing to search there');
+  if (spot && vault.searched.has(spot.id)) return refuse('Already searched');
+  if ([...out.values()].some((w) => w.spot === target)) return refuse('A Wingman is already on it');
+  const centre = spot ? spotCenter(spot) : decoy!;
+  if (Math.hypot(centre.x - s.x, centre.y - s.y) > WINGMAN_RANGE + 32) return refuse('Too far away');
+  // Hover where a Runner would stand to search it.
+  const path = flightPath(c.room, deck, s.x, s.y, spot ? (x, y) => distToSpot(spot, x, y) <= SEARCH_REACH : (x, y) => Math.hypot(decoy!.x - x, decoy!.y - y) <= SEARCH_REACH + 12);
+  if (!path) return refuse("Wingman can't get there", target);
+  spendUse(c, 'wingman');
+  ready.set(`${s.id}:wingman`, now + ABILITIES.wingman.cooldown * 1000);
+  let length = 0;
+  for (let k = 1; k < path.length; k++) length += Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]);
+  const travelMs = Math.round((length / WINGMAN_SPEED) * 1000);
+  const [x, y] = path[path.length - 1];
+  const w: Wingman = { id: `wing${nextWingman++}`, by: s.id, spot: target, deck, x, y };
+  out.set(w.id, w);
+  for (const id of matches.get(c.room) ?? []) {
+    const member = clients.get(id);
+    if (member) send(member, { t: 'wingman', id: w.id, by: s.id, spot: target, deck, path, travelMs, searchMs: SEARCH_MS });
+  }
+  const matchId = c.room;
+  setTimeout(() => finishWingman(matchId, w), travelMs + SEARCH_MS);
+}
+
+/**
+ * The Wingman has searched for as long as a Runner holds E: it does the same search, but it
+ * can't carry, so a diamond (or the keycard) drops out onto the floor where it hovers. It fizzles
+ * if Patch went down, or the furniture was searched (or the chest set off) while it flew.
+ */
+function finishWingman(matchId: string, w: Wingman) {
+  const out = wingmen.get(matchId);
+  if (out?.get(w.id) !== w) return; // the round moved on
+  out.delete(w.id);
+  const vault = vaults.get(matchId);
+  if (!vault || phases.get(matchId)?.phase !== 'live') return;
+  const done = (result: WingmanResult, reason?: string) => {
+    for (const id of matches.get(matchId) ?? []) {
+      const member = clients.get(id);
+      if (member) send(member, { t: 'wingmanDone', id: w.id, by: w.by, spot: w.spot, result, x: w.x, y: w.y, ...(reason ? { reason } : {}) });
+    }
+  };
+  const owner = clients.get(w.by);
+  if (!owner || owner.room !== matchId || owner.state.hp <= 0) return done('fizzled', 'Patch went down');
+  const trap = placedTraps.get(matchId)?.get(w.spot);
+  if (trap?.kind === 'fakeLoot') {
+    // A decoy: it blows up on the drone, not on Patch, and everyone sees it's a fake.
+    placedTraps.get(matchId)!.delete(trap.id);
+    for (const id of matches.get(matchId) ?? []) {
+      const member = clients.get(id);
+      if (!member) continue;
+      send(member, { t: 'trapFired', id: trap.id, kind: trap.kind, x: trap.x, y: trap.y, victim: w.by });
+      send(member, { t: 'unplace', id: trap.id });
+    }
+    return done('decoy');
+  }
+  const spot = spotsOf(matchId).find((x) => x.id === w.spot);
+  if (!spot) return done('fizzled', 'The chest was already set off');
+  if (vault.searched.has(spot.id)) return done('fizzled', 'Someone searched it first');
+  // The Saboteur hears it rummaging, like any search.
+  const sab = clients.get(saboteurs.get(matchId) ?? '');
+  if (sab) send(sab, { t: 'noise', x: Math.round(w.x), y: Math.round(w.y), kind: 'search', deck: w.deck });
+  const key = keycards.get(matchId);
+  if (key && key.spot === spot.id && !key.holder && !key.floor && !key.unlocked) {
+    // The keycard first, as for a Runner; a diamond in there too stays for the next search.
+    key.spot = '';
+    key.floor = { x: Math.round(w.x), y: Math.round(w.y) };
+    done('keycard');
+    sendKeycard(matchId);
+    return;
+  }
+  const d = vault.diamonds.find((x) => x.place.at === 'spot' && x.place.spot === spot.id);
+  if (d) {
+    d.place = { at: 'floor', x: Math.round(w.x), y: Math.round(w.y), deck: w.deck };
+    announce(matchId, 'found', owner, spotRoomOf(matchId, spot));
+  }
+  vault.searched.add(spot.id);
+  done(d ? 'diamond' : 'empty');
+  sendDiamonds(matchId);
+}
+
 function makeNoise(c: Client, kind: 'step' | 'door' | 'search') {
   const now = Date.now();
   if (kind === 'step' && now - (c.lastNoise ?? 0) < 600) return;
@@ -1841,16 +2349,22 @@ function announce(matchId: string, kind: 'found' | 'banked' | 'dropped' | 'alarm
   }
 }
 
-/** A Runner loses their diamond: it lands on the floor where they were. */
-function dropDiamond(matchId: string, playerId: string, x: number, y: number) {
+/**
+ * A Runner loses a diamond (or, going down or leaving, `all` of them): it lands on the floor
+ * where they were. A second one lands a little way off, so each can be grabbed.
+ */
+function dropDiamond(matchId: string, playerId: string, x: number, y: number, all = false) {
   const vault = vaults.get(matchId);
-  const d = carrierOf(vault, playerId);
-  if (!vault || !d) return;
+  const lost = carriedBy(vault, playerId).slice(0, all ? undefined : 1);
+  if (!vault || !lost.length) return;
   const c = clients.get(playerId);
   const deck = c ? deckOf(c) : matchMaps.get(matchId) ?? 'estate';
-  d.place = { at: 'floor', x, y, deck };
+  lost.forEach((d, i) => {
+    const off = i === 0 ? 0 : (i % 2 ? 12 : -12);
+    d.place = { at: 'floor', x: openFloor(deck, x + off, y, 4, 4) ? x + off : x, y, deck };
+  });
   if (c) {
-    c.state.carrying = false;
+    c.state.carrying = !!carrierOf(vault, playerId);
     const data = mapData[deck];
     const room = data.areas.names[data.areas.data[Math.floor(y / TILE) * data.width + Math.floor(x / TILE)]] ?? '';
     announce(matchId, 'dropped', c, room);
@@ -2026,6 +2540,8 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
     send(known, diamondsMsg(known, known.room));
     const key = keycardMsg(known, known.room);
     if (key) send(known, key);
+    for (const msg of shieldMsgs(known.room)) send(known, msg);
+    sendCharges(known);
     if (phases.get(known.room)?.phase === 'over') send(known, resultMsg(known.room));
     const sr = series.get(known.room);
     // Hide & Seek: who's out, my hiding place, the Seeker's gun.
