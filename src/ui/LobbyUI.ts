@@ -36,6 +36,8 @@ const NAV: { id: NavId; label: string; icon: IconName }[] = [
 ];
 /** Open seats listed under the players before the rest are summed up in one line. */
 const OPEN_SEATS_SHOWN = 3;
+/** Whether this browser last left the room panel open ('open') or folded. */
+const PANEL_KEY = 'vault-breakers-room-panel';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -62,6 +64,14 @@ export class LobbyUI {
   private startStatus = $('start-status');
   private partyTitle = $('party-title');
   private lobbyHint = $('lobby-hint');
+  /** The room panel folds down to a slim bar (code, crew, mode and map), so the garage shows. */
+  private panel = this.partyTitle.closest<HTMLElement>('.party-panel')!;
+  private crewStrip = document.createElement('div');
+  private panelToggle = document.createElement('button');
+  private compact = true;
+  /** Who was in the room and whether they were set, at the bar's last render (changes pop). */
+  private stripSeen = new Map<string, boolean>();
+  private stripCode = '';
   private abort = new AbortController();
   /** My room (from the server), and who I am in it. */
   private room: RoomInfo | null = null;
@@ -139,12 +149,35 @@ export class LobbyUI {
     this.roomBar.addEventListener('click', (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
       if (!b || !this.room) return;
-      if (b.dataset.copy) {
-        const text = b.dataset.copy === 'link' ? `${location.origin}/?room=${this.room.code}` : this.room.code;
-        void copyText(text).then((ok) => this.nudgeStart(ok ? (b.dataset.copy === 'link' ? 'Invite link copied: send it to your friends.' : `Code ${this.room!.code} copied.`) : `Couldn't copy: the code is ${this.room!.code}.`));
-      } else if (b.dataset.privacy && this.isHost) this.onRoomSettings({ private: !this.room.private });
+      if (b.dataset.copy) this.copyRoom(b.dataset.copy === 'link' ? 'link' : 'code');
+      else if (b.dataset.privacy && this.isHost) this.onRoomSettings({ private: !this.room.private });
       b.blur();
     }, opts);
+    // Folded, the panel is a slim bar: a face per crew member and a box per open seat, the mode
+    // and map, and COPY LINK. The arrow, or a click anywhere else on the bar, opens it.
+    this.panelToggle.type = 'button';
+    this.panelToggle.className = 'panel-toggle';
+    this.partyTitle.closest('.party-head')!.append(this.panelToggle);
+    this.panelToggle.addEventListener('click', () => {
+      this.setCompact(!this.compact, true);
+      this.panelToggle.blur();
+    }, opts);
+    this.crewStrip.className = 'crew-strip';
+    this.roomBar.before(this.crewStrip);
+    this.crewStrip.addEventListener('click', (e) => {
+      const copy = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-copy]');
+      if (copy) {
+        this.copyRoom('link');
+        copy.blur();
+      } else this.setCompact(false, true);
+    }, opts);
+    let folded = true;
+    try {
+      folded = localStorage.getItem(PANEL_KEY) !== 'open';
+    } catch {
+      // Storage can be blocked: the panel just starts folded.
+    }
+    this.setCompact(folded);
     // The room's size (host only).
     this.sizeRow.className = 'size-row';
     this.sizeRow.addEventListener('click', (e) => {
@@ -300,6 +333,30 @@ export class LobbyUI {
     return !!this.room && this.room.host === this.myId;
   }
 
+  /** Copy the room's code, or an invite link to it, and say so under START. */
+  private copyRoom(kind: 'code' | 'link') {
+    if (!this.room) return;
+    const code = this.room.code;
+    void copyText(kind === 'link' ? `${location.origin}/?room=${code}` : code).then((ok) =>
+      this.nudgeStart(ok ? (kind === 'link' ? 'Invite link copied: send it to your friends.' : `Code ${code} copied.`) : `Couldn't copy: the code is ${code}.`),
+    );
+  }
+
+  /** Fold the room panel down to its bar, or open it; `save`: the player chose, so remember it. */
+  private setCompact(compact: boolean, save = false) {
+    this.compact = compact;
+    this.panel.classList.toggle('compact', compact);
+    this.panelToggle.setAttribute('aria-expanded', String(!compact));
+    this.panelToggle.setAttribute('aria-label', compact ? 'Show the whole room panel' : 'Fold the room panel');
+    this.panelToggle.title = compact ? 'Show the whole room panel' : 'Fold the room panel';
+    if (!save) return;
+    try {
+      localStorage.setItem(PANEL_KEY, compact ? 'folded' : 'open');
+    } catch {
+      // Not remembered next time; that's fine.
+    }
+  }
+
   /**
    * My room, from the server: its code and who can join, the players (host crown, ready
    * ticks; the host can remove them), its size and mode, and the START / READY button.
@@ -347,6 +404,20 @@ export class LobbyUI {
     const hideSeekMap = room.mode === 'hideSeek';
     const map = hideSeekMap ? 'THE CRUISE SHIP' : this.mapName(room.map);
     this.partyStatus.innerHTML = `<span class="label">MAP</span><b class="map-pick">${esc(map)}</b>${host && !hideSeekMap ? '<button type="button" data-change-map>CHANGE</button>' : hideSeekMap ? '' : '<span class="note">host picks</span>'}`;
+    // The folded bar: a face per crew member (a green tick once set; amber while not; dim while
+    // away) and a dashed box per open seat. Whoever just arrived or just got set pops.
+    const faces = room.members.map((m) => {
+      const set = m.id === room.host || m.ready;
+      const was = this.stripSeen.get(m.id);
+      const pop = this.stripCode === room.code && (was === undefined || (set && !was));
+      const status = m.offline ? 'RECONNECTING' : m.inGame ? 'IN GAME' : m.id === room.host ? 'HOST' : m.ready ? 'READY' : 'NOT READY';
+      return `<span class="seat-face ${set ? 'set' : 'wait'}${m.offline || m.inGame ? ' away' : ''}${pop ? ' pop' : ''}" title="${esc(m.name)}${m.id === myId ? ' (you)' : ''} · ${status}"><img src="/assets/characters/${m.character}-portrait.png" alt="">${m.id === room.host ? '<i class="crown">♛</i>' : ''}</span>`;
+    });
+    faces.push(...Array.from({ length: open }, () => '<span class="seat-face open" title="Open seat"></span>'));
+    this.stripSeen = new Map(room.members.map((m) => [m.id, m.id === room.host || m.ready]));
+    this.stripCode = room.code;
+    this.crewStrip.innerHTML = `<div class="crew-row"><div class="crew-faces">${faces.join('')}</div><span class="crew-count"><span class="label">CREW</span>${room.members.length}/${room.size}</span></div>
+      <div class="crew-foot"><span class="crew-what">${room.mode === 'hideSeek' ? 'HIDE &amp; SEEK' : 'HEIST'} · ${esc(map)}</span><button type="button" data-copy="link">COPY LINK</button></div>`;
     // START (host) or READY (everyone else), and what it's waiting for.
     const here = room.members.filter((m) => !m.inGame && !m.offline);
     const waiting = here.filter((m) => m.id !== room.host && !m.ready);

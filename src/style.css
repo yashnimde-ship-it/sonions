@@ -3609,3 +3609,174 @@ body.touch[data-scene='lobby'] .touch-pad {
   #lobby .pick:hover,
   #lobby .map-card:hover { transform: none; }
 }
+
+/* ---------- The room panel, folded: a slim bar, so the garage and the getaway car show ---------- */
+
+.party-panel.compact { overflow: hidden; }
+.party-panel.compact .room-bar,
+.party-panel.compact .mode-row,
+.party-panel.compact .size-row,
+.party-panel.compact #portal-list,
+.party-panel.compact .party-status { display: none; }
+.party-panel:not(.compact) .crew-strip { display: none; }
+
+/* Opening it: the rows drop in. */
+.party-panel:not(.compact) > :not(.party-head):not(.crew-strip) { animation: panel-open 0.22s ease-out both; }
+@keyframes panel-open {
+  from { opacity: 0; transform: translateY(-6px); }
+}
+
+/* The arrow in the corner: down while folded (there's more), up once open. */
+.panel-toggle {
+  position: relative;
+  flex: none;
+  align-self: center;
+  margin-left: auto;
+  width: calc(var(--u) * 2.4);
+  height: calc(var(--u) * 2.4);
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  background: rgba(255, 214, 120, 0.05);
+  border: 2px solid rgba(226, 181, 79, 0.45);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.12s ease-out;
+}
+.panel-toggle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 46%;
+  height: 28%;
+  background: #ffd978;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+  transform: translate(-50%, -50%);
+  transition: transform 0.2s ease-out;
+}
+.panel-toggle[aria-expanded='true']::before { transform: translate(-50%, -50%) rotate(180deg); }
+.panel-toggle:hover,
+.panel-toggle:focus-visible { border-color: var(--gold-2); background: rgba(255, 214, 120, 0.12); outline: none; }
+.panel-toggle:active { transform: translateY(1px) scale(0.94); transition-duration: 0.05s; }
+
+/* The bar: the crew's faces and the count, then the mode and map with COPY LINK. */
+.crew-strip {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.8);
+  margin-top: calc(var(--u) * 0.7);
+  cursor: pointer;
+}
+
+.crew-row {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.8);
+}
+
+.crew-faces {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: calc(var(--u) * 0.55);
+}
+
+.seat-face {
+  position: relative;
+  box-sizing: border-box;
+  width: calc(var(--u) * 2.5);
+  height: calc(var(--u) * 2.5);
+  border: 2px solid #ffb46a;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.35);
+}
+.seat-face img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  image-rendering: pixelated;
+}
+.seat-face.wait img { opacity: 0.7; }
+.seat-face.set { border-color: #7fe39a; box-shadow: 0 0 7px rgba(127, 227, 154, 0.45); }
+.seat-face.set::after {
+  content: '\2714';
+  position: absolute;
+  right: calc(var(--u) * -0.55);
+  bottom: calc(var(--u) * -0.55);
+  width: calc(var(--u) * 1.15);
+  height: calc(var(--u) * 1.15);
+  font: calc(var(--u) * 0.8) / calc(var(--u) * 1.15) sans-serif;
+  text-align: center;
+  color: #0b1a10;
+  background: #7fe39a;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #05080f;
+}
+.seat-face.away { border-color: #5a6280; box-shadow: none; opacity: 0.55; }
+.seat-face.open { background: transparent; border: 2px dashed rgba(226, 181, 79, 0.4); }
+.seat-face .crown {
+  position: absolute;
+  left: calc(var(--u) * -0.5);
+  top: calc(var(--u) * -0.75);
+  font-style: normal;
+  font-size: calc(var(--u) * 1);
+  line-height: 1;
+  color: #ffd978;
+  text-shadow: 0 1px 0 #05080f, 0 0 4px rgba(5, 8, 15, 0.9);
+  transform: rotate(-18deg);
+}
+/* Someone just walked in, or just got set: their face pops. */
+.seat-face.pop { animation: seat-pop 0.5s cubic-bezier(0.2, 1.6, 0.4, 1); }
+@keyframes seat-pop {
+  0% { transform: scale(0.4); }
+  60% { transform: scale(1.2); }
+  100% { transform: none; }
+}
+
+.crew-count {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--u) * 0.6);
+  font-size: calc(var(--u) * 1.3);
+  color: var(--cream);
+  white-space: nowrap;
+}
+.crew-count .label { font-size: calc(var(--u) * 0.7); color: var(--brass); }
+
+.crew-foot {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.8);
+  font-size: calc(var(--u) * 0.8);
+  color: #c9bfa6;
+}
+.crew-what {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crew-foot button {
+  flex: none;
+  font-family: inherit;
+  font-size: calc(var(--u) * 0.75);
+  padding: 4px 8px;
+  color: #ffd978;
+  background: rgba(255, 214, 120, 0.05);
+  border: 2px solid rgba(226, 181, 79, 0.45);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: transform 0.12s ease-out, border-color 0.15s, background 0.15s;
+}
+.crew-foot button:hover { border-color: var(--gold-2); background: rgba(255, 214, 120, 0.12); transform: translateY(-1px); }
+.crew-foot button:active { transform: translateY(1px) scale(0.96); transition-duration: 0.05s; }
+
+/* Hovering the folded bar: its frame warms up (a click opens it). */
+#lobby .party-panel.compact:hover { border-color: var(--brass); }
+
+@media (prefers-reduced-motion: reduce) {
+  .party-panel:not(.compact) > :not(.party-head):not(.crew-strip),
+  .seat-face.pop { animation: none; }
+}
