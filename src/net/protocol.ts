@@ -145,7 +145,8 @@ export type ServerMsg =
   /** Your room (null: you're not in one, back to the menu). */
   | { t: 'room'; room: RoomInfo | null }
   /** The host started: the game begins in `ms` (the 3-2-1). `ms` 0: the start was called off, and why. */
-  | { t: 'roomStarting'; ms: number; reason?: string }
+  /** The host started: the 3-2-1 (ms), then for a heist the getaway scene (depart, ms). 0: called off. */
+  | { t: 'roomStarting'; ms: number; reason?: string; depart?: number }
   /** Someone in my safehouse waved. */
   | { t: 'emote'; id: string; kind: 'wave'; line: number }
   /** A room request didn't work. */

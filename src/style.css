@@ -3869,3 +3869,12 @@ body.touch .gadget-card .gc-key kbd { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .gadget-card.in { animation: none; }
 }
+
+/* The getaway (after GO in a heist): the panels step aside so the scene plays clear. */
+#lobby .me-panel,
+#lobby .party-panel,
+#lobby .start-box { transition: opacity 0.35s; }
+#lobby.departing .me-panel,
+#lobby.departing .party-panel,
+#lobby.departing .start-box,
+#lobby.departing .gadget-card { opacity: 0; pointer-events: none; }

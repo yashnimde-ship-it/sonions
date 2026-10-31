@@ -17,7 +17,7 @@ import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
-import { normalizeCode, QUICK_PLAY_SIZE, ROOM_CODE_CHARS, ROOM_CODE_LENGTH, ROOM_MAX, ROOM_MIN, START_COUNTDOWN_MS, WAVE_LINES, type RoomInfo, type RoomSummary } from '../src/data/rooms.ts';
+import { DEPART_MS, normalizeCode, QUICK_PLAY_SIZE, ROOM_CODE_CHARS, ROOM_CODE_LENGTH, ROOM_MAX, ROOM_MIN, START_COUNTDOWN_MS, WAVE_LINES, type RoomInfo, type RoomSummary } from '../src/data/rooms.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
 import { NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
 
@@ -957,11 +957,14 @@ function handle(c: Client, msg: ClientMsg) {
         send(c, { t: 'roomError', reason: why });
         break;
       }
-      // A 3-2-1 in the safehouse first; the game starts when it ends (if the crew is still set).
-      party.startTimer = setTimeout(() => launchParty(party), START_COUNTDOWN_MS);
+      // A 3-2-1 in the safehouse first, then for a heist the getaway (the crew gets in the car);
+      // the game starts when that's over (if the crew is still set). Hide & Seek skips the car.
+      const depart = party.mode === 'hideSeek' && crewOf(party).length >= HIDE_SEEK_MIN_PLAYERS ? 0 : DEPART_MS;
+      party.startTimer = setTimeout(() => launchParty(party), START_COUNTDOWN_MS + depart);
+      party.departAt = Date.now() + START_COUNTDOWN_MS;
       for (const id of party.members) {
         const m = clients.get(id);
-        if (m?.room === 'lobby') send(m, { t: 'roomStarting', ms: START_COUNTDOWN_MS });
+        if (m?.room === 'lobby') send(m, { t: 'roomStarting', ms: START_COUNTDOWN_MS, depart });
       }
       break;
     }
@@ -2017,6 +2020,8 @@ interface Party {
   matchId: string | null;
   /** The host pressed START: the 3-2-1 is running (the game starts when it fires). */
   startTimer: ReturnType<typeof setTimeout> | null;
+  /** When the 3-2-1 reaches GO: from then on (the getaway) only the launch itself can call it off. */
+  departAt?: number;
 }
 const parties = new Map<string, Party>();
 /** The public room list changed: the browsers get it on the next tick. */
@@ -2080,6 +2085,7 @@ function startProblem(party: Party): 'tooFew' | 'notReady' | null {
 /** The 3-2-1 is over: into the game, if the crew is still set. */
 function launchParty(party: Party) {
   party.startTimer = null;
+  party.departAt = undefined;
   if (!parties.has(party.code) || party.matchId) return;
   const why = startProblem(party);
   if (why) return cancelStart(party, why === 'tooFew' ? 'Not enough players any more.' : 'Someone isn\'t ready any more.', true);
@@ -2097,6 +2103,9 @@ function launchParty(party: Party) {
 /** Calls off a running 3-2-1 (someone left or isn't ready), and tells the room why. */
 function cancelStart(party: Party, reason: string, fired = false) {
   if (!party.startTimer && !fired) return;
+  // Past GO the crew is in the car: leaving or un-readying then is settled when the game launches.
+  if (!fired && party.departAt !== undefined && Date.now() >= party.departAt) return;
+  party.departAt = undefined;
   if (party.startTimer) clearTimeout(party.startTimer);
   party.startTimer = null;
   for (const id of party.members) {

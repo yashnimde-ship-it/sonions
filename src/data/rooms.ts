@@ -14,6 +14,9 @@ export const ROOM_MAX = 9;
 export const QUICK_PLAY_SIZE = 4;
 /** The host presses START: everyone gets a 3-2-1 in the safehouse, then the game begins. */
 export const START_COUNTDOWN_MS = 3000;
+/** Then, for a heist, the getaway: the crew is whisked to the garage, gets in the car and it drives
+ *  off (src/main.ts plays it); the game starts when it's over. Hide & Seek starts straight away. */
+export const DEPART_MS = 5200;
 /** What a wave says over your head (the server checks the index). */
 export const WAVE_LINES = ['HEY!', 'YO!', 'HI CREW!', "LET'S GO!"] as const;
 
