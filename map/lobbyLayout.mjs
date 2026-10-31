@@ -28,6 +28,15 @@ export const REPAIRS = [
   // The portal pads and their signs: the game draws live ones, so this becomes plain floor.
   { id: 'portals-left', box: [23.4, 24.0, 35.2, 31.0], from: 'left', span: 2.9 },
   { id: 'portals-right', box: [35.2, 24.0, 47.1, 31.0], from: 'right', span: 2.0 },
+  // Doorways through the hall's west wall (the hall's floorboards run through them): the Gadget
+  // Lab's wide entrance (the hall plant that stood in front of it goes), and door B (under the
+  // bottom window, which gets a wall cap) into the corridor. The coat stand just inside door B
+  // goes, so the way in is clear.
+  { id: 'plant-hall-west', box: [20.2, 15.0, 22.2, 19.9], from: 'up', span: 1.4 },
+  { id: 'lab-entrance', box: [19.1, 13.3, 20.8, 17.3], from: 'right', span: 1.0 },
+  { id: 'door-b', box: [19.1, 29.3, 20.8, 31.0], from: 'right', span: 1.0 },
+  { id: 'door-b-cap', box: [19.1, 29.05, 20.45, 29.3], tile: [19.15, 25.0, 20.4, 26.0] },
+  { id: 'coat-stand', box: [18.05, 29.5, 19.1, 31.3], from: 'left', span: 1.0 },
 ];
 
 /**
@@ -55,8 +64,6 @@ export const PROPS = [
   { id: 'plant-hall-east', box: [50.2, 19.1, 52.0, 23.5], solid: true },
   { id: 'cabinet-hall', box: [50.3, 23.4, 51.9, 26.3], solid: true, hit: [50.4, 23.4, 51.7, 25.5] },
   { id: 'lamp-plant-hall', box: [49.2, 27.3, 52.0, 31.3], solid: true, hit: [49.5, 28.8, 51.6, 31.3] },
-  // Hall, west side
-  { id: 'plant-hall-west', box: [20.2, 15.1, 22.1, 19.8], solid: true },
   // Stairs and porch
   { id: 'plant-stairs-west', box: [20.6, 31.0, 24.0, 36.9], solid: true },
   { id: 'railing-west', box: [24.0, 31.9, 30.1, 35.5], solid: true },
@@ -98,6 +105,42 @@ export const WALLS = [
   [31.0, 37.4, 39.0, 40],
 ];
 
+/**
+ * The west wing you can walk into, cut out of the walls above: in through the Gadget Lab's wide
+ * entrance onto its work floor (the tool wall, bench and lockers stay solid), down through the
+ * double door into the corridor, and back out to the hall through door B. The surveillance room,
+ * the gear lockers and the stash stay behind their walls.
+ */
+export const WEST_OPEN = [
+  [19.0, 13.3, 20.45, 17.3], // the lab's entrance
+  [4.1, 13.9, 19.1, 24.0], // the lab's work floor
+  [17.4, 9.4, 19.1, 13.9], // the nook beside its shelves
+  [11.2, 24.0, 13.8, 27.1], // the double door
+  [7.0, 27.1, 19.1, 31.05], // the corridor (down to the stash's rail)
+  [19.0, 29.3, 20.45, 31.0], // door B
+];
+
+/** The west wing's furniture, solid again inside WEST_OPEN. */
+export const WEST_SOLID = [
+  [15.5, 27.1, 18.1, 29.5], // the corridor's big plant
+  [18.1, 27.1, 19.1, 29.2], // the panelling between that plant and the wall
+  [7.3, 28.9, 8.8, 31.2], // the corridor's lamp
+];
+
+/**
+ * The Gadget Lab's test pads, four across and three down on its work floor: the game puts one of
+ * the Saboteur's twelve traps on each (GADGET_ORDER in src/main.ts) and draws it live.
+ */
+export const GADGET_PADS = Array.from({ length: 12 }, (_, i) => ({
+  x: +(4.45 + (i % 4) * 3.7).toFixed(2),
+  y: +(14.55 + Math.floor(i / 4) * 3.25).toFixed(2),
+  w: 3.2,
+  h: 2.75,
+}));
+/** Where the lab's sign hangs (tiles): over its entrance, on the hall's wall (the room's own top
+ *  wall sits under the profile panel). */
+export const GADGET_SIGN = { x: 20.2, y: 12.7 };
+
 /** The real estate map, printed on the planning table (the inner, grassy part of the board). */
 export const TABLE_MAP = [28.0, 10.3, 42.4, 18.8];
 
@@ -136,10 +179,10 @@ export const LIGHTS = [
   { x: 3.3, y: 1.7, r: 3 }, // the gear lockers' lamps
   { x: 8.6, y: 1.7, r: 3 },
   { x: 16.7, y: 2.7, r: 5 }, // the surveillance room's monitor wall
-  { x: 5.9, y: 10.6, r: 3 }, // the tool bench
-  { x: 4.2, y: 13.7, r: 3 }, // the bunk room's lamps
-  { x: 8.8, y: 13.7, r: 3 },
-  { x: 5.5, y: 21.3, r: 3 },
+  { x: 7.1, y: 9.8, r: 3 }, // the Gadget Lab: the lamp by its shelf, its monitor, its work floor
+  { x: 15.1, y: 10.5, r: 3 },
+  { x: 8.3, y: 19.0, r: 7 },
+  { x: 15.4, y: 19.0, r: 7 },
   { x: 10.5, y: 35.0, r: 6 }, // the stash
 ];
 
@@ -152,11 +195,12 @@ export const DECOR = [
   // repaired), rooms and pieces from the heist maps' own art, at the same 16 px a tile:
   // - the north room: the crew's gear lockers (the cruise ship's locker room) and the
   //   surveillance room (the museum's security room: the CCTV wall, desks and console);
-  // - the west room: a tool bench (the museum workshop's) over the bunk room (the cruise ship's
-  //   crew quarters: beds, lockers, crates), walled off from the dining room;
+  // - the Gadget Lab, over the old bunk and dining rooms: the cruise ship's maintenance workshop
+  //   (its tool wall, bench, shelf and lockers) with a fresh work floor for the gadget pads (built
+  //   by scripts/build-gadget-lab.py);
   // - the stash along the south wall: crates, a tarp-covered pallet and a case of gold.
   { id: 'north-rooms', file: 'art/lobby/north-rooms.png', x: 1.6, y: 1.1 },
-  { id: 'west-room', file: 'art/lobby/west-room.png', x: 1.375, y: 9.0 },
+  { id: 'gadget-lab', file: 'art/lobby/gadget-lab.png', x: 1.625, y: 8.0 },
   { id: 'stash', file: 'art/lobby/stash.png', x: 1.375, y: 31.4 },
 ];
 

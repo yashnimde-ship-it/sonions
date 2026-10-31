@@ -21,6 +21,9 @@ export interface LobbyJson {
   table?: { x: number; y: number; w: number; h: number; prompt?: { x: number; y: number } };
   /** At the garage door (the getaway car): E starts the heist, or readies up. */
   car?: { x: number; y: number; w: number; h: number; prompt?: { x: number; y: number } };
+  /** The Gadget Lab's test pads (tiles), one per Saboteur trap (GADGET_ORDER in main.ts), and its sign. */
+  gadgets?: { x: number; y: number; w: number; h: number }[];
+  gadgetSign?: { x: number; y: number };
   /** Lamps: x, y and radius in tiles. */
   lights: { x: number; y: number; r: number }[];
   spawn: { x: number; y: number };

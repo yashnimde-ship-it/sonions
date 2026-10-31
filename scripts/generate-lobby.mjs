@@ -360,13 +360,16 @@ const CELL = 8;
 const CW = W / CELL;
 const CH = H / CELL;
 const grid = new Uint8Array(CW * CH);
-/** Every cell the box overlaps by more than 2 px is solid. */
-const cover = ([x0, y0, x1, y1]) => {
+/** Every cell the box overlaps by more than 2 px is set to `v` (solid, or open again). */
+const cover = ([x0, y0, x1, y1], v = 1) => {
   const m = 2 / TILE;
   for (let cy = Math.max(0, Math.floor(((y0 + m) * TILE) / CELL)); cy < Math.min(CH, Math.ceil(((y1 - m) * TILE) / CELL)); cy++)
-    for (let cx = Math.max(0, Math.floor(((x0 + m) * TILE) / CELL)); cx < Math.min(CW, Math.ceil(((x1 - m) * TILE) / CELL)); cx++) grid[cy * CW + cx] = 1;
+    for (let cx = Math.max(0, Math.floor(((x0 + m) * TILE) / CELL)); cx < Math.min(CW, Math.ceil(((x1 - m) * TILE) / CELL)); cx++) grid[cy * CW + cx] = v;
 };
-L.WALLS.forEach(cover);
+L.WALLS.forEach((b) => cover(b));
+// The walkable part of the west wing, then its furniture.
+for (const b of L.WEST_OPEN) cover(b, 0);
+for (const b of L.WEST_SOLID) cover(b);
 for (const p of L.PROPS) if (p.solid) cover(p.hit ?? p.box);
 
 fs.writeFileSync(path.join(OUT, 'props.json'), JSON.stringify(props, null, 1));
@@ -382,6 +385,8 @@ fs.writeFileSync(
     wardrobe: L.WARDROBE,
     table: L.PLANNING_TABLE,
     car: L.GARAGE_DOOR,
+    gadgets: L.GADGET_PADS,
+    gadgetSign: L.GADGET_SIGN,
     lights: L.LIGHTS,
     spawn: L.SPAWN,
   }),

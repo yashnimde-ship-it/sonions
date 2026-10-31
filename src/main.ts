@@ -34,6 +34,7 @@ import { audioOut, blip, engineStart, footstep, play as sfx, setSoundEnabled, un
 const audioOutState = () => audioOut()?.state ?? 'none';
 import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
 import { HUD } from './ui/HUD';
+import { GadgetCard } from './ui/GadgetCard';
 import { LobbyUI, type MapInfo } from './ui/LobbyUI';
 import { Settings } from './ui/Settings';
 import { TrapBar } from './ui/TrapBar';
@@ -89,6 +90,18 @@ interface Remote {
 
 /** The crew-size pads under the planning table; the 4+ pad glows purple. */
 const PORTAL_COLORS: Record<number, string> = { 2: '#3ee6d4', 3: '#ffb02e', 4: '#9b6cff' };
+
+// The safehouse's moving parts, in lobby art pixels (where they are in lobby.png): the flames in
+// the hearth, the surveillance room's screens (the monitor wall, then the desk screens), and the
+// getaway car's lights (it faces south: headlights at the bottom, tail-lights at the top).
+const HEARTH = { x: 561, y: 64, w: 26 };
+const CCTV_SCREENS = [[192, 41, 26, 15], [226, 41, 24, 14], [257, 41, 25, 15], [290, 41, 23, 14], [323, 41, 24, 15], [228, 63, 20, 13], [259, 63, 21, 13], [290, 63, 22, 13], [199, 63, 10, 5], [328, 63, 12, 5]];
+/** Which trap stands on which Gadget Lab pad (left to right, top to bottom). The ones with parts
+ *  that stand up (the crusher's piston, the laser's and the fake loot's posts) take the top row,
+ *  where those can rise toward the bench; the wide floor ones fill the bottom row. */
+const GADGET_ORDER: TrapKind['id'][] = ['crusher', 'laser', 'fakeLoot', 'blackout', 'shock', 'spring', 'snare', 'magnet', 'glue', 'oil', 'gas', 'boulder'];
+const CAR_HEADLIGHTS = [[940, 297], [985, 297]];
+const CAR_TAILLIGHTS = [[940, 163], [987, 163]];
 
 // Loot: one item in your hands at a time, 35% slower while carrying (Steady Carry halves
 // that). Bank it by walking into the GETAWAY zone on the street, in tiles.
@@ -229,6 +242,7 @@ async function boot() {
   const settings = new Settings();
   const profile = new Profile();
   const lobby = new LobbyUI(MAP_IDS.map((id) => mapInfo(id, worlds[id].data)), settings);
+  const gadgetCard = new GadgetCard();
   const net = new NetClient();
   const abilities = new AbilitySystem();
   const trapBar = new TrapBar((kind) => selectTrap(selectedTrap?.id === kind.id ? null : kind));
@@ -2041,6 +2055,7 @@ async function boot() {
     if (scene === 'lobby') {
       if (lobby.panelOpen) {
         // A panel is open (Loadout, Map Info, Settings, Exit): the player stands still.
+        gadgetCard.show(null);
         if (keyPressed('Escape')) lobby.navigate('lobby');
         else if (lobby.pickerOpen) {
           if (keyPressed('KeyA') || keyPressed('ArrowLeft')) lobby.movePick(-1);
@@ -2052,11 +2067,15 @@ async function boot() {
         me.update(input, lobbyMap);
         // The room is the menu: the wardrobe, the planning table (the map) and the garage door
         // (the getaway car: start, or ready up).
+        // In the Gadget Lab, the pad you're standing on: its card shows, and E sets it off.
+        const labPad = gadgetPadAt(me.x, me.y);
         if (input.action) {
           if (nearWardrobe()) lobby.openPicker(myCharacter);
           else if (nearTable()) lobby.navigate('map');
           else if (nearCar() && lobby.carPrompt) lobby.pressStart();
+          else if (labPad) fireLabDemo(labPad);
         }
+        gadgetCard.show(labPad?.kind ?? null);
         // Stepping onto a crew-size pad: the host sets the room to that size. (Only a step counts,
         // not arriving there, e.g. back from a reload.)
         const pad = lobbyData.portals.find((p) => LobbyMap.inside(p, me.x, me.y)) ?? null;
@@ -2617,6 +2636,7 @@ async function boot() {
         ctx.save();
         ctx.scale(scale, scale);
         drawPortalFloors(camX, camY);
+        drawGadgetPads(camX, camY);
         drawReadyRings(camX, camY);
         actors.forEach((b) => b.draw(ctx, camX, camY));
         ctx.restore();
@@ -2632,7 +2652,12 @@ async function boot() {
       if (scene === 'title') return;
       ctx.save();
       ctx.scale(scale, scale);
+      drawRoomLife(camX, camY);
+      ctx.restore();
+      ctx.save();
+      ctx.scale(scale, scale);
       drawPortalFrames(camX, camY);
+      drawLabDemos(camX, camY);
       ctx.globalAlpha = CHAR_GLOW;
       actors.forEach((b) => b.draw(ctx, camX, camY, false));
       ctx.restore();
@@ -2642,6 +2667,7 @@ async function boot() {
       particles.draw(ctx, camX, camY);
       ctx.restore();
       drawPortalLabels(camX, camY);
+      drawGadgetLabels(camX, camY);
       drawLobbySigns(camX, camY);
       if (settings.values.nameTags) drawNameTags(camX, camY);
       drawWaves(camX, camY);
@@ -4000,6 +4026,250 @@ async function boot() {
       ctx.ellipse(x, y, 8, 3.2, 0, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
+    }
+  }
+
+  /** The Gadget Lab's pads with the trap each one stands for (null where the lobby has no lab). */
+  const gadgetPads = () => (lobbyData.gadgets ?? []).map((p, i) => ({ ...p, kind: trapKind(GADGET_ORDER[i])!, top: i < 4 })).filter((p) => p.kind);
+  type GadgetPad = ReturnType<typeof gadgetPads>[number];
+  /** The pad under (x, y), art px. */
+  const gadgetPadAt = (x: number, y: number) => gadgetPads().find((p) => LobbyMap.inside(p, x, y)) ?? null;
+  /** Demos fired in the lab (E on a pad): the trap's own animation, on its pad, for this player only. */
+  const labDemos: Fired[] = [];
+
+  /** E on a pad: that trap goes off on it, with its sound (pressing again restarts it). */
+  function fireLabDemo(p: GadgetPad) {
+    const x = (p.x + p.w / 2) * ART_TILE;
+    const y = (p.y + p.h / 2) * ART_TILE + Math.min(p.kind.up / 2, 8) + 1;
+    const i = labDemos.findIndex((d) => d.id === p.kind.id);
+    if (i >= 0) labDemos.splice(i, 1);
+    labDemos.push({ id: p.kind.id, kind: p.kind.id, x, y, at: performance.now() });
+    sfx(p.kind.id);
+    particles.burst(x, y, p.kind.color, 14, 1.4);
+  }
+
+  /** The lab's demos, over the lamplight like a heist's; each stays on (just around) its pad. */
+  function drawLabDemos(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = labDemos.length - 1; i >= 0; i--) {
+      const d = labDemos[i];
+      if (now - d.at > FX_MS[d.kind]) {
+        labDemos.splice(i, 1);
+        continue;
+      }
+      const p = gadgetPads().find((q) => q.kind.id === d.kind);
+      if (!p) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(p.x * ART_TILE - camX - 6, p.y * ART_TILE - camY - (p.top ? 30 : 6), p.w * ART_TILE + 12, p.h * ART_TILE + (p.top ? 36 : 12));
+      ctx.clip();
+      drawFired(ctx, d, camX, camY, now);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * The Gadget Lab's test pads, under the players: a dark plate lit in the trap's colour, corner
+   * brackets, and the trap itself, live (as the Saboteur sees it). Tall parts in the top row may
+   * rise above their plate; everything else stays on it.
+   */
+  function drawGadgetPads(camX: number, camY: number) {
+    const now = performance.now();
+    for (const p of gadgetPads()) {
+      const x = Math.round(p.x * ART_TILE - camX);
+      const y = Math.round(p.y * ART_TILE - camY);
+      const w = Math.round(p.w * ART_TILE);
+      const h = Math.round(p.h * ART_TILE);
+      ctx.save();
+      ctx.fillStyle = 'rgba(8, 10, 22, 0.6)';
+      ctx.fillRect(x, y, w, h);
+      ctx.globalCompositeOperation = 'lighter';
+      glowAt(x + w / 2, y + h / 2, w * 0.55, `${p.kind.color}33`);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = '#0e0a1a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+      ctx.strokeStyle = p.kind.color;
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.55 + 0.2 * Math.sin(now / 600 + p.x);
+      ctx.strokeRect(x + 2.5, y + 2.5, w - 5, h - 5);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff4e6';
+      for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
+        ctx.fillRect(dx > 0 ? cx + 1 : cx - 6, dy > 0 ? cy + 1 : cy - 2, 5, 1);
+        ctx.fillRect(dx > 0 ? cx + 1 : cx - 2, dy > 0 ? cy + 1 : cy - 6, 1, 5);
+      }
+      ctx.beginPath();
+      const rise = p.top ? 30 : 0;
+      ctx.rect(x + 3, y + 3 - rise, w - 6, h - 6 + rise);
+      ctx.clip();
+      // The footprint sits a little low on the plate, so posts and pistons have room above it.
+      drawTrap(ctx, p.kind, 'saboteur', x + w / 2, y + h / 2 + Math.min(p.kind.up / 2, 8) + 1, now);
+      ctx.restore();
+    }
+  }
+
+  /** Each pad's name tag, on its bottom edge in the trap's colour; and the lab's sign over the room. */
+  function drawGadgetLabels(camX: number, camY: number) {
+    const size = Math.round(5 * dpr);
+    for (const p of gadgetPads()) {
+      const sx = ((p.x + p.w / 2) * ART_TILE - camX) * scale;
+      const sy = ((p.y + p.h) * ART_TILE - camY) * scale;
+      ctx.save();
+      ctx.font = `${size}px "Press Start 2P"`;
+      const text = p.kind.name.toUpperCase();
+      const tw = ctx.measureText(text).width + size * 1.4;
+      const th = size * 2;
+      ctx.fillStyle = 'rgba(8, 10, 22, 0.92)';
+      ctx.fillRect(sx - tw / 2, sy - th / 2, tw, th);
+      ctx.strokeStyle = p.kind.color;
+      ctx.lineWidth = Math.max(1, dpr);
+      ctx.strokeRect(sx - tw / 2 + 0.5, sy - th / 2 + 0.5, tw - 1, th - 1);
+      ctx.fillStyle = p.kind.color;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, sx, sy + 1);
+      ctx.restore();
+    }
+    const sign = lobbyData.gadgetSign;
+    if (!sign) return;
+    // GADGET LAB: a brass-framed plate with a lamp at each end, lit warm.
+    const sx = (sign.x * ART_TILE - camX) * scale;
+    const sy = (sign.y * ART_TILE - camY) * scale;
+    const big = Math.round(11 * dpr);
+    ctx.save();
+    ctx.font = `${big}px "Press Start 2P"`;
+    const tw = ctx.measureText('GADGET LAB').width + big * 2.4;
+    const th = big * 2.3;
+    ctx.globalCompositeOperation = 'lighter';
+    for (const lx of [sx - tw / 2 - big * 0.4, sx + tw / 2 + big * 0.4]) {
+      const g = ctx.createRadialGradient(lx, sy, 0, lx, sy, big * 2.6);
+      g.addColorStop(0, `rgba(255, 210, 120, ${0.5 + 0.08 * Math.sin(frame / 9)})`);
+      g.addColorStop(1, 'rgba(255, 180, 80, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(lx - big * 2.6, sy - big * 2.6, big * 5.2, big * 5.2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#05080f';
+    ctx.fillRect(sx - tw / 2 - 3 * dpr, sy - th / 2 - 3 * dpr, tw + 6 * dpr, th + 6 * dpr);
+    const plate = ctx.createLinearGradient(0, sy - th / 2, 0, sy + th / 2);
+    plate.addColorStop(0, '#1b2c55');
+    plate.addColorStop(1, '#0d1832');
+    ctx.fillStyle = plate;
+    ctx.fillRect(sx - tw / 2, sy - th / 2, tw, th);
+    ctx.strokeStyle = '#e2b54f';
+    ctx.lineWidth = 2 * dpr;
+    ctx.strokeRect(sx - tw / 2 + dpr, sy - th / 2 + dpr, tw - 2 * dpr, th - 2 * dpr);
+    ctx.fillStyle = '#ffe9a6';
+    for (const lx of [sx - tw / 2 - big * 0.4, sx + tw / 2 + big * 0.4]) ctx.fillRect(lx - 2 * dpr, sy - 2 * dpr, 4 * dpr, 4 * dpr);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#05080f';
+    ctx.fillText('GADGET LAB', sx + 2 * dpr, sy + 3 * dpr);
+    ctx.fillStyle = '#ffd978';
+    ctx.shadowColor = 'rgba(255, 200, 90, 0.8)';
+    ctx.shadowBlur = 8 * dpr;
+    ctx.fillText('GADGET LAB', sx, sy + dpr);
+    ctx.restore();
+  }
+
+  /** Sparks rising off the hearth, in art pixels (`life` counts up to `max`, in frames). */
+  const embers: { x: number; y: number; vx: number; vy: number; life: number; max: number }[] = [];
+
+  /** A soft round light at (x, y), added onto what's there (the caller sets 'lighter'). */
+  function glowAt(x: number, y: number, r: number, color: string) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, color);
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+
+  /**
+   * The safehouse breathing: the fire flickers and spits sparks, each lamp wavers on its own beat,
+   * the surveillance screens shimmer (a scan line rolls down each, now and then one cuts to another
+   * camera, and REC blinks), and the getaway car idles with its lights on. In art pixels.
+   */
+  function drawRoomLife(camX: number, camY: number) {
+    const t = performance.now() / 1000;
+    const lit = settings.values.lighting;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // The fire: a wide glow and a hot core that never quite agree, so it dances, and three
+    // tongues licking up over the painted flames, each on its own beat.
+    const flick = 0.55 + 0.3 * Math.sin(t * 9.1) + 0.15 * Math.sin(t * 23.7 + 1.3);
+    const fx = HEARTH.x - camX;
+    const fy = HEARTH.y - camY;
+    if (lit) glowAt(fx, fy - 4, 42 + flick * 14, `rgba(255, 140, 50, ${0.05 + 0.13 * flick})`);
+    glowAt(fx + Math.sin(t * 7) * 2, fy - 4, 12 + flick * 5, `rgba(255, 210, 110, ${0.1 + 0.25 * flick})`);
+    // (The tongues are stacked rows of whole art pixels, narrowing and fading as they rise.)
+    for (let k = 0; k < 3; k++) {
+      const h = Math.round(7 + 6 * (0.5 + 0.5 * Math.sin(t * (8 + k * 3.3) + k * 2.1)));
+      const x = fx + (k - 1) * 8 + Math.sin(t * (5 + k)) * 1.2;
+      const wide = k === 1 ? 7 : 5;
+      for (let r = 0; r < h; r++) {
+        const f = r / h;
+        const w = Math.max(1, Math.round(wide * (1 - f) ** 0.7));
+        ctx.fillStyle = `rgba(255, ${Math.round(220 - 90 * f)}, ${Math.round(110 - 70 * f)}, ${0.42 * (1 - f)})`;
+        ctx.fillRect(Math.round(x - w / 2), Math.round(fy - 2 - r), w, 1);
+      }
+    }
+    // The lamps (not the fire, the screens' glow, or the big glows over the table and the pads).
+    if (lit) {
+      lobbyData.lights.forEach((l, i) => {
+        const x = l.x * ART_TILE;
+        const y = l.y * ART_TILE;
+        if (l.r >= 9 || Math.hypot(x - HEARTH.x, y - HEARTH.y) < 40 || (l.x > 11 && l.x < 22 && l.y < 4)) return;
+        const w = 0.5 + 0.3 * Math.sin(t * 2.3 + i * 1.7) + 0.2 * Math.sin(t * 6.1 + i * 2.9);
+        glowAt(x - camX, y - camY, l.r * ART_TILE * 0.55, `rgba(255, 190, 110, ${0.03 + 0.04 * w})`);
+      });
+    }
+    // The car: headlights on low with a pool on the floor in front, tail-lights glowing red
+    // (brighter through the 3-2-1, when drawHeadlights takes over up front).
+    const idle = 0.8 + 0.2 * Math.sin(t * 1.6);
+    if (!lobbyStart) {
+      for (const [x, y] of CAR_HEADLIGHTS) {
+        glowAt(x - camX, y - camY, 8, `rgba(255, 244, 200, ${0.4 * idle})`);
+        if (lit) glowAt(x - camX, y + 14 - camY, 22, `rgba(255, 226, 150, ${0.1 * idle})`);
+      }
+    }
+    for (const [x, y] of CAR_TAILLIGHTS) glowAt(x - camX, y - camY, lobbyStart ? 10 : 7, `rgba(255, 50, 40, ${lobbyStart ? 0.65 : 0.45 * idle})`);
+    // The screens: a shimmer, a rolling scan line, and every few seconds a cut (a quick flash).
+    CCTV_SCREENS.forEach(([x, y, w, h], i) => {
+      const sx = x - camX;
+      const sy = y - camY;
+      ctx.fillStyle = `rgba(110, 190, 255, ${0.05 + 0.04 * Math.sin(t * 11 + i * 2.1)})`;
+      ctx.fillRect(sx, sy, w, h);
+      ctx.fillStyle = 'rgba(190, 235, 255, 0.22)';
+      ctx.fillRect(sx, sy + Math.floor(((t * 0.45 + i * 0.37) % 1) * h), w, 1);
+      if ((t / (4 + (i % 4) * 1.3) + i * 0.29) % 1 < 0.025) {
+        ctx.fillStyle = 'rgba(220, 240, 255, 0.35)';
+        ctx.fillRect(sx, sy, w, h);
+      }
+    });
+    // Sparks off the fire: white-hot, then orange, then red as they rise and fade.
+    if (Math.random() < 0.3 && embers.length < 40) {
+      embers.push({ x: HEARTH.x + (Math.random() - 0.5) * HEARTH.w * 0.8, y: HEARTH.y - 10, vx: (Math.random() - 0.5) * 0.14, vy: -(0.18 + Math.random() * 0.17), life: 0, max: 40 + Math.random() * 40 });
+    }
+    for (let i = embers.length - 1; i >= 0; i--) {
+      const e = embers[i];
+      e.life++;
+      e.x += e.vx + Math.sin((e.life + i * 7) / 6) * 0.08;
+      e.y += e.vy;
+      if (e.life >= e.max) {
+        embers.splice(i, 1);
+        continue;
+      }
+      const k = e.life / e.max;
+      ctx.globalAlpha = 1 - k * k;
+      ctx.fillStyle = k < 0.35 ? '#ffe9a0' : k < 0.7 ? '#ffaa3c' : '#e0522a';
+      ctx.fillRect(Math.round(e.x - camX), Math.round(e.y - camY), 1, 1);
+    }
+    ctx.restore();
+    // REC, blinking in the corner of the middle screen.
+    if (Math.floor(t * 1.6) % 2 === 0) {
+      ctx.fillStyle = '#ff3b3b';
+      ctx.fillRect(CCTV_SCREENS[2][0] + 2 - camX, CCTV_SCREENS[2][1] + 2 - camY, 2, 2);
     }
   }
 

@@ -150,16 +150,6 @@
   "coverage": 0.43
  },
  {
-  "id": "plant-hall-west",
-  "file": "props/plant-hall-west.png",
-  "x": 323,
-  "y": 242,
-  "w": 31,
-  "h": 75,
-  "solid": true,
-  "coverage": 0.8
- },
- {
   "id": "plant-stairs-west",
   "file": "props/plant-stairs-west.png",
   "x": 330,
