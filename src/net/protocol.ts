@@ -1,5 +1,6 @@
 // Messages between the game and the server (server/index.ts), sent as JSON over one WebSocket.
 
+import type { ChaosId } from '../data/chaos';
 import type { RoomError, RoomInfo, RoomSummary } from '../data/rooms';
 import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node server
 import type { AbilityId } from '../data/characters.ts';
@@ -70,6 +71,9 @@ export type ClientMsg =
   | { t: 'roomSettings'; size?: number; mode?: GameMode; map?: MapId; private?: boolean }
   | { t: 'kick'; id: string }
   | { t: 'startGame' }
+  /** Crowd Chaos: watch a room (no seat; `screen` = the projector, which doesn't vote), and vote. */
+  | { t: 'watchRoom'; code: string; screen?: boolean }
+  | { t: 'vote'; card: ChaosId }
   /** A wave in the safehouse: `line` picks what it says (WAVE_LINES). */
   | { t: 'emote'; kind: 'wave'; line: number }
   /** Saboteur confirms setup early. */
@@ -153,6 +157,13 @@ export type ServerMsg =
   | { t: 'roomError'; reason: RoomError }
   /** The public rooms (for the room browser). */
   | { t: 'rooms'; list: RoomSummary[] }
+  /** Crowd Chaos, for watchers: the room they watch (null: it closed), and the live map. */
+  | { t: 'watch'; info: WatchInfo | null }
+  | { t: 'watchFrame'; map: MapId; mode: GameMode; phase: Phase | 'none'; msLeft: number; banked: number; need: number; players: WatchPlayer[] }
+  /** A crowd vote (to watchers and players): its cards and live tallies; no options = it closed. */
+  | { t: 'chaosVote'; id: number; options: ChaosId[]; ms: number; tallies: number[]; voters: number; mine?: ChaosId | null }
+  /** The crowd chose: it happens now. `spots` (Runners, Treasure Map): where the diamonds are. */
+  | { t: 'chaos'; card: ChaosId; votes: number; total: number; spots?: string[] }
   /** Your character, as the server decided it (picks can be refused: one of each per server). */
   | { t: 'character'; character: CharacterId }
   /** All five crew members are taken: the server can't fit another player right now. */
@@ -297,3 +308,26 @@ export interface Standing {
 export const PORTAL_COUNTDOWN = 3;
 /** How often the server sends snapshots, and the game sends its position. */
 export const NET_HZ = 20;
+
+/** A room as its watchers see it. */
+export interface WatchInfo {
+  code: string;
+  hostName: string;
+  map: MapId;
+  mode: GameMode;
+  status: 'waiting' | 'playing';
+  players: { name: string; character: CharacterId }[];
+  watchers: number;
+}
+
+/** A player on the watchers' live map. */
+export interface WatchPlayer {
+  id: string;
+  name: string;
+  character: CharacterId;
+  x: number;
+  y: number;
+  deck?: MapId;
+  hp: number;
+  carrying: boolean;
+}

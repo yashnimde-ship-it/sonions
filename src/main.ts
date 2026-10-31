@@ -1,3 +1,5 @@
+import { CHAOS_CARDS } from './data/chaos';
+import { CrowdUI, showCrowdQr } from './ui/CrowdUI';
 import '@fontsource/press-start-2p';
 import '@fontsource/cinzel/600.css';
 import '@fontsource/cinzel/700.css';
@@ -57,7 +59,7 @@ const fetchJson = <T,>(src: string) =>
     return r.json() as Promise<T>;
   });
 
-type Scene = 'title' | 'lobby' | 'match';
+type Scene = 'title' | 'lobby' | 'match' | 'watch';
 
 /** What the map picker says about a map, straight from its map data. */
 function mapInfo(id: MapId, data: EstateJson): MapInfo {
@@ -271,6 +273,12 @@ async function boot() {
   const setupPanel = new SetupPanel(() => net.send({ t: 'ready' }));
   /** On-screen controls for phones and tablets. */
   const touch = new TouchControls();
+  /** Crowd Chaos: a watch link (?watch=CODE, &screen=1 for the projector) makes this tab a watcher. */
+  const watchParams = new URLSearchParams(location.search);
+  const watchCode = normalizeCode(watchParams.get('watch') ?? '');
+  const watchScreen = watchParams.has('screen');
+  const crowd = watchCode ? new CrowdUI(watchCode, watchScreen, (id) => ({ w: worlds[id].data.width * ART_TILE, h: worlds[id].data.height * ART_TILE })) : null;
+  if (crowd) crowd.onVote = (card) => net.send({ t: 'vote', card });
   const resultScreen = new ResultScreen(() => net.send({ t: 'leave' }));
 
   const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -566,6 +574,12 @@ async function boot() {
   const revealed = new Set<string>();
   /** What traps are doing to me: until when (performance.now ms). */
   let slowUntil = 0;
+  /** Crowd Chaos, in the game: the vote on now (shown to players), Sugar Rush, the Treasure Map,
+   *  and the house rule in force. */
+  let crowdVote: (Extract<ServerMsg, { t: 'chaosVote' }> & { at: number }) | null = null;
+  let crowdFastUntil = 0;
+  let crowdHint: { spots: Set<string>; until: number } | null = null;
+  let crowdRule: { card: (typeof CHAOS_CARDS)[keyof typeof CHAOS_CARDS]; until: number } | null = null;
   let reverseUntil = 0;
   let blackoutUntil = 0;
   /** A crusher I set off: if I'm still under it when it slams, it hurts. */
@@ -723,9 +737,16 @@ async function boot() {
 
   function setScene(next: Scene) {
     // Between the title, the safehouse and a heist's end: a fade up from dark.
-    if (next !== scene && next !== 'match') playSceneFade();
+    if (next !== scene && next !== 'match' && next !== 'watch') playSceneFade();
     scene = next;
     document.body.dataset.scene = next;
+    if (next === 'watch') {
+      // The crowd page covers everything; no menus or HUD under it.
+      title.show(false);
+      lobby.show(false);
+      hudEl.hidden = true;
+      return;
+    }
     title.show(scene === 'title');
     lobby.show(scene === 'lobby');
     setLobbyMusic(scene === 'lobby');
@@ -960,10 +981,25 @@ async function boot() {
 
   function onServerMessage(msg: ServerMsg) {
     switch (msg.t) {
+      case 'watch':
+        crowd?.setInfo(msg.info);
+        break;
+      case 'watchFrame':
+        crowd?.setFrame(msg);
+        break;
+      case 'chaosVote':
+        if (crowd) crowd.setVote(msg);
+        else crowdVote = msg.options.length ? { ...msg, at: performance.now() } : null;
+        break;
+      case 'chaos':
+        if (crowd) crowd.setResult(msg.card, msg.votes, msg.total);
+        else crowdChaos(msg);
+        break;
       case 'welcome':
         myId = msg.id;
         onWelcome?.();
         onWelcome = null;
+        if (crowd && watchCode) net.send({ t: 'watchRoom', code: watchCode, screen: watchScreen });
         // Back after a reload, but the seat wasn't held (gone too long): the server sees a new
         // player, so join the room in the address bar the way a fresh visit would.
         if (!msg.resumed && session.get('playing')) {
@@ -1555,6 +1591,21 @@ async function boot() {
     onServerMessage(msg);
   };
   net.onClose = () => {
+    if (scene === 'watch') {
+      crowd?.showError('Connection lost: reconnecting...');
+      void (async () => {
+        for (let i = 0; i < 20 && !net.connected; i++) {
+          await new Promise((r) => setTimeout(r, 1500));
+          try {
+            await net.connect();
+            sayHello();
+          } catch {
+            // Not back yet.
+          }
+        }
+      })();
+      return;
+    }
     if (scene === 'title' || serverFull) return;
     if (replaced) lobby.showDisconnected('You opened this player in another tab, so this one stopped. Reconnect to play here instead.');
     else void reconnect();
@@ -1576,7 +1627,13 @@ async function boot() {
   // A reload while playing goes straight back in: the server still holds this tab's seat.
   // An invite link (?room=CODE) fills in the code and joins.
   const invite = new URLSearchParams(location.search).get('room');
-  if (session.get('playing')) void ensureOnline();
+  if (crowd && watchCode) {
+    setScene('watch');
+    void ensureOnline().then((ok) => {
+      if (ok) net.send({ t: 'watchRoom', code: watchCode, screen: watchScreen });
+      else crowd?.showError("Can't reach the game server. Check your connection and refresh.");
+    });
+  } else if (session.get('playing')) void ensureOnline();
   else if (invite) {
     // Someone who's played before joins straight away; someone new types a name first.
     if (title.hasSavedName) {
@@ -1603,6 +1660,9 @@ async function boot() {
   lobby.onReady = (ready) => net.send({ t: 'roomReady', ready });
   lobby.onRoomSettings = (settings) => net.send({ t: 'roomSettings', ...settings });
   lobby.onKick = (id) => net.send({ t: 'kick', id });
+  lobby.onCrowdQr = () => {
+    if (myRoom) showCrowdQr(myRoom.code);
+  };
   // Exit: out of the room, back to the menu (still connected; the server answers with room: null).
   lobby.onExit = () => net.send({ t: 'leaveRoom' });
   setSoundEnabled(settings.values.sound);
@@ -2296,7 +2356,7 @@ async function boot() {
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
       const now = performance.now();
-      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (myDiamond() ? 1 - (CARRY_SLOW + (myDiamond()!.kind === 'red' ? RED_EXTRA_SLOW : 0)) * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1);
+      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (myDiamond() ? 1 - (CARRY_SLOW + (myDiamond()!.kind === 'red' ? RED_EXTRA_SLOW : 0)) * (abilities.has('steadyCarry') ? 0.5 : 1) : 1) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1) * (now < crowdFastUntil ? 1.4 : 1);
       // Confusion Gas: left is right and up is down.
       // (In a hiding place you can't move.)
       const move = hiddenIn ? { ...input, dx: 0, dy: 0, sprint: false } : input;
@@ -2657,6 +2717,7 @@ async function boot() {
   /** Hide & Seek's ghosts this frame (drawn see-through). */
   let ghostsToDraw: Bandit[] = [];
   function draw() {
+    if (scene === 'watch') return;
     frame++;
     // Snap the camera to whole screen pixels so the art stays crisp.
     const camX = Math.round(camera.x * scale) / scale;
@@ -3090,6 +3151,43 @@ async function boot() {
       } else leaveArmedUntil = performance.now() + 2500;
     }
   };
+
+  /** The crowd chose a card: everyone hears it; Runners (and Hiders) feel it. */
+  function crowdChaos(msg: Extract<ServerMsg, { t: 'chaos' }>) {
+    const card = CHAOS_CARDS[msg.card];
+    const now = performance.now();
+    crowdVote = null;
+    crowdRule = { card, until: now + card.ms };
+    sfx('alert');
+    hud.alert(`<span class="who">📣 The crowd chose</span> <b style="color:${card.color}">${card.icon} ${card.name}</b><span class="where">${msg.votes}/${msg.total} votes</span>`, card.side === 'runners' ? 'good' : 'danger');
+    if (card.id === 'earthquake') trapImpact(card.color, 9, card.ms);
+    if (!match || match.saboteur) return;
+    if (card.id === 'blackout') blackoutUntil = now + card.ms;
+    else if (card.id === 'sugarRush') crowdFastUntil = now + card.ms;
+    else if (card.id === 'molasses') slowUntil = now + card.ms;
+    else if (card.id === 'confusion') reverseUntil = now + card.ms;
+    else if (card.id === 'earthquake') me.stun(70);
+    else if (card.id === 'treasureHint') crowdHint = { spots: new Set(msg.spots ?? []), until: now + card.ms };
+  }
+
+  /** The crowd strip under the round timer: the vote on now, then the house rule in force. */
+  const crowdEl = document.createElement('div');
+  crowdEl.id = 'crowd-ticker';
+  crowdEl.hidden = true;
+  document.getElementById('hud')!.append(crowdEl);
+  let crowdHtml = '';
+  function renderCrowdTicker() {
+    const now = performance.now();
+    let html = '';
+    if (scene === 'match' && crowdVote) {
+      const left = Math.max(0, Math.ceil((crowdVote.ms - (now - crowdVote.at)) / 1000));
+      html = `<b>📣 THE CROWD IS VOTING</b> ${crowdVote.options.map((id, i) => `<span style="color:${CHAOS_CARDS[id].color}">${CHAOS_CARDS[id].icon} ${CHAOS_CARDS[id].name} ${crowdVote!.tallies[i] ?? 0}</span>`).join(' ')} <em>${left}s</em>`;
+    } else if (scene === 'match' && crowdRule && now < crowdRule.until) {
+      html = `<b>HOUSE RULE</b> <span style="color:${crowdRule.card.color}">${crowdRule.card.icon} ${crowdRule.card.rule}</span> <em>${Math.ceil((crowdRule.until - now) / 1000)}s</em>`;
+    }
+    crowdEl.hidden = !html;
+    if (html !== crowdHtml) crowdEl.innerHTML = crowdHtml = html;
+  }
 
   /** The teammate I'd hand my diamond to: the nearest Runner up, with free hands, in reach. */
   function handoffTarget() {
@@ -3689,6 +3787,15 @@ async function boot() {
           ctx.moveTo(c.x - camX + 4, c.y - camY - 4);
           ctx.lineTo(c.x - camX - 4, c.y - camY + 4);
           ctx.stroke();
+        } else if (crowdHint && now < crowdHint.until && crowdHint.spots.has(sp.id)) {
+          // The crowd's Treasure Map: this one has a diamond in it.
+          ctx.save();
+          ctx.strokeStyle = '#ffd84a';
+          ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 120);
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+          ctx.restore();
+          gem(c.x - camX, c.y - camY - 6 - Math.abs(Math.sin(now / 200)) * 3, 4, '#ffd84a');
         } else if (glints.has(sp.id)) {
           // Something in there catches the light.
           const t = (now / 900 + c.x * 0.013) % 1;
@@ -5090,6 +5197,7 @@ async function boot() {
     shownHp = hp;
     setHeistMusic(musicIntensity());
     draw();
+    renderCrowdTicker();
     const [show, buttons, stick] = touchLayout();
     touch.set(show, buttons, stick);
   }

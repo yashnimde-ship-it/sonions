@@ -106,6 +106,8 @@ export class LobbyUI {
   onRoomSettings: (s: { size?: number; private?: boolean }) => void = () => {};
   /** The host removed a player. */
   onKick: (id: string) => void = () => {};
+  /** CROWD QR was pressed: show the room's Crowd Chaos QR. */
+  onCrowdQr: () => void = () => {};
   /** Exit was confirmed. */
   onExit: () => void = () => {};
   /** A map was picked in the map picker. */
@@ -149,7 +151,8 @@ export class LobbyUI {
     this.roomBar.addEventListener('click', (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
       if (!b || !this.room) return;
-      if (b.dataset.copy) this.copyRoom(b.dataset.copy === 'link' ? 'link' : 'code');
+      if (b.dataset.crowd) this.onCrowdQr();
+      else if (b.dataset.copy) this.copyRoom(b.dataset.copy === 'link' ? 'link' : 'code');
       else if (b.dataset.privacy && this.isHost) this.onRoomSettings({ private: !this.room.private });
       b.blur();
     }, opts);
@@ -165,8 +168,12 @@ export class LobbyUI {
     this.crewStrip.className = 'crew-strip';
     this.roomBar.before(this.crewStrip);
     this.crewStrip.addEventListener('click', (e) => {
+      const crowd = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-crowd]');
       const copy = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-copy]');
-      if (copy) {
+      if (crowd) {
+        this.onCrowdQr();
+        crowd.blur();
+      } else if (copy) {
         this.copyRoom('link');
         copy.blur();
       } else this.setCompact(false, true);
@@ -381,7 +388,7 @@ export class LobbyUI {
     this.lastRoom = key;
     const host = this.isHost;
     this.partyTitle.innerHTML = `<span class="label">ROOM CODE</span><span class="room-code">${room.code}</span>`;
-    this.roomBar.innerHTML = `<button type="button" data-copy="code">COPY CODE</button><button type="button" data-copy="link">COPY LINK</button><button type="button" class="privacy${host ? ' host' : ''}" data-privacy="1" title="${host ? 'Click to change who can join' : 'The host decides who can join'}">${room.private ? 'PRIVATE' : 'PUBLIC'}</button>`;
+    this.roomBar.innerHTML = `<button type="button" data-copy="code">COPY CODE</button><button type="button" data-copy="link">COPY LINK</button><button type="button" class="crowd-btn" data-crowd="1" title="A QR for the audience: they vote on what the house does next">CROWD QR</button><button type="button" class="privacy${host ? ' host' : ''}" data-privacy="1" title="${host ? 'Click to change who can join' : 'The host decides who can join'}">${room.private ? 'PRIVATE' : 'PUBLIC'}</button>`;
     this.sizeRow.innerHTML = `<span class="label">PLAYERS</span>${host ? '<button type="button" data-step="-1" aria-label="Fewer players">-</button>' : ''}<b>${room.members.length}/${room.size}</b>${host ? '<button type="button" data-step="1" aria-label="More players">+</button>' : ''}`;
     for (const b of this.modeRow.querySelectorAll<HTMLButtonElement>('[data-mode]')) b.classList.toggle('locked', !host);
     this.portalList.innerHTML = room.members
@@ -417,7 +424,7 @@ export class LobbyUI {
     this.stripSeen = new Map(room.members.map((m) => [m.id, m.id === room.host || m.ready]));
     this.stripCode = room.code;
     this.crewStrip.innerHTML = `<div class="crew-row"><div class="crew-faces">${faces.join('')}</div><span class="crew-count"><span class="label">CREW</span>${room.members.length}/${room.size}</span></div>
-      <div class="crew-foot"><span class="crew-what">${room.mode === 'hideSeek' ? 'HIDE &amp; SEEK' : 'HEIST'} · ${esc(map)}</span><button type="button" data-copy="link">COPY LINK</button></div>`;
+      <div class="crew-foot"><span class="crew-what">${room.mode === 'hideSeek' ? 'HIDE &amp; SEEK' : 'HEIST'} · ${esc(map)}</span><button type="button" class="crowd-btn" data-crowd="1" title="A QR for the audience">CROWD QR</button><button type="button" data-copy="link">COPY LINK</button></div>`;
     // START (host) or READY (everyone else), and what it's waiting for.
     const here = room.members.filter((m) => !m.inGame && !m.offline);
     const waiting = here.filter((m) => m.id !== room.host && !m.ready);

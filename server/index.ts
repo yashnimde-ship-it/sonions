@@ -17,9 +17,10 @@ import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from '../src/data/maps.ts';
+import { CHAOS, CHAOS_CARDS, type ChaosId, chaosOptions, isChaosId } from '../src/data/chaos.ts';
 import { DEPART_MS, normalizeCode, QUICK_PLAY_SIZE, ROOM_CODE_CHARS, ROOM_CODE_LENGTH, ROOM_MAX, ROOM_MIN, START_COUNTDOWN_MS, WAVE_LINES, type RoomInfo, type RoomSummary } from '../src/data/rooms.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
-import { NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
+import { NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type WatchInfo, type WatchPlayer, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.PORT ?? 3001);
@@ -48,6 +49,9 @@ interface Client {
   party: string | null;
   /** The room browser is open: they get the public room list when it changes. */
   browsing?: boolean;
+  /** Crowd Chaos: the room this watcher watches (room 'watch'), and whether it's the projector. */
+  watching?: string;
+  screen?: boolean;
   /** When this player last revived a teammate, and last pinged (ms). */
   lastRevive?: number;
   lastPing?: number;
@@ -575,6 +579,7 @@ function leaveMatch(c: Client) {
 }
 
 function endMatch(matchId: string) {
+  chaosState.delete(matchId);
   for (const p of parties.values()) if (p.matchId === matchId) {
     p.matchId = null;
     sendRoom(p);
@@ -786,6 +791,7 @@ function forget(c: Client) {
   c.dropTimer = null;
   leaveMatch(c);
   leaveParty(c);
+  stopWatching(c);
   clients.delete(c.state.id);
   if (c.key && byKey.get(c.key) === c) byKey.delete(c.key);
   if (c.state.name) console.log(`${c.state.name} left (${clients.size} connected)`);
@@ -804,6 +810,12 @@ function tick() {
     send(c, { t: 'snapshot', room: 'lobby', players: mates.filter((m) => m.room === 'lobby').map((m) => m.state), portals: [], online, taken });
   }
   if (roomsDirty) sendRoomList();
+  tickCount++;
+  for (const party of parties.values()) {
+    if (!party.watchers.size) continue;
+    if (tickCount % 4 === 0) sendWatchFrame(party, now);
+    if (party.matchId) runChaos(party, party.matchId, now);
+  }
   for (const [matchId, ids] of matches) {
     const players = [...ids].map((id) => clients.get(id)?.state).filter((s): s is PlayerState => !!s && s.id !== saboteurs.get(matchId));
     const seeker = isHideSeek(matchId) ? clients.get(saboteurs.get(matchId) ?? '')?.state : undefined;
@@ -912,6 +924,34 @@ function handle(c: Client, msg: ClientMsg) {
         send(c, { t: 'room', room: null });
       }
       break;
+    case 'watchRoom': {
+      if (c.room !== 'menu') break;
+      const code = normalizeCode(String(msg.code ?? ''));
+      const party = code ? parties.get(code) : undefined;
+      if (!party) {
+        send(c, { t: 'roomError', reason: code ? 'notFound' : 'badCode' });
+        break;
+      }
+      c.room = 'watch';
+      c.watching = party.code;
+      c.screen = !!msg.screen;
+      c.browsing = false;
+      party.watchers.add(s.id);
+      sendWatch(party);
+      // A vote already open: show it straight away.
+      const st = party.matchId ? chaosState.get(party.matchId) : undefined;
+      if (st?.vote) send(c, voteMsg(party, st.vote, c));
+      console.log(`${s.name} watching room ${party.code}${c.screen ? ' (big screen)' : ''}`);
+      break;
+    }
+    case 'vote': {
+      const party = parties.get(c.watching ?? '');
+      const vote = party?.matchId ? chaosState.get(party.matchId)?.vote : undefined;
+      if (!party || !vote || c.screen || !isChaosId(msg.card) || !vote.options.includes(msg.card)) break;
+      vote.votes.set(s.id, msg.card);
+      broadcastVote(party, vote);
+      break;
+    }
     case 'browse':
       c.browsing = !!msg.on && c.room === 'menu';
       if (c.browsing) send(c, { t: 'rooms', list: roomList() });
@@ -2020,6 +2060,8 @@ interface Party {
   matchId: string | null;
   /** The host pressed START: the 3-2-1 is running (the game starts when it fires). */
   startTimer: ReturnType<typeof setTimeout> | null;
+  /** Crowd Chaos: who's watching (no seat, they vote). */
+  watchers: Set<string>;
   /** When the 3-2-1 reaches GO: from then on (the getaway) only the launch itself can call it off. */
   departAt?: number;
 }
@@ -2036,7 +2078,7 @@ function newCode() {
 }
 
 function createParty(host: Client, isPrivate: boolean, size: number, mode: GameMode, map: MapId): Party {
-  const party: Party = { code: newCode(), host: host.state.id, isPrivate, size: Math.max(ROOM_MIN, Math.min(ROOM_MAX, Math.round(Number(size) || QUICK_PLAY_SIZE))), map, mode, members: [], ready: new Set(), matchId: null, startTimer: null };
+  const party: Party = { code: newCode(), host: host.state.id, isPrivate, size: Math.max(ROOM_MIN, Math.min(ROOM_MAX, Math.round(Number(size) || QUICK_PLAY_SIZE))), map, mode, members: [], ready: new Set(), matchId: null, startTimer: null, watchers: new Set() };
   parties.set(party.code, party);
   console.log(`room ${party.code} created by ${host.state.name} (${isPrivate ? 'private' : 'public'}, ${party.size} players)`);
   return party;
@@ -2062,6 +2104,13 @@ function leaveParty(c: Client) {
   party.ready.delete(c.state.id);
   if (!party.members.length) {
     parties.delete(party.code);
+    for (const id of party.watchers) {
+      const w = clients.get(id);
+      if (!w) continue;
+      w.watching = undefined;
+      w.room = 'menu';
+      send(w, { t: 'watch', info: null });
+    }
     roomsDirty = true;
     console.log(`room ${party.code} closed`);
     return;
@@ -2138,6 +2187,7 @@ function sendRoom(party: Party) {
     const m = clients.get(id);
     if (m) send(m, msg);
   }
+  sendWatch(party);
   roomsDirty = true;
 }
 
@@ -2150,6 +2200,165 @@ function sendRoomList() {
   roomsDirty = false;
   const msg: ServerMsg = { t: 'rooms', list: roomList() };
   for (const c of joined()) if (c.browsing && c.room === 'menu') send(c, msg);
+}
+
+// ---------- Crowd Chaos ----------
+
+interface ChaosVote {
+  id: number;
+  options: ChaosId[];
+  endsAt: number;
+  /** Watcher id -> their card (they can change their mind until it closes). */
+  votes: Map<string, ChaosId>;
+}
+/** Per match: when the next vote opens, the open vote, the last winner, and the round it's for. */
+const chaosState = new Map<string, { nextAt: number; vote: ChaosVote | null; last: ChaosId | null; seq: number; round: number }>();
+let tickCount = 0;
+
+/** Everyone who should hear about the crowd: the players in the game and the watchers. */
+function toCrowd(party: Party, msg: ServerMsg | ((c: Client) => ServerMsg)) {
+  const ids = [...(party.matchId ? matches.get(party.matchId) ?? [] : []), ...party.watchers];
+  for (const id of ids) {
+    const c = clients.get(id);
+    if (c) send(c, typeof msg === 'function' ? msg(c) : msg);
+  }
+}
+
+const voters = (party: Party) => [...party.watchers].filter((id) => !clients.get(id)?.screen).length;
+
+function voteMsg(party: Party, vote: ChaosVote, c: Client): ServerMsg {
+  const tallies = vote.options.map((o) => [...vote.votes.values()].filter((v) => v === o).length);
+  return { t: 'chaosVote', id: vote.id, options: vote.options, ms: Math.max(0, vote.endsAt - Date.now()), tallies, voters: voters(party), mine: c.watching ? vote.votes.get(c.state.id) ?? null : undefined };
+}
+
+function broadcastVote(party: Party, vote: ChaosVote) {
+  toCrowd(party, (c) => voteMsg(party, vote, c));
+}
+
+/** The vote cycle for a live heist that has a crowd: open a vote, close it, make it happen. */
+function runChaos(party: Party, matchId: string, now: number) {
+  const round = phases.get(matchId);
+  let st = chaosState.get(matchId);
+  const roundNo = series.get(matchId)?.round ?? 0;
+  if (!round || round.phase !== 'live' || isHideSeek(matchId)) {
+    // Between rounds (or not a heist): close any open vote.
+    if (st?.vote) {
+      st.vote = null;
+      toCrowd(party, { t: 'chaosVote', id: st.seq, options: [], ms: 0, tallies: [], voters: voters(party) });
+    }
+    return;
+  }
+  if (!st || st.round !== roundNo) {
+    st = { nextAt: now + CHAOS.firstAfterMs, vote: null, last: st?.last ?? null, seq: st?.seq ?? 0, round: roundNo };
+    chaosState.set(matchId, st);
+  }
+  if (!st.vote && now >= st.nextAt) {
+    st.vote = { id: ++st.seq, options: chaosOptions(st.last), endsAt: now + CHAOS.voteMs, votes: new Map() };
+    broadcastVote(party, st.vote);
+    return;
+  }
+  if (!st.vote || now < st.vote.endsAt) return;
+  const vote = st.vote;
+  st.vote = null;
+  st.nextAt = now + CHAOS.everyMs - CHAOS.voteMs;
+  const tallies = vote.options.map((o) => [...vote.votes.values()].filter((v) => v === o).length);
+  const total = tallies.reduce((a, b) => a + b, 0);
+  toCrowd(party, { t: 'chaosVote', id: vote.id, options: [], ms: 0, tallies, voters: voters(party) });
+  if (!total) return; // nobody voted: the house stays quiet this time
+  const best = Math.max(...tallies);
+  const tied = vote.options.filter((_, i) => tallies[i] === best);
+  const card = tied[Math.floor(Math.random() * tied.length)];
+  st.last = card;
+  applyChaos(party, matchId, card, best, total);
+}
+
+/** The crowd's card happens. Doors and traps change here; the rest happens in each player's game. */
+function applyChaos(party: Party, matchId: string, card: ChaosId, votes: number, total: number) {
+  const now = Date.now();
+  const ms = CHAOS_CARDS[card].ms;
+  const members = [...(matches.get(matchId) ?? [])].map((id) => clients.get(id)).filter((m): m is Client => !!m);
+  if (card === 'lockdown') {
+    const locks = doorLocks.get(matchId);
+    for (const door of doorsOf(matchId)) {
+      locks?.set(door.id, now + ms);
+      doorStates.get(matchId)?.set(door.id, false);
+      for (const m of members) {
+        send(m, { t: 'door', id: door.id, open: false });
+        send(m, { t: 'doorLocked', id: door.id, ms });
+      }
+    }
+  } else if (card === 'alarm') {
+    for (const [id, trap] of trapState.get(matchId) ?? []) {
+      if (trap.firedAt == null || (trap.activeUntil !== undefined && now < trap.activeUntil)) continue;
+      resetTrap(matchId, id, trap);
+    }
+  }
+  const spots = card === 'treasureHint' ? (vaults.get(matchId)?.diamonds ?? []).flatMap((d) => (d.place.at === 'spot' ? [d.place.spot] : [])) : undefined;
+  const sab = saboteurs.get(matchId);
+  toCrowd(party, (c) => ({ t: 'chaos', card, votes, total, ...(spots && c.state.id !== sab ? { spots } : {}) }));
+  console.log(`${matchId}: the crowd chose ${card} (${votes}/${total})`);
+}
+
+/** What a watcher sees of the room: who's in it, the map, how many are watching. */
+function sendWatch(party: Party) {
+  if (!party.watchers.size) return;
+  const info: WatchInfo = {
+    code: party.code,
+    hostName: clients.get(party.host)?.state.name ?? '?',
+    map: party.map,
+    mode: party.mode,
+    status: party.matchId ? 'playing' : 'waiting',
+    players: party.members.flatMap((id) => {
+      const m = clients.get(id);
+      return m ? [{ name: m.state.name, character: m.state.character }] : [];
+    }),
+    watchers: party.watchers.size,
+  };
+  for (const id of party.watchers) {
+    const w = clients.get(id);
+    if (w) send(w, { t: 'watch', info });
+  }
+}
+
+/** The watchers' live map, a few times a second: everyone in the game, the clock and the score. */
+function sendWatchFrame(party: Party, now: number) {
+  const matchId = party.matchId;
+  const round = matchId ? phases.get(matchId) : undefined;
+  const vault = matchId ? vaults.get(matchId) : undefined;
+  const sab = matchId ? saboteurs.get(matchId) : undefined;
+  const hs = !!matchId && isHideSeek(matchId);
+  const players: WatchPlayer[] = matchId
+    ? [...(matches.get(matchId) ?? [])].flatMap((id) => {
+        const m = clients.get(id);
+        // The heist Saboteur has no body on the map.
+        if (!m || (!hs && id === sab)) return [];
+        return [{ id, name: m.state.name, character: m.state.character, x: Math.round(m.state.x), y: Math.round(m.state.y), deck: m.state.deck, hp: m.state.hp, carrying: m.state.carrying }];
+      })
+    : [];
+  const msg: ServerMsg = {
+    t: 'watchFrame',
+    map: (matchId && matchMaps.get(matchId)) || party.map,
+    mode: matchId ? (matchModes.get(matchId) ?? 'heist') : party.mode,
+    phase: round?.phase ?? 'none',
+    msLeft: round ? Math.max(0, round.endsAt - now) : 0,
+    banked: vault?.banked ?? 0,
+    need: vault?.need ?? 0,
+    players,
+  };
+  for (const id of party.watchers) {
+    const w = clients.get(id);
+    if (w) send(w, msg);
+  }
+}
+
+/** A watcher leaves (or goes): out of their room's crowd. */
+function stopWatching(c: Client) {
+  const party = parties.get(c.watching ?? '');
+  c.watching = undefined;
+  if (!party) return;
+  party.watchers.delete(c.state.id);
+  for (const vote of [chaosState.get(party.matchId ?? '')?.vote].filter((v): v is ChaosVote => !!v)) vote.votes.delete(c.state.id);
+  sendWatch(party);
 }
 
 // ---------- HTTP (the built game) and WebSocket ----------

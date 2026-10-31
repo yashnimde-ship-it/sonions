@@ -4005,3 +4005,244 @@ body.touch .gadget-card .gc-key kbd { display: none; }
 #lobby.departing .party-panel,
 #lobby.departing .start-box,
 #lobby.departing .gadget-card { opacity: 0; pointer-events: none; }
+
+/* ---------- Crowd Chaos ---------- */
+#crowd {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(ellipse at 50% 0%, #2b1b4a 0%, #0e0a1a 70%);
+  color: var(--paper, #fff4e6);
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.crowd-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 3px solid #2a1f3d;
+  flex-wrap: wrap;
+}
+
+.crowd-brand b { color: #ff4fb0; }
+.crowd-room { margin-left: auto; }
+.crowd-room b { color: #ffc94a; letter-spacing: 0.12em; }
+.crowd-count { color: #c9c2d6; }
+
+.crowd-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+}
+
+.crowd-mapbox {
+  position: relative;
+  min-height: 0;
+  border: 3px solid #2a1f3d;
+  border-radius: 8px;
+  background: #0a0812;
+  overflow: hidden;
+}
+
+.crowd-mapbox canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.crowd-score {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: rgba(14, 10, 26, 0.85);
+  color: #ffe39a;
+}
+
+.crowd-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.crowd-vote,
+.crowd-rule,
+.crowd-join,
+.crowd-feed {
+  margin: 0;
+  padding: 10px 12px;
+  border: 3px solid #2a1f3d;
+  border-radius: 8px;
+  background: rgba(20, 14, 34, 0.9);
+}
+
+.vote-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.vote-head b { color: #ffc94a; }
+.vote-head span { color: #c9c2d6; }
+
+.vote-cards {
+  display: grid;
+  gap: 8px;
+}
+
+.vote-card {
+  --c: #fff;
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: 'icon name tally' 'icon blurb tally' 'bar bar bar';
+  gap: 2px 10px;
+  align-items: center;
+  padding: 10px 12px;
+  font-family: inherit;
+  text-align: left;
+  color: inherit;
+  background: #1a1330;
+  border: 3px solid color-mix(in srgb, var(--c) 55%, #2a1f3d);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.vote-card:disabled { cursor: default; }
+.vote-card:not(:disabled):active { transform: translateY(2px); }
+.vote-card.mine { background: color-mix(in srgb, var(--c) 25%, #1a1330); border-color: var(--c); box-shadow: 0 0 12px color-mix(in srgb, var(--c) 60%, transparent); }
+.vote-card .icon { grid-area: icon; font-size: 26px; }
+.vote-card .name { grid-area: name; color: var(--c); font-size: 13px; }
+.vote-card .blurb { grid-area: blurb; color: #c9c2d6; font-size: 9px; line-height: 1.5; }
+.vote-card .tally { grid-area: tally; font-size: 18px; }
+.vote-card .bar { grid-area: bar; height: 6px; margin-top: 6px; border-radius: 3px; background: #2a1f3d; overflow: hidden; }
+.vote-card .bar i { display: block; height: 100%; background: var(--c); transition: width 0.3s; }
+
+.crowd-wait { margin: 6px 0; line-height: 1.8; color: #ffe39a; text-align: center; }
+.crowd-players { margin: 4px 0 0; text-align: center; line-height: 1.8; }
+
+.crowd-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.crowd-rule .label { color: #c9c2d6; font-size: 9px; }
+.crowd-rule b { font-size: 13px; }
+.crowd-rule b.calm { color: #6b6178; }
+.crowd-rule .left { margin-left: auto; color: #ffe39a; }
+
+.crowd-feed {
+  list-style: none;
+  min-height: 0;
+  overflow: hidden;
+  line-height: 1.8;
+  font-size: 9px;
+}
+
+.crowd-feed:empty { display: none; }
+
+.crowd-join {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.crowd-join .qr {
+  flex: none;
+  width: 150px;
+  height: 150px;
+  padding: 6px;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.crowd-join .qr svg { width: 100%; height: 100%; display: block; }
+.crowd-join b { display: block; margin-bottom: 8px; color: #ffc94a; font-size: 14px; line-height: 1.5; }
+.crowd-join span { color: #c9c2d6; font-size: 10px; word-break: break-all; }
+
+.crowd-splash {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 26px;
+  border: 4px solid #ffc94a;
+  border-radius: 10px;
+  background: rgba(14, 10, 26, 0.95);
+  text-align: center;
+  pointer-events: none;
+}
+
+.crowd-splash[hidden] { display: none; }
+.crowd-splash .kicker { color: #c9c2d6; font-size: 11px; }
+.crowd-splash .big { font-size: 26px; }
+.crowd-splash .small { color: #c9c2d6; font-size: 10px; }
+.crowd-splash.pop { animation: crowd-pop 0.45s cubic-bezier(0.2, 1.6, 0.4, 1); }
+
+@keyframes crowd-pop {
+  from { transform: translate(-50%, -50%) scale(0.4); opacity: 0; }
+  to { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+/* The phone remote: the cards first, then a small map, then the feed. */
+#crowd.remote .crowd-body { overflow-y: auto; }
+#crowd.remote .crowd-side { order: -1; }
+#crowd.remote .crowd-mapbox { flex: none; height: 38vh; }
+
+/* The big screen: the map fills the left, the QR and the votes on the right. */
+#crowd.screen { font-size: 13px; }
+#crowd.screen .crowd-body { flex-direction: row; }
+#crowd.screen .crowd-mapbox { flex: 1; }
+#crowd.screen .crowd-side { width: min(440px, 34vw); }
+#crowd.screen .crowd-join .qr { width: 200px; height: 200px; }
+#crowd.screen .vote-card .name { font-size: 16px; }
+#crowd.screen .crowd-splash .big { font-size: 40px; }
+
+/* Players: the crowd strip under the round timer. */
+#crowd-ticker {
+  position: absolute;
+  left: 50%;
+  top: 112px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 90vw;
+  padding: 6px 12px;
+  border: 2px solid #ff4fb0;
+  border-radius: 6px;
+  background: rgba(14, 10, 26, 0.88);
+  font-size: 9px;
+  pointer-events: none;
+}
+
+#crowd-ticker[hidden] { display: none; }
+#crowd-ticker b { color: #ff4fb0; }
+#crowd-ticker em { color: #ffe39a; font-style: normal; }
+
+/* The host's Crowd QR pop-up. */
+.crowd-qr-modal { z-index: 95; text-align: center; }
+.crowd-qr-modal .qr { width: 240px; height: 240px; margin: 10px auto; padding: 8px; background: #fff; border-radius: 6px; }
+.crowd-qr-modal .qr svg { width: 100%; height: 100%; display: block; }
+.crowd-qr-modal .link { word-break: break-all; color: var(--purple); }
+.crowd-qr-modal .actions { display: flex; gap: 12px; justify-content: center; }
+.room-bar .crowd-btn { color: #ff4fb0; border-color: rgba(255, 79, 176, 0.6); }
+.crew-foot .crowd-btn { color: #ff4fb0; border-color: rgba(255, 79, 176, 0.6); margin-left: auto; }
