@@ -1,5 +1,5 @@
 import type { CharacterId } from '../config';
-import { type Ability, abilityFor, type Role } from '../data/characters.ts';
+import { type Ability, abilityFor, type AbilityId, type Role } from '../data/characters.ts';
 import type { Bandit } from '../entities/Bandit';
 import { HEAL_REACH, MAX_HP, OVERCLOCK_MS, TRAPS, type TrapSpot } from '../data/traps.ts';
 import type { ClientMsg } from '../net/protocol';
@@ -7,6 +7,10 @@ import type { ClientMsg } from '../net/protocol';
 // Quickstep: a dash of 64 art px (4 tiles, about 3-4 steps) in 14 frames (under a quarter second).
 export const QUICKSTEP_FRAMES = 14;
 const QUICKSTEP_DISTANCE = 64;
+/** Abilities the server must accept before a use is spent and the cooldown starts. */
+const PENDING = new Set<AbilityId>(['trapJam', 'wingman', 'clone', 'mend', 'empKnife', 'diamondScan', 'signalDivide', 'trackerPing', 'lootShift', 'shockwave', 'burnZone']);
+/** The Saboteur abilities aimed with the cursor at a point (they all go out as 'sabAbility'). */
+const AIMED = new Set<AbilityId>(['signalDivide', 'trackerPing', 'shockwave', 'burnZone']);
 const NEEDS_LABEL = { traps: 'traps', energy: 'energy', loot: 'loot carrying', stuns: 'trap stuns', health: 'health', doors: 'door locks', abilities: 'a unique ability' };
 
 /** What an ability can act on. */
@@ -30,6 +34,10 @@ export interface AbilityContext {
   targetPoint?: { x: number; y: number; open: boolean };
   /** The furniture Wingman would search (nearest unsearched, the way I'm facing). */
   wingmanTarget?: { id: string; name: string };
+  /** The furniture under the Saboteur's cursor (Loot Shift), and why Loot Shift can't use it:
+   *  as the diamond to move (`from` null) or as where it goes. Null when it can. */
+  targetSpot?: { id: string; name: string };
+  lootCheck?: (from: string | null, to: string) => string | null;
 }
 
 /**
@@ -54,6 +62,8 @@ export class AbilitySystem {
   /** A passive's own state line (Shield: up, or broken and recharging), shown instead of "Passive". */
   private status: { text: string; on: boolean } | null = null;
   private overclock: { startsAt: number; endsAt: number } | null = null;
+  /** Loot Shift: the furniture whose diamond was picked (the next Q says where it goes). */
+  private shiftFrom: { id: string; name: string } | null = null;
   private root = document.getElementById('ability')!;
   private roleEl = document.getElementById('ability-role')!;
   private nameEl = document.getElementById('ability-name')!;
@@ -81,6 +91,7 @@ export class AbilitySystem {
     this.spentNote = null;
     this.meter.hidden = true;
     this.overclock = null;
+    this.shiftFrom = null;
     this.root.dataset.role = role;
     this.roleEl.textContent = role === 'runner' ? 'RUNNER' : 'SABOTEUR';
     this.nameEl.textContent = this.ability.name;
@@ -116,9 +127,11 @@ export class AbilitySystem {
     if (ctx.me.stunned && a.id !== 'shakeItOff') return this.note('Stunned!');
     const fail = this.apply(a, ctx);
     if (fail) return this.note(fail);
+    // Loot Shift's first Q only picks the diamond.
+    if (fail === false) return;
     // Trap Jam's target is hidden from the client, and Wingman's might be gone by now. Wait for
     // the server to confirm before spending a use or starting cooldown; a refusal can be retried.
-    if (a.id === 'trapJam' || a.id === 'wingman' || a.id === 'clone' || a.id === 'mend' || a.id === 'empKnife' || a.id === 'diamondScan') {
+    if (PENDING.has(a.id)) {
       this.waitingForServer = true;
       this.waitingSince = now;
       return;
@@ -128,10 +141,9 @@ export class AbilitySystem {
     if (a.id !== 'tripwire' && a.id !== 'trapRefresh' && a.id !== 'doorJam') ctx.send({ t: 'ability', ability: a.id });
   }
 
-  /** Resolve an attempt the server had to accept first (Trap Jam, Wingman, Clone, Mend, EMP Knife, Diamond Scan). */
+  /** Resolve an attempt the server had to accept first (Trap Jam, Wingman, Clone, Mend, EMP Knife, Diamond Scan, the aimed Saboteur abilities). */
   resolvePending(success: boolean) {
-    const id = this.ability?.id;
-    if (!this.waitingForServer || !this.ability || (id !== 'trapJam' && id !== 'wingman' && id !== 'clone' && id !== 'mend' && id !== 'empKnife' && id !== 'diamondScan')) return;
+    if (!this.waitingForServer || !this.ability || !PENDING.has(this.ability.id)) return;
     this.waitingForServer = false;
     if (!success) return;
     this.readyAt = performance.now() + this.ability.cooldown * 1000;
@@ -139,9 +151,55 @@ export class AbilitySystem {
     if (this.ability.id !== 'clone') this.usesLeft = Math.max(0, this.usesLeft - 1);
   }
 
-  /** Runs the effect; returns why it couldn't, if it couldn't. */
-  private apply(a: Ability, ctx: AbilityContext): string | null {
+  /** The server's answer to a Saboteur ability: spent (cooldown starts), or why not. Either way
+   *  a Loot Shift starts again from picking a diamond. */
+  sabResult(ok: boolean, reason?: string) {
+    this.resolvePending(ok);
+    this.dropShift();
+    if (!ok) this.note(reason ?? 'Refused');
+  }
+
+  /** The furniture whose diamond Loot Shift picked, if one is picked. */
+  get lootShiftFrom() {
+    return this.shiftFrom?.id ?? null;
+  }
+
+  private dropShift() {
+    if (!this.shiftFrom) return;
+    this.shiftFrom = null;
+    this.status = null;
+  }
+
+  /** Runs the effect; returns why it couldn't, if it couldn't (false: nothing sent yet). */
+  private apply(a: Ability, ctx: AbilityContext): string | null | false {
+    if (AIMED.has(a.id)) {
+      // Signal Divide, Shockwave and Burn Zone need floor to stand on; Tracker Ping goes anywhere.
+      if (!ctx.targetPoint) return 'Aim with the mouse';
+      if (a.id !== 'trackerPing' && !ctx.targetPoint.open) return 'Aim at open floor';
+      ctx.send({ t: 'sabAbility', ability: a.id, x: ctx.targetPoint.x, y: ctx.targetPoint.y });
+      return null;
+    }
     switch (a.id) {
+      case 'lootShift': {
+        // Two aims: the furniture hiding the diamond, then the furniture it goes to. Q on the
+        // picked one again (or on nothing) lets go of it.
+        const spot = ctx.targetSpot;
+        const from = this.shiftFrom;
+        if (!spot || spot.id === from?.id) {
+          if (!from) return 'Aim at furniture hiding a diamond';
+          this.dropShift();
+          return 'Let go of the diamond';
+        }
+        const why = ctx.lootCheck?.(from?.id ?? null, spot.id) ?? null;
+        if (why) return why;
+        if (!from) {
+          this.shiftFrom = spot;
+          this.setStatus('NOW AIM WHERE IT GOES', true);
+          return false;
+        }
+        ctx.send({ t: 'sabAbility', ability: 'lootShift', from: from.id, to: spot.id });
+        return null;
+      }
       case 'overclock':
         this.overclock = { startsAt: performance.now(), endsAt: performance.now() + OVERCLOCK_MS };
         return null;
@@ -188,7 +246,8 @@ export class AbilitySystem {
         return null;
       case 'diamondScan':
         if (ctx.knockedOut) return 'Knocked out';
-        ctx.send({ t: 'ability', ability: 'diamondScan' });
+        // Thrown the way she faces; the server lands it and scans there.
+        ctx.send({ t: 'ability', ability: 'diamondScan', facing: ctx.me.facing });
         return null;
       case 'empKnife':
         // Straight ahead; the server flies it and sets off the EMP where it lands.
@@ -263,6 +322,12 @@ export class AbilitySystem {
     const a = this.ability;
     if (!a) return;
     const now = performance.now();
+    // Asked the server and heard nothing back (it's down, or running older code that doesn't
+    // know this ability): say so instead of looking like the key does nothing.
+    if (this.waitingForServer && now - this.waitingSince > 2000) {
+      this.waitingForServer = false;
+      this.note('No answer from the server');
+    }
     const left = Math.max(0, this.readyAt - now);
     const spent = this.usesLeft <= 0;
     this.cdEl.style.height = spent ? '100%' : `${(left / (a.cooldown * 1000 || 1)) * 100}%`;

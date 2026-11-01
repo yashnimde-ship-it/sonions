@@ -119,6 +119,9 @@ export type ClientMsg =
   | { t: 'trapRefresh'; id: string }
   /** Iris's Saboteur ability: slam a targeted door shut and lock it briefly. */
   | { t: 'doorJam'; id: string }
+  /** Signal Divide, Tracker Ping, Shockwave and Burn Zone aim at (x, y); Loot Shift moves the
+   *  diamond in furniture `from` into furniture `to`. The server checks everything. */
+  | { t: 'sabAbility'; ability: AbilityId; x?: number; y?: number; from?: string; to?: string }
   /** The Saboteur puts a trap down, or picks one up. */
   | { t: 'place'; trap: PlacedTrap }
   | { t: 'unplace'; id: string }
@@ -251,13 +254,17 @@ export type ServerMsg =
   | { t: 'anchorRefused'; reason: string }
   /** Beacon warped from `from` to `to`; everyone sees the flash. She is put at `to`. */
   | { t: 'warp'; by: string; deck: MapId; from: [number, number]; to: [number, number] }
-  /** Fuse scanned: everyone sees the pulse; only Fuse gets `spots` (furniture hiding a diamond, as it was then). */
-  | { t: 'scan'; by: string; deck: MapId; x: number; y: number; radius: number; ms: number; spots?: string[] }
+  /** Fuse threw her recon beacon from `from`; it bounces twice and lands at `to` after `ms`. */
+  | { t: 'scanThrow'; id: string; by: string; deck: MapId; from: [number, number]; to: [number, number]; ms: number }
+  /** Fuse's beacon landed and scanned round (x, y): everyone sees the pulse; only Fuse gets `spots`
+   *  (furniture hiding a diamond, as it was then). */
+  | { t: 'scan'; id?: string; by: string; deck: MapId; x: number; y: number; radius: number; ms: number; spots?: string[] }
   /** Fuse's scan was refused (nothing spent); private to Fuse. */
   | { t: 'scanRefused'; reason: string }
-  /** Scout's knife is flying from `from` to `to` (art px) for `ms`; then its EMP: traps off around (x, y). */
-  | { t: 'knife'; id: string; by: string; deck: MapId; from: [number, number]; to: [number, number]; ms: number }
-  | { t: 'emp'; id: string; by: string; deck: MapId; x: number; y: number; radius: number; ms: number; count: number }
+  /** Scout's knife: released over `windupMs`, then flying from `from` to `to` (art px) for `ms`;
+   *  then its EMP: traps off around (x, y). */
+  | { t: 'knife'; id: string; by: string; deck: MapId; from: [number, number]; to: [number, number]; ms: number; windupMs?: number }
+  | { t: 'emp'; id: string; by: string; deck: MapId; x: number; y: number; radius: number; ms: number; count: number; chargeMs?: number; spreadMs?: number }
   /** Scout's knife was refused (nothing spent); private to Scout. */
   | { t: 'knifeRefused'; reason: string }
   /** Switch's Mend: started (for `ms`), a tick of heals (who, how much), or over. */
@@ -268,8 +275,8 @@ export type ServerMsg =
   | { t: 'mendRefused'; reason: string }
   /** Latch's Clone is running from `from` to `to` (art px) in `ms`; everyone sees it. */
   | { t: 'clone'; id: string; by: string; deck: MapId; facing: Facing; from: [number, number]; to: [number, number]; ms: number }
-  /** The clone reached the end of its run, having spotted `found` traps. */
-  | { t: 'cloneDone'; id: string; by: string; found: number }
+  /** The clone's run is over, having spotted `found` traps; `shattered`: a trap went off on it there. */
+  | { t: 'cloneDone'; id: string; by: string; found: number; shattered?: [number, number] }
   /** Latch's clone charges, and diamonds banked toward refilling them; private to Latch. */
   | { t: 'cloneCharges'; charges: number; banked: number; need: number }
   /** Latch's clone was refused (nothing spent); private to Latch. */
@@ -298,6 +305,32 @@ export type ServerMsg =
   | { t: 'doorLocked'; id: string; ms: number }
   /** Private acknowledgement to Iris that Door Jam was accepted. */
   | { t: 'doorJammed' }
+  /** To the Saboteur: their 'sabAbility' went off (cooldown and a use spent), or why not. */
+  | { t: 'sabResult'; ability: AbilityId; ok: boolean; reason?: string }
+  /** To the Saboteur: what one of their abilities just did ("Shockwave hit 2 Runners"). */
+  | { t: 'sabNote'; text: string }
+  /** A Saboteur effect was called off early (its Saboteur left): stop drawing it. */
+  | { t: 'sabEnd'; id: string }
+  /** Switch's Signal Divide, seen by everyone: builds for `deployMs`, then lasts `ms`. */
+  | { t: 'signalDivide'; id: string; by: string; deck: MapId; x: number; y: number; vertical: boolean; length: number; depth: number; deployMs: number; ms: number }
+  /** To a Runner standing in a Signal Divide: static (less sight, muffled sound) for `ms`. */
+  | { t: 'signalStatic'; ms: number }
+  /** Scout's Tracker Ping, to the Saboteur alone: the Runners the pulse reached and where. */
+  | { t: 'trackerPing'; id: string; deck: MapId; x: number; y: number; radius: number; ms: number; marks: { id: string; x: number; y: number }[] }
+  /** To a Runner a Tracker Ping marked (just that it happened). */
+  | { t: 'tracked'; ms: number }
+  /** Fuse's Loot Shift, to the Saboteur: the diamond moved from one piece of furniture to another. */
+  | { t: 'lootShift'; from: string; to: string; ms: number }
+  /** To the Runners: a diamond was moved (not which, or where). */
+  | { t: 'lootShifted' }
+  /** Beacon's Shockwave, seen by everyone: a warning, then the wave. */
+  | { t: 'shockwave'; id: string; by: string; deck: MapId; x: number; y: number; radius: number; warnMs: number }
+  /** To a Runner the wave caught: pushed `dist` away from (x, y), and dazed for `dazeMs`. */
+  | { t: 'shoved'; x: number; y: number; dist: number; dazeMs: number }
+  /** Velvet's Burn Zone, seen by everyone: a warning, then it burns for `ms`. */
+  | { t: 'burnZone'; id: string; by: string; deck: MapId; x: number; y: number; radius: number; warnMs: number; ms: number; tickMs: number }
+  /** To a Runner standing in a Burn Zone: this much damage. */
+  | { t: 'burned'; damage: number }
   /** The Saboteur put a trap down, or picked one up. */
   | { t: 'place'; trap: PlacedTrap }
   | { t: 'unplace'; id: string }

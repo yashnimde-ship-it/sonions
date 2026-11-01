@@ -6,8 +6,9 @@ import '@fontsource/press-start-2p';
 import '@fontsource/cinzel/600.css';
 import '@fontsource/cinzel/700.css';
 import { ART_TILE, CHAR_GLOW, CHAR_SCREEN_FRACTION, CHARACTERS, type CharacterId, characterSheet, HITBOX } from './config';
-import { ANCHOR_MOVE_HOLD_MS, CHARACTER_INFO, carryCapacity, CLONE, HEAVY_CARRY, MEND } from './data/characters';
+import { ABILITIES, type AbilityId, ANCHOR_MOVE_HOLD_MS, BURN_ZONE, CHARACTER_INFO, carryCapacity, CLONE, HEAVY_CARRY, MEND, SHOCKWAVE, SIGNAL_DIVIDE, TRACKER_PING } from './data/characters';
 import { WINGMAN_RANGE } from './data/wingman';
+import { abilityArtReady, drawAbilityFrame, preloadAbilityArt } from './systems/AbilityArt';
 import { type Energy, energyAt, VELVET } from './data/velvet';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
@@ -35,7 +36,7 @@ import { drawTrap, trapArtRect } from './systems/TrapArt';
 import { heistMusicLevel, setHeistMusic, setHeistMusicEnabled } from './systems/HeistMusic';
 import { lobbyMusicInfo, setLobbyMusic, setMusicEnabled } from './systems/Music';
 import { surfaceAt } from './data/surfaces';
-import { audioOut, blip, engineStart, footstep, play as sfx, setSoundEnabled, unlockSound } from './systems/Sound';
+import { audioOut, blip, engineStart, footstep, play as sfx, setMuffled, setSoundEnabled, unlockSound } from './systems/Sound';
 /** For playtests: is sound running yet? */
 const audioOutState = () => audioOut()?.state ?? 'none';
 import { CRUSHER_WARN_MS, drawFired, type Fired, FX_MS } from './systems/TrapFx';
@@ -134,6 +135,32 @@ const CAR_TAILLIGHTS = [[930, 147], [994, 147]];
 // Loot: one item in your hands at a time (two for Mule), 35% slower for each one carried
 // (60% less for Mule). Bank it by walking into the GETAWAY zone on the street, in tiles.
 const CARRY_SLOW = 0.35;
+/** The painted shield round Rattle: art px per stored px (about her height plus a margin). */
+const SHIELD_ART = 0.37;
+/** Latch's echo behind her clone: a touch taller than a character. */
+const ECHO_ART = 0.38;
+/** Beacon's anchor disc, about as wide as a character. */
+const ANCHOR_ART = 0.3;
+/** Scout's knife in flight (its impact frames are drawn a little bigger). */
+const KNIFE_ART = 0.22;
+/** How long a throw that caught no traps shows its pulse and NO TRAPS (ms). */
+const EMPTY_EMP_MS = 1300;
+/** Fuse's recon beacon: a fist-sized gadget. */
+const BEACON_ART = 0.26;
+/** Scout's knife spinning in flight, and stuck in the floor charging (its tip on the spot). */
+const KNIFE_SPIN_ART = 0.21;
+const KNIFE_STUCK_ART = 0.24;
+/** How wide the painted rings are in their strips (stored px): they're scaled to the reach. */
+const EMP_RING_W = 160;
+const SWEEP_RING_W = 220;
+/** Fuse's diamond ping, the switched-off crackle over a trap, Velvet's streak and burst. */
+const PING_ART = 0.2;
+const OVERLAY_ART = 0.26;
+const TRAIL_ART = 0.24;
+const BURST_ART = 0.22;
+/** The beacon's three hops (so exactly two bounces): when each starts and ends (share of the
+ *  flight time), how far along the throw it is then, and how high each hop goes (art px). */
+const BEACON_HOPS = { time: [0, 0.48, 0.78, 1], dist: [0, 0.5, 0.8, 1], height: [16, 8, 4] };
 // ---------- This tab's player, across reloads and dropped connections ----------
 // The key is per tab (sessionStorage): it survives a reload, and two tabs on one laptop are two
 // players. Sent with hello, it lets the server give a dropped player their seat back.
@@ -195,6 +222,8 @@ async function boot() {
     ...CHARACTERS.map((id) => loadImage(characterSheet(id))),
   ]);
   const sheets = Object.fromEntries(CHARACTERS.map((id, i) => [id, sheetList[i]])) as Record<CharacterId, HTMLImageElement>;
+  // The painted ability effects are small; start them loading now (they draw once they're in).
+  preloadAbilityArt();
 
   const lobbyMap = new LobbyMap(lobbyData, lobbyImage);
   const worlds = Object.fromEntries(MAP_IDS.map((id, i) => [id, { data: dataList[i], tiles: blank, doors: blank, ready: false }])) as Record<MapId, { data: EstateJson; tiles: HTMLImageElement; doors: HTMLImageElement; ready: boolean }>;
@@ -693,15 +722,41 @@ async function boot() {
   const velvets = new Map<string, Energy>();
   const sprinting = (id: string) => !!velvets.get(id)?.on;
   /** Beacon's anchors (mine, and teammates' if I'm a Runner), warp flashes, and my Q hold. */
-  const anchorsSeen = new Map<string, { x: number; y: number; deck: MapId }>();
+  const anchorsSeen = new Map<string, { x: number; y: number; deck: MapId; at: number }>();
   const warps: { deck: MapId; from: [number, number]; to: [number, number]; at: number }[] = [];
   let anchorQ: { since: number; moved: boolean } | null = null;
   /** Fuse's last scan as she saw it (which furniture, until when), and scan pulses to draw. */
-  let scanReveal: { spots: Set<string>; until: number; ms: number } | null = null;
-  const scanPulses: { deck: MapId; x: number; y: number; radius: number; at: number }[] = [];
+  let scanReveal: { spots: Set<string>; until: number; ms: number; at: number; x: number; y: number; radius: number } | null = null;
+  /** When Fuse's sweep ring reaches a piece of furniture (it lights up then). */
+  const scanLitAt = (sp: HidingSpot) => {
+    if (!scanReveal) return Infinity;
+    const c = spotCenter(sp);
+    return scanReveal.at + (Math.min(scanReveal.radius, Math.hypot(c.x - scanReveal.x, c.y - scanReveal.y)) / scanReveal.radius) * scanReveal.ms;
+  };
+  const scanPulses: { deck: MapId; x: number; y: number; radius: number; at: number; ms: number }[] = [];
   /** Scout's knives in the air, and the EMPs they set off (where, when, how many traps went off). */
-  const knives = new Map<string, { deck: MapId; from: [number, number]; to: [number, number]; ms: number; at: number }>();
-  const emps: { deck: MapId; x: number; y: number; radius: number; ms: number; at: number; count: number }[] = [];
+  const knives = new Map<string, { deck: MapId; from: [number, number]; to: [number, number]; ms: number; windupMs: number; at: number }>();
+  /** Fuse's recon beacons in the air (bouncing twice), and where they've landed (for the reveal). */
+  const beacons = new Map<string, { deck: MapId; from: [number, number]; to: [number, number]; ms: number; at: number; bounced: number }>();
+  const beaconLandings: { deck: MapId; x: number; y: number; at: number; ms: number }[] = [];
+  const emps: { deck: MapId; x: number; y: number; radius: number; ms: number; at: number; count: number; chargeMs: number; spreadMs: number }[] = [];
+  // Saboteur abilities (Switch, Scout, Fuse, Beacon, Velvet): what each game draws, and my static.
+  /** Switch's Signal Divides (everyone sees them): where, which way, building then up. */
+  const signalDivides = new Map<string, { deck: MapId; x: number; y: number; vertical: boolean; length: number; depth: number; deployMs: number; ms: number; at: number }>();
+  /** Scout's Tracker Pings as the Saboteur saw them: the pulse, and where each Runner stood. */
+  const trackerPings: { deck: MapId; x: number; y: number; radius: number; ms: number; at: number; marks: { id: string; x: number; y: number }[] }[] = [];
+  /** Fuse's Loot Shifts (the Saboteur's view), and the diamonds moved this round (each moves once). */
+  const lootShifts: { from: string; to: string; ms: number; at: number }[] = [];
+  const lootMoved = new Set<string>();
+  /** Beacon's Shockwaves and Velvet's Burn Zones (everyone sees them): a warning, then the effect. */
+  const shockwaves = new Map<string, { deck: MapId; x: number; y: number; radius: number; warnMs: number; at: number }>();
+  const burnZones = new Map<string, { deck: MapId; x: number; y: number; radius: number; warnMs: number; ms: number; at: number }>();
+  /** I'm in Signal Divide static until then (less sight, muffled sound). */
+  let staticUntil = 0;
+  /** Clones that just finished their run: where, facing which way, since when (they dissolve). */
+  const cloneEnds: { deck: MapId; x: number; y: number; flip: boolean; at: number; shattered: boolean }[] = [];
+  /** Velvet switching her sprint on: whose, since when (the burst at her feet). */
+  const sprintBursts: { by: string; at: number }[] = [];
   /** Switch's Mends running: who, since when (performance.now()), for how long; and heal links to draw. */
   const mending = new Map<string, { at: number; ms: number }>();
   const mendLinks: { from: string; to: string; at: number }[] = [];
@@ -711,6 +766,10 @@ async function boot() {
   const clones = new Map<string, { by: string; deck: MapId; facing: Facing; from: [number, number]; to: [number, number]; ms: number; at: number; body: Bandit }>();
   /** Rattle's Shield, by player: up, or broken with diamonds banked toward recharging it. */
   const shields = new Map<string, { up: boolean; banked: number; need: number }>();
+  /** Shields that just broke: whose, since when (the shatter frames play over them). */
+  const shieldBreaks: { id: string; at: number }[] = [];
+  /** Wingmen that just finished: where they stood, facing which way, since when (their last frame). */
+  const wingmanEnds: { x: number; y: number; deck: MapId; flip: boolean; at: number }[] = [];
   /** Furniture the Wingman can't fly to this round (walled off): it stops picking them. */
   const wingmanUnreachable = new Set<string>();
   const tripwireArmed = new Set<string>();
@@ -1019,10 +1078,17 @@ async function boot() {
     trapJammedUntil.clear();
     wingmen.clear();
     wingmanUnreachable.clear();
+    wingmanEnds.length = 0;
     shields.clear();
+    shieldBreaks.length = 0;
     clones.clear();
+    cloneEnds.length = 0;
+    sprintBursts.length = 0;
     mending.clear();
     knives.clear();
+    emps.length = 0;
+    beacons.clear();
+    beaconLandings.length = 0;
     scanReveal = null;
     anchorsSeen.clear();
     velvets.clear();
@@ -1033,6 +1099,13 @@ async function boot() {
     mendLinks.length = 0;
     tripwireArmed.clear();
     doorJammedUntil.clear();
+    signalDivides.clear();
+    trackerPings.length = 0;
+    lootShifts.length = 0;
+    lootMoved.clear();
+    shockwaves.clear();
+    burnZones.clear();
+    staticUntil = 0;
     match = { id: msg.matchId, size: msg.size, saboteur: msg.role === 'saboteur', mode: msg.mode ?? 'heist' };
     roundNo = msg.round;
     roundsTotal = msg.rounds;
@@ -1323,7 +1396,10 @@ async function boot() {
         shields.set(msg.id, { up: msg.up, banked: msg.banked, need: msg.need });
         const who = msg.id === myId ? me : remotes.get(msg.id)?.bandit;
         // My own break was shown the moment it happened (see shieldTakes).
-        if (msg.change === 'broke' && msg.id !== myId && who && here(remotes.get(msg.id)?.state.deck)) shieldBurst(who, false);
+        if (msg.change === 'broke' && msg.id !== myId && who && here(remotes.get(msg.id)?.state.deck)) {
+          shieldBurst(who, false);
+          shieldBreaks.push({ id: msg.id, at: performance.now() });
+        }
         if (msg.change === 'recharged' && who) {
           particles.ring(who.x, who.y - 14, '#7fd8ff', 22);
           particles.burst(who.x, who.y - 14, '#bff0ff', 14, 1.4);
@@ -1488,6 +1564,14 @@ async function boot() {
         phase = msg.phase;
         phaseEndsAt = performance.now() + msg.ms;
         selectTrap(null);
+        // The round is over: the Saboteur's effects go with it.
+        if (phase === 'over') {
+          signalDivides.clear();
+          shockwaves.clear();
+          burnZones.clear();
+          trackerPings.length = 0;
+          staticUntil = 0;
+        }
         trapBar.show(false);
         setupPanel.show(false);
         searching = null;
@@ -1581,8 +1665,11 @@ async function boot() {
       case 'cloneDone': {
         const cl = clones.get(msg.id);
         clones.delete(msg.id);
-        if (cl && here(cl.deck)) particles.burst(cl.to[0], cl.to[1] - 14, '#8f7cff', 14, 1.2);
-        if (msg.by === myId) toast(msg.found ? `Your clone spotted ${msg.found} trap${msg.found > 1 ? 's' : ''}: marked for the crew` : 'Your clone ran clear: no traps that way');
+        const end = msg.shattered ?? cl?.to;
+        if (cl && end) cloneEnds.push({ deck: cl.deck, x: end[0], y: end[1], flip: cl.to[0] < cl.from[0], at: performance.now(), shattered: !!msg.shattered });
+        if (cl && end && here(cl.deck)) particles.burst(end[0], end[1] - 14, '#8f7cff', msg.shattered ? 20 : 14, 1.2);
+        if (msg.by === myId && msg.shattered) toast(`A trap went off on your clone: it shattered${msg.found ? ` (${msg.found} trap${msg.found > 1 ? 's' : ''} marked)` : ''}`);
+        else if (msg.by === myId) toast(msg.found ? `Your clone spotted ${msg.found} trap${msg.found > 1 ? 's' : ''}: marked for the crew` : 'Your clone ran clear: no traps that way');
         else if (msg.found && !match?.saboteur) toast(`${remotes.get(msg.by)?.state.name ?? 'Latch'}'s clone spotted ${msg.found} trap${msg.found > 1 ? 's' : ''}`);
         break;
       }
@@ -1590,7 +1677,7 @@ async function boot() {
         if (msg.gone) anchorsSeen.delete(msg.by);
         else {
           const moved = anchorsSeen.has(msg.by);
-          anchorsSeen.set(msg.by, { x: msg.x, y: msg.y, deck: msg.deck });
+          anchorsSeen.set(msg.by, { x: msg.x, y: msg.y, deck: msg.deck, at: performance.now() });
           if (here(msg.deck)) particles.ring(msg.x, msg.y, '#6d9ff0', 16);
           if (msg.by === myId) {
             sfx('tap');
@@ -1602,7 +1689,10 @@ async function boot() {
         const was = sprinting(msg.by);
         velvets.set(msg.by, { on: msg.on, energy: msg.energy, since: performance.now() - msg.ago });
         const who = msg.by === myId ? me : remotes.get(msg.by)?.bandit;
-        if (msg.on && !was && who && (msg.by === myId || here(remotes.get(msg.by)?.state.deck))) particles.burst(who.x, who.y - 6, '#ffd36e', 10, 1.4);
+        if (msg.on && !was && who && (msg.by === myId || here(remotes.get(msg.by)?.state.deck))) {
+          sprintBursts.push({ by: msg.by, at: performance.now() });
+          if (!abilityArtReady('velvet-sprint-burst')) particles.burst(who.x, who.y - 6, '#ffd36e', 10, 1.4);
+        }
         if (msg.by === myId) {
           if (msg.on && !was) sfx('boost');
           if (msg.reason) toast(`Energy Sprint: ${msg.reason}`);
@@ -1630,13 +1720,24 @@ async function boot() {
         hitStop(60);
         break;
       }
+      case 'scanThrow':
+        beacons.set(msg.id, { deck: msg.deck, from: msg.from, to: msg.to, ms: msg.ms, at: performance.now(), bounced: 0 });
+        if (msg.by === myId) {
+          abilities.resolvePending(true);
+          sfx('whoosh');
+        }
+        break;
       case 'scan': {
-        scanPulses.push({ deck: msg.deck, x: msg.x, y: msg.y, radius: msg.radius, at: performance.now() });
+        // The beacon has landed (here, where the server says): it sits and pulses.
+        if (msg.id) beacons.delete(msg.id);
+        beaconLandings.push({ deck: msg.deck, x: msg.x, y: msg.y, at: performance.now(), ms: msg.ms });
+        if (here(msg.deck)) particles.burst(msg.x, msg.y - 4, '#7fe8ff', 12, 1.4);
+        scanPulses.push({ deck: msg.deck, x: msg.x, y: msg.y, radius: msg.radius, at: performance.now(), ms: msg.ms });
         if (msg.by !== myId || !msg.spots) break;
         abilities.resolvePending(true);
         abilities.busy(msg.ms, 'SCAN');
         // A snapshot: these marks show what was there now, and fade after a few seconds.
-        scanReveal = { spots: new Set(msg.spots), until: performance.now() + msg.ms, ms: msg.ms };
+        scanReveal = { spots: new Set(msg.spots), until: performance.now() + msg.ms, ms: msg.ms, at: performance.now(), x: msg.x, y: msg.y, radius: msg.radius };
         sfx('ping');
         toast(msg.spots.length ? `Scan: ${msg.spots.length} diamond${msg.spots.length > 1 ? 's' : ''} nearby · remember where` : 'Scan: no diamonds within 12 tiles');
         break;
@@ -1646,7 +1747,7 @@ async function boot() {
         toast(`Diamond Scan: ${msg.reason}`);
         break;
       case 'knife':
-        knives.set(msg.id, { deck: msg.deck, from: msg.from, to: msg.to, ms: msg.ms, at: performance.now() });
+        knives.set(msg.id, { deck: msg.deck, from: msg.from, to: msg.to, ms: msg.ms, windupMs: msg.windupMs ?? 0, at: performance.now() });
         if (msg.by === myId) {
           abilities.resolvePending(true);
           sfx('whoosh');
@@ -1654,12 +1755,17 @@ async function boot() {
         break;
       case 'emp': {
         knives.delete(msg.id);
-        emps.push({ deck: msg.deck, x: msg.x, y: msg.y, radius: msg.radius, ms: msg.ms, at: performance.now(), count: msg.count });
+        const chargeMs = msg.chargeMs ?? 0;
+        emps.push({ deck: msg.deck, x: msg.x, y: msg.y, radius: msg.radius, ms: msg.ms, at: performance.now(), count: msg.count, chargeMs, spreadMs: msg.spreadMs ?? 600 });
         if (here(msg.deck)) {
-          particles.ring(msg.x, msg.y, '#7fe8ff', msg.radius);
-          particles.burst(msg.x, msg.y, '#bff6ff', 26, 2.4);
-          particles.pop(msg.x, msg.y - 22, msg.count ? `EMP · ${msg.count} TRAP${msg.count > 1 ? 'S' : ''} OFF` : 'EMP · NOTHING THERE', '#7fe8ff');
-          if (Math.hypot(me.x - msg.x, me.y - msg.y) < 260) sfx('emp');
+          // The knife lands (a puff), then once it's charged the pulse goes off.
+          particles.burst(msg.x, msg.y, '#9fb4c0', 8, 0.9);
+          setTimeout(() => {
+            if (!here(msg.deck)) return;
+            particles.burst(msg.x, msg.y, '#bff6ff', 20, 2.2);
+            particles.pop(msg.x, msg.y - 22, msg.count ? `EMP · ${msg.count} TRAP${msg.count > 1 ? 'S' : ''}` : 'EMP · NO TRAPS', msg.count ? '#7fe8ff' : '#9fb4c0');
+            if (Math.hypot(me.x - msg.x, me.y - msg.y) < 260) sfx('emp');
+          }, chargeMs);
         }
         const who = msg.by === myId ? 'Your EMP' : `${remotes.get(msg.by)?.state.name ?? 'Scout'}'s EMP`;
         if (msg.by === myId || (msg.count && !match?.saboteur)) toast(msg.count ? `${who} knocked out ${msg.count} trap${msg.count > 1 ? 's' : ''} for ${msg.ms / 1000}s` : `${who} hit no traps`);
@@ -1924,6 +2030,89 @@ async function boot() {
       case 'doorJammed':
         toast('Door jammed');
         break;
+      case 'sabResult': {
+        abilities.sabResult(msg.ok, msg.reason);
+        const name = ABILITIES[msg.ability].name;
+        toast(msg.ok ? SAB_UP[msg.ability] ?? `${name}!` : `${name}: ${msg.reason ?? 'refused'}`);
+        if (msg.ok) sfx('click');
+        break;
+      }
+      case 'sabNote':
+        toast(msg.text);
+        break;
+      case 'sabEnd':
+        signalDivides.delete(msg.id);
+        shockwaves.delete(msg.id);
+        burnZones.delete(msg.id);
+        break;
+      case 'signalDivide': {
+        const { id, deck, x, y, vertical, length, depth, deployMs, ms } = msg;
+        signalDivides.set(id, { deck, x, y, vertical, length, depth, deployMs, ms, at: performance.now() });
+        if (here(deck) && (match?.saboteur || Math.hypot(me.x - x, me.y - y) < 260)) sfx('emp');
+        break;
+      }
+      case 'signalStatic': {
+        if (!match || match.saboteur || phase !== 'live') break;
+        const now = performance.now();
+        if (now >= staticUntil) {
+          trapNotice = 'Signal Divide · static: you can barely see or hear';
+          trapNoticeUntil = now + 2000;
+        }
+        staticUntil = Math.max(staticUntil, now + msg.ms);
+        break;
+      }
+      case 'trackerPing':
+        trackerPings.push({ deck: msg.deck, x: msg.x, y: msg.y, radius: msg.radius, ms: msg.ms, at: performance.now(), marks: msg.marks });
+        sfx('ping');
+        toast(msg.marks.length ? `Tracker Ping: ${msg.marks.length} Runner${msg.marks.length > 1 ? 's' : ''} marked for ${msg.ms / 1000}s` : 'Tracker Ping: no Runners there');
+        break;
+      case 'tracked':
+        if (!match || match.saboteur) break;
+        trapNotice = 'TRACKED · the Saboteur just saw where you are';
+        trapNoticeUntil = performance.now() + 2500;
+        particles.pop(me.x, me.y - 40, 'PINGED!', '#ffd25a');
+        sfx('alert');
+        break;
+      case 'lootShift': {
+        const d = diamondIn(msg.from);
+        if (d) lootMoved.add(d.id);
+        lootShifts.push({ from: msg.from, to: msg.to, ms: msg.ms, at: performance.now() });
+        sfx('whoosh');
+        break;
+      }
+      case 'lootShifted':
+        hud.alert('<span class="who">The Saboteur</span> <b>moved a hidden diamond</b><span class="where">somewhere new</span>');
+        break;
+      case 'shockwave':
+        shockwaves.set(msg.id, { deck: msg.deck, x: msg.x, y: msg.y, radius: msg.radius, warnMs: msg.warnMs, at: performance.now() });
+        if (here(msg.deck) && (match?.saboteur || Math.hypot(me.x - msg.x, me.y - msg.y) < 260)) setTimeout(() => sfx('boulder'), msg.warnMs);
+        break;
+      case 'shoved': {
+        if (!match || match.saboteur || phase !== 'live' || knockedOut) break;
+        // Straight away from the wave's middle (or backwards, right on top of it). The move
+        // itself stops at walls, like any movement.
+        const [fx, fy] = me.facing === 'up' ? [0, -1] : me.facing === 'down' ? [0, 1] : me.facing === 'left' ? [-1, 0] : [1, 0];
+        const [dx, dy] = Math.hypot(me.x - msg.x, me.y - msg.y) > 2 ? [me.x - msg.x, me.y - msg.y] : [-fx, -fy];
+        me.shove(dx, dy, msg.dist, 12);
+        slowUntil = Math.max(slowUntil, performance.now() + msg.dazeMs);
+        trapImpact('#7fb8ff', 4);
+        particles.pop(me.x, me.y - 40, 'DAZED', '#9fd0ff');
+        trapNotice = `Shockwave · knocked back · dazed for ${msg.dazeMs / 1000}s`;
+        trapNoticeUntil = performance.now() + 2000;
+        break;
+      }
+      case 'burnZone':
+        burnZones.set(msg.id, { deck: msg.deck, x: msg.x, y: msg.y, radius: msg.radius, warnMs: msg.warnMs, ms: msg.ms, at: performance.now() });
+        break;
+      case 'burned': {
+        if (!match || match.saboteur || phase !== 'live' || knockedOut) break;
+        const landed = hurt(msg.damage, 0);
+        trapImpact('#ff6a4a', 2.5, 200);
+        sfx('hurt');
+        trapNotice = landed ? `Burn Zone · ${msg.damage} damage · get out of the fire!` : 'Burn Zone · SHIELD BLOCKED IT';
+        trapNoticeUntil = performance.now() + 1500;
+        break;
+      }
       case 'handoff': {
         const from = msg.from === myId ? me : remotes.get(msg.from)?.bandit;
         const to = msg.to === myId ? me : remotes.get(msg.to)?.bandit;
@@ -2152,6 +2341,8 @@ async function boot() {
       targetDoorId: targetDoor?.id,
       targetPoint: { x: Math.round(mouseX), y: Math.round(mouseY), open: tripOpen },
       wingmanTarget: wingmanTarget(),
+      targetSpot: abilities.has('lootShift') ? spotUnder(mouseX, mouseY) : undefined,
+      lootCheck,
     };
   }
 
@@ -2191,6 +2382,7 @@ async function boot() {
     const name = spot?.name ?? 'treasure chest';
     const seen = !!w && here(w.deck);
     const at = spot ? spotCenter(spot) : { x: msg.x, y: msg.y };
+    if (w) wingmanEnds.push({ x: msg.x, y: msg.y, deck: w.deck, flip: at.x < msg.x, at: performance.now() });
     const owner = mine ? 'Your Wingman' : `${esc(remotes.get(msg.by)?.state.name ?? 'Patch')}'s Wingman`;
     if (seen) particles.burst(msg.x, msg.y - 12, '#ff8a3d', 8, 0.9);
     switch (msg.result) {
@@ -2333,6 +2525,7 @@ async function boot() {
     sh.banked = 0;
     net.send({ t: 'shieldHit' });
     shieldBurst(me, true);
+    shieldBreaks.push({ id: myId, at: performance.now() });
     showShieldState();
     return true;
   }
@@ -2707,13 +2900,13 @@ async function boot() {
       if (departure?.crew.includes(id)) continue;
       r.bandit.follow(r.state.x, r.state.y, r.state.facing, r.state.moving, r.state.sprint, r.state.stunned);
       // Velvet's Energy Sprint leaves a streak behind her.
-      if (sprinting(id) && r.state.moving) r.bandit.showTrail(6);
+      if (sprinting(id) && r.state.moving && !abilityArtReady('velvet-sprint-trail')) r.bandit.showTrail(6);
     }
-    if (sprinting(myId) && me.moving) me.showTrail(6);
-    // Latch's clones run their straight line, sprinting.
+    if (sprinting(myId) && me.moving && !abilityArtReady('velvet-sprint-trail')) me.showTrail(6);
+    // Latch's clones walk their straight line, at a diamond carrier's pace.
     for (const cl of clones.values()) {
       const k = cl.ms ? Math.min(1, (performance.now() - cl.at) / cl.ms) : 1;
-      cl.body.follow(cl.from[0] + (cl.to[0] - cl.from[0]) * k, cl.from[1] + (cl.to[1] - cl.from[1]) * k, cl.facing, k < 1, true);
+      cl.body.follow(cl.from[0] + (cl.to[0] - cl.from[0]) * k, cl.from[1] + (cl.to[1] - cl.from[1]) * k, cl.facing, k < 1, false);
     }
 
     if (scene === 'lobby') {
@@ -3431,14 +3624,26 @@ async function boot() {
     drawFloorDiamonds(camX, camY);
     drawDiamondFx(camX, camY);
     drawWingmen(camX, camY);
+    drawWingmanEnds(camX, camY);
     particles.draw(ctx, camX, camY, performance.now() >= hitStopUntil);
     drawVault(camX, camY);
     drawShields(camX, camY);
+    drawShieldBreaks(camX, camY);
     drawClones(camX, camY);
     drawMends(camX, camY);
     drawEmps(camX, camY);
+    drawBeacons(camX, camY);
     drawScanPulses(camX, camY);
     drawAnchors(camX, camY);
+    drawSprints(camX, camY);
+    drawBurnZones(camX, camY);
+    drawShockwaves(camX, camY);
+    drawSignalDivides(camX, camY);
+    if (match?.saboteur && !result) {
+      drawTrackerPings(camX, camY);
+      drawLootShifts(camX, camY);
+      drawSabAim(camX, camY);
+    }
     myDiamonds().forEach((d, i, all) => carriedGem(me, camX, camY, d, (i - (all.length - 1) / 2) * 10));
     for (const [id, r] of remotes) {
       if (!r.state.carrying) continue;
@@ -3462,6 +3667,8 @@ async function boot() {
     if (match?.saboteur && !result) drawTrapMarkers(camX, camY);
     if (match?.saboteur && phase === 'setup') drawSpotLabel(camX, camY);
     if (performance.now() < blackoutUntil && !match?.saboteur) drawBlackout(camX, camY);
+    if (performance.now() < staticUntil && !match?.saboteur && phase === 'live') drawStatic(camX, camY);
+    if (match?.saboteur && !result) drawTrackerArrows(camX, camY);
     if (!result && impactProgress < 1) drawImpactOverlay(impactProgress);
     if (result) drawReveal(camX, camY);
     ctx.restore();
@@ -3489,6 +3696,330 @@ async function boot() {
   }
 
   /** Blackout: the room goes dark; you only see a small circle around yourself. */
+  // ---------- Saboteur abilities: drawing ----------
+
+  /** What the Saboteur's toast says when the server lets each one go. */
+  const SAB_UP: Partial<Record<AbilityId, string>> = { signalDivide: 'Signal Divide going up', trackerPing: 'Tracker Ping sent', lootShift: 'Diamond moved', shockwave: 'Shockwave charging', burnZone: 'Burn Zone lit' };
+  /** The painted strips' sizes in stored px: half the gap between Signal Divide's pylons, and the
+   *  widest ring of the Tracker Ping, Shockwave and Burn Zone (so each fits its real reach). */
+  const DIVIDE_HALF = 80;
+  const TRACKER_RING_W = 150;
+  const SHOCK_RING_W = 170;
+  const BURN_RING_W = 160;
+  const LOOT_ART = 0.32;
+
+  /** How far the floor is open from (x, y) one way, up to `max` (Signal Divide's aim preview). */
+  function openRun(x: number, y: number, dx: number, dy: number, max: number) {
+    let n = 0;
+    while (n + 4 <= max && !estate.boxBlocked(x + dx * (n + 4) - 1, y + dy * (n + 4) - 1, x + dx * (n + 4) + 1, y + dy * (n + 4) + 1)) n += 4;
+    return n;
+  }
+
+  /** A dashed ring on the floor (a reach, or a warning). */
+  function floorRing(x: number, y: number, r: number, color: string, alpha: number, dash = true) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    if (dash) {
+      ctx.setLineDash([3, 3]);
+      ctx.lineDashOffset = -performance.now() / 40;
+    }
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Switch's Signal Divide: two pylons and the static beam between them, and its band. */
+  function drawSignalDivides(camX: number, camY: number) {
+    const now = performance.now();
+    for (const [id, s] of signalDivides) {
+      const age = now - s.at;
+      const end = s.deployMs + s.ms;
+      if (age > end + 400) {
+        signalDivides.delete(id);
+        continue;
+      }
+      if (!here(s.deck)) continue;
+      const x = s.x - camX;
+      const y = s.y - camY;
+      const fade = age > end ? 1 - (age - end) / 400 : 1;
+      const up = age >= s.deployMs;
+      // The band it scrambles (faint), so Runners can see where not to stand.
+      ctx.save();
+      ctx.globalAlpha = (up ? 0.12 + 0.04 * Math.sin(now / 80) : 0.06) * fade;
+      ctx.fillStyle = '#7fe8ff';
+      const [hw, hh] = s.vertical ? [s.depth, s.length / 2] : [s.length / 2, s.depth];
+      ctx.fillRect(Math.round(x - hw), Math.round(y - hh), Math.round(hw * 2), Math.round(hh * 2));
+      ctx.restore();
+      const frame = !up ? (age < s.deployMs / 2 ? 0 : 1) : 2 + (Math.floor(now / 110) % 6);
+      if (!drawAbilityFrame(ctx, 'switch-signal-divide', frame, x, y, s.length / 2 / DIVIDE_HALF, { alpha: fade, rotate: s.vertical ? Math.PI / 2 : 0 })) {
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.strokeStyle = '#7fe8ff';
+        ctx.lineWidth = up ? 3 : 1;
+        const [ex, ey] = s.vertical ? [0, s.length / 2] : [s.length / 2, 0];
+        ctx.beginPath();
+        ctx.moveTo(x - ex, y - ey);
+        ctx.lineTo(x + ex, y + ey);
+        ctx.stroke();
+        ctx.fillStyle = '#c9a24a';
+        for (const k of [-1, 1]) ctx.fillRect(Math.round(x + k * ex) - 2, Math.round(y + k * ey) - 6, 4, 8);
+        ctx.restore();
+      }
+    }
+  }
+
+  /** Scout's Tracker Ping, the Saboteur's alone: the pulse growing out, then a mark where each
+   *  Runner stood (it doesn't follow them), fading as it runs out. */
+  function drawTrackerPings(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = trackerPings.length - 1; i >= 0; i--) {
+      const p = trackerPings[i];
+      const age = now - p.at;
+      if (age > p.ms) {
+        trackerPings.splice(i, 1);
+        continue;
+      }
+      if (!here(p.deck)) continue;
+      const x = p.x - camX;
+      const y = p.y - camY;
+      if (age < 800) {
+        if (!drawAbilityFrame(ctx, 'scout-tracker-ping', Math.floor((age / 800) * 8), x, y, (2 * p.radius) / TRACKER_RING_W, { alpha: 0.85 })) floorRing(x, y, p.radius * Math.min(1, age / 700), '#7fe8ff', 1 - age / 800, false);
+      }
+      const fade = Math.min(1, (p.ms - age) / 600);
+      for (const m of p.marks) {
+        const mx = m.x - camX;
+        const my = m.y - 14 - camY;
+        const pop = Math.min(1, age / 250);
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.strokeStyle = '#ffd25a';
+        ctx.lineWidth = 1.5;
+        const r = 9 + 3 * (1 - pop) + Math.sin(now / 120);
+        ctx.beginPath();
+        ctx.arc(mx, my, r, 0, Math.PI * 2);
+        ctx.stroke();
+        for (const [ax, ay] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          ctx.beginPath();
+          ctx.moveTo(mx + ax * (r - 3), my + ay * (r - 3));
+          ctx.lineTo(mx + ax * (r + 4), my + ay * (r + 4));
+          ctx.stroke();
+        }
+        ctx.font = 'bold 7px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffe39a';
+        ctx.fillText(remotes.get(m.id)?.state.name ?? '', Math.round(mx), Math.round(my - r - 4));
+        ctx.restore();
+      }
+    }
+  }
+
+  /** Tracker marks off the Saboteur's screen: an arrow at the edge pointing at each (screen px). */
+  function drawTrackerArrows(camX: number, camY: number) {
+    const now = performance.now();
+    const pad = 30 * dpr;
+    for (const p of trackerPings) {
+      if (!here(p.deck)) continue;
+      const fade = Math.min(1, (p.ms - (now - p.at)) / 600);
+      for (const m of p.marks) {
+        const rx = (m.x - camX) * scale;
+        const ry = (m.y - 14 - camY) * scale;
+        if (rx >= 0 && rx <= canvas.width && ry >= 0 && ry <= canvas.height) continue;
+        const x = Math.max(pad, Math.min(canvas.width - pad, rx));
+        const y = Math.max(pad, Math.min(canvas.height - pad, ry));
+        const a = Math.atan2(ry - y, rx - x);
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.translate(x, y);
+        ctx.fillStyle = '#ffd25a';
+        ctx.rotate(a);
+        ctx.beginPath();
+        ctx.moveTo(10 * dpr, 0);
+        ctx.lineTo(-6 * dpr, -7 * dpr);
+        ctx.lineTo(-6 * dpr, 7 * dpr);
+        ctx.fill();
+        ctx.rotate(-a);
+        ctx.font = `${8 * dpr}px "Press Start 2P", monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffe39a';
+        ctx.fillText(remotes.get(m.id)?.state.name ?? '', 0, y < canvas.height / 2 ? 22 * dpr : -14 * dpr);
+        ctx.restore();
+      }
+    }
+  }
+
+  /** Fuse's Loot Shift, the Saboteur's view: the diamond lifts out of the old furniture, streaks
+   *  across, and settles into the new one. */
+  function drawLootShifts(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = lootShifts.length - 1; i >= 0; i--) {
+      const l = lootShifts[i];
+      const t = (now - l.at) / l.ms;
+      if (t >= 1) {
+        lootShifts.splice(i, 1);
+        continue;
+      }
+      const a = spots.find((sp) => sp.id === l.from);
+      const b = spots.find((sp) => sp.id === l.to);
+      if (!a || !b) continue;
+      const [p, q] = [spotCenter(a), spotCenter(b)];
+      const [x0, y0, x1, y1] = [p.x - camX, p.y - 8 - camY, q.x - camX, q.y - 8 - camY];
+      if (t < 0.35) drawAbilityFrame(ctx, 'fuse-loot-shift', Math.floor((t / 0.35) * 4), x0, y0, LOOT_ART);
+      else if (t < 0.6) {
+        const u = (t - 0.35) / 0.25;
+        if (!drawAbilityFrame(ctx, 'fuse-loot-shift', 4, x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, LOOT_ART, { rotate: Math.atan2(y1 - y0, x1 - x0) + 0.5 })) particles.burst(x0 + camX + (x1 - x0) * u, y0 + camY + (y1 - y0) * u, '#7fe8ff', 2, 0.6);
+      } else drawAbilityFrame(ctx, 'fuse-loot-shift', 5 + Math.min(2, Math.floor(((t - 0.6) / 0.4) * 3)), x1, y1, LOOT_ART);
+    }
+  }
+
+  /** Beacon's Shockwave: a blinking warning ring at its real reach, then the wave going out. */
+  function drawShockwaves(camX: number, camY: number) {
+    const now = performance.now();
+    const WAVE_MS = 600;
+    for (const [id, w] of shockwaves) {
+      const age = now - w.at;
+      if (age > w.warnMs + WAVE_MS) {
+        shockwaves.delete(id);
+        continue;
+      }
+      if (!here(w.deck)) continue;
+      const x = w.x - camX;
+      const y = w.y - camY;
+      const s = (2 * w.radius) / SHOCK_RING_W;
+      if (age < w.warnMs) {
+        floorRing(x, y, w.radius, '#ff6a5a', 0.5 + 0.4 * Math.sin(now / 60));
+        drawAbilityFrame(ctx, 'beacon-shockwave', Math.floor(now / 120) % 2, x, y, s);
+      } else {
+        const u = (age - w.warnMs) / WAVE_MS;
+        if (!drawAbilityFrame(ctx, 'beacon-shockwave', 2 + Math.min(5, Math.floor(u * 6)), x, y, s)) floorRing(x, y, w.radius * u, '#9fd0ff', 1 - u, false);
+      }
+    }
+  }
+
+  /** Velvet's Burn Zone: a warning ring at its real reach, then fire for as long as it burns. */
+  function drawBurnZones(camX: number, camY: number) {
+    const now = performance.now();
+    const FADE_MS = 400;
+    for (const [id, z] of burnZones) {
+      const age = now - z.at;
+      const end = z.warnMs + z.ms;
+      if (age > end + FADE_MS) {
+        burnZones.delete(id);
+        continue;
+      }
+      if (!here(z.deck)) continue;
+      const x = z.x - camX;
+      const y = z.y - camY;
+      const s = (2 * z.radius) / BURN_RING_W;
+      const lit = age >= z.warnMs && age < end;
+      // The hot floor: the zone's real size.
+      ctx.save();
+      ctx.globalAlpha = age < z.warnMs ? 0.08 + 0.06 * Math.sin(now / 70) : lit ? 0.18 + 0.05 * Math.sin(now / 90) : 0.18 * (1 - (age - end) / FADE_MS);
+      ctx.fillStyle = '#ff5a3c';
+      ctx.beginPath();
+      ctx.arc(x, y, z.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      if (age < z.warnMs) floorRing(x, y, z.radius, '#ffb04a', 0.5 + 0.4 * Math.sin(now / 60));
+      const frame = age < z.warnMs ? 0 : lit ? 1 + (Math.floor(now / 120) % 6) : 7;
+      const alpha = age < z.warnMs ? 0.6 : lit ? 1 : 1 - (age - end) / FADE_MS;
+      if (!drawAbilityFrame(ctx, 'velvet-burn-zone', frame, x, y, s, { alpha, sy: 2.4 }) && lit) floorRing(x, y, z.radius, '#ff5a3c', 0.9, false);
+    }
+  }
+
+  /** The Saboteur's aim for these abilities while Q is ready: where it would go, and its reach. */
+  function drawSabAim(camX: number, camY: number) {
+    if (!match?.saboteur || phase !== 'live' || hideSeek() || mouseX < 0) return;
+    const x = mouseX - camX;
+    const y = mouseY - camY;
+    const open = !estate.boxBlocked(mouseX - 4, mouseY - 4, mouseX + 4, mouseY + 4);
+    const from = abilities.lootShiftFrom ? spots.find((sp) => sp.id === abilities.lootShiftFrom) : undefined;
+    if (from) {
+      // The picked diamond's furniture, and a line to where it would go.
+      const c = spotCenter(from);
+      const b = spotBox(from);
+      ctx.save();
+      ctx.strokeStyle = '#ffd25a';
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.7 + 0.3 * Math.sin(performance.now() / 120);
+      ctx.strokeRect(b.x0 - camX, b.y0 - camY, b.x1 - b.x0, b.y1 - b.y0);
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(c.x - camX, c.y - camY);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (!abilities.ready) return;
+    if (abilities.has('lootShift')) {
+      const sp = spotUnder(mouseX, mouseY);
+      if (!sp || sp.id === from?.id) return;
+      const b = spotBox(sp);
+      ctx.save();
+      ctx.strokeStyle = lootCheck(from?.id ?? null, sp.id) ? '#ff6a5a' : '#7fe8ff';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(b.x0 - camX, b.y0 - camY, b.x1 - b.x0, b.y1 - b.y0);
+      ctx.restore();
+    } else if (abilities.has('trackerPing')) floorRing(x, y, TRACKER_PING.radius, '#7fe8ff', 0.45);
+    else if (abilities.has('shockwave')) floorRing(x, y, SHOCKWAVE.radius, open ? '#9fd0ff' : '#ff6a5a', 0.7);
+    else if (abilities.has('burnZone')) floorRing(x, y, BURN_ZONE.radius, open ? '#ff8a4a' : '#ff6a5a', 0.7);
+    else if (abilities.has('signalDivide')) {
+      const L = SIGNAL_DIVIDE.length;
+      const vertical = openRun(mouseX, mouseY, 1, 0, L) + openRun(mouseX, mouseY, -1, 0, L) > openRun(mouseX, mouseY, 0, 1, L) + openRun(mouseX, mouseY, 0, -1, L);
+      const [hw, hh] = vertical ? [SIGNAL_DIVIDE.depth, L / 2] : [L / 2, SIGNAL_DIVIDE.depth];
+      ctx.save();
+      ctx.strokeStyle = open ? '#7fe8ff' : '#ff6a5a';
+      ctx.globalAlpha = 0.7;
+      ctx.setLineDash([3, 3]);
+      ctx.strokeRect(Math.round(x - hw), Math.round(y - hh), hw * 2, hh * 2);
+      ctx.restore();
+    }
+  }
+
+  /** Signal Divide static over my screen: sight closes in, and the picture crackles. */
+  function drawStatic(camX: number, camY: number) {
+    const now = performance.now();
+    const k = Math.min(1, (staticUntil - now) / 300);
+    const sx = (me.x - camX) * scale;
+    const sy = (me.y - 18 - camY) * scale;
+    const r = 70 * scale;
+    ctx.save();
+    const grad = ctx.createRadialGradient(sx, sy, r * 0.35, sx, sy, r);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, `rgba(4,12,16,${0.94 * k})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < 46; i++) {
+      ctx.globalAlpha = (0.08 + Math.random() * 0.16) * k;
+      ctx.fillStyle = Math.random() < 0.5 ? '#bff6ff' : '#5fa8b8';
+      ctx.fillRect(Math.random() * canvas.width, Math.random() * canvas.height, (20 + Math.random() * 140) * dpr, (1 + Math.random() * 2) * dpr);
+    }
+    ctx.restore();
+  }
+
+  /** Loot Shift's rules as this game knows them (the server has the last word): why this
+   *  furniture can't be the diamond to move (`from` null), or where it goes. Null when it can. */
+  function lootCheck(from: string | null, to: string): string | null {
+    const spot = spots.find((sp) => sp.id === to);
+    if (!spot) return 'Aim at furniture';
+    const inVault = !!keycard && keycard.deck === deckId && roomOf(spot) === keycard.vaultRoom;
+    if (from === null) {
+      const d = diamondIn(to);
+      if (!d) return 'No diamond hidden there';
+      if (inVault) return 'Vault diamonds stay in the vault';
+      if (lootMoved.has(d.id)) return 'That diamond has been moved already';
+      return null;
+    }
+    if (diamondIn(to)) return 'A diamond is hidden there already';
+    if (searched.has(to)) return 'The Runners already searched that';
+    if (inVault) return 'Not into the vault';
+    const src = spots.find((sp) => sp.id === from);
+    if (hiddenInRoom(spot) - (src && roomKeyOf(src) === roomKeyOf(spot) ? 1 : 0) >= 2) return 'That room has 2 diamonds already';
+    return null;
+  }
+
   function drawBlackout(camX: number, camY: number) {
     const left = blackoutUntil - performance.now();
     const sx = (me.x - camX) * scale;
@@ -4414,12 +4945,15 @@ async function boot() {
     if (result) return;
     const now = performance.now();
     for (const [id, k] of knives) {
-      const t = k.ms ? (now - k.at) / k.ms : 1;
-      if (t > 3) {
+      const since = now - k.at;
+      if (since > k.windupMs + k.ms + 3000) {
         knives.delete(id);
         continue;
       }
-      if (!here(k.deck) || t >= 1) continue;
+      if (!here(k.deck) || since >= k.windupMs + k.ms) continue;
+      if (drawKnife(k, since, camX, camY)) continue;
+      if (since < k.windupMs) continue;
+      const t = (since - k.windupMs) / (k.ms || 1);
       const x = k.from[0] + (k.to[0] - k.from[0]) * t - camX;
       const y = k.from[1] + (k.to[1] - k.from[1]) * t - 12 - Math.sin(t * Math.PI) * 6 - camY;
       ctx.save();
@@ -4435,7 +4969,11 @@ async function boot() {
     }
     for (let i = emps.length - 1; i >= 0; i--) {
       const e = emps[i];
-      const left = e.ms - (now - e.at);
+      const age = now - e.at;
+      // Stuck and charging, then the pulse spreading (traps go off as it reaches them, each for
+      // e.ms); a throw that caught nothing shows NO TRAPS for a moment instead.
+      const live = age - e.chargeMs - e.spreadMs;
+      const left = (e.count ? e.ms : EMPTY_EMP_MS) - live;
       if (left <= 0) {
         emps.splice(i, 1);
         continue;
@@ -4443,6 +4981,40 @@ async function boot() {
       if (!here(e.deck)) continue;
       const x = e.x - camX;
       const y = e.y - camY;
+      // The painted knife in the floor: charging up to its flash, then humming while it lasts.
+      const knifeFrame = age < e.chargeMs ? Math.min(4, Math.floor((age / e.chargeMs) * 5)) : age < e.chargeMs + 160 ? 5 : 6 + (Math.floor(now / 140) % 2);
+      const art = drawAbilityFrame(ctx, 'scout-knife-charge', knifeFrame, x, y, KNIFE_STUCK_ART, { alpha: live > 0 && !e.count ? Math.min(1, left / 400) : 1 })
+        || drawAbilityFrame(ctx, 'scout-emp-knife-throw-pulse', age < 280 ? 4 : 5, x, y, KNIFE_ART * 1.4);
+      // The pulse spreading out to the EMP's reach.
+      if (age >= e.chargeMs && live < 0) {
+        const k = (age - e.chargeMs) / e.spreadMs;
+        const r = e.radius * Math.max(0.06, k);
+        if (!drawAbilityFrame(ctx, 'scout-emp-wave-ring', Math.floor(now / 70) % 8, x, y, (2 * r) / EMP_RING_W, { sy: 2, alpha: e.count ? 1 : 0.7 })) {
+          ctx.save();
+          ctx.globalAlpha = 0.9;
+          ctx.strokeStyle = e.count ? '#bff6ff' : '#9fb4c0';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+      if (live < 0) continue;
+      if (!e.count) {
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, left / 400);
+        ctx.font = 'bold 8px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const w = ctx.measureText('NO TRAPS').width + 6;
+        ctx.fillStyle = 'rgba(8, 20, 30, 0.8)';
+        ctx.fillRect(Math.round(x - w / 2), Math.round(y - 30), Math.round(w), 10);
+        ctx.fillStyle = '#c9d6dd';
+        ctx.fillText('NO TRAPS', Math.round(x), Math.round(y - 25));
+        ctx.restore();
+        continue;
+      }
       ctx.save();
       ctx.globalAlpha = 0.08 + 0.04 * Math.sin(now / 90);
       ctx.fillStyle = '#7fe8ff';
@@ -4462,11 +5034,13 @@ async function boot() {
       ctx.beginPath();
       ctx.arc(x, y, e.radius, -Math.PI / 2, -Math.PI / 2 + (left / e.ms) * Math.PI * 2);
       ctx.stroke();
-      // The knife stuck in the floor, and the label.
-      ctx.fillStyle = '#d9e6f2';
-      ctx.fillRect(Math.round(x) - 1, Math.round(y) - 6, 2, 6);
-      ctx.fillStyle = '#55b8ae';
-      ctx.fillRect(Math.round(x) - 2, Math.round(y) - 9, 4, 3);
+      // The knife stuck in the floor (if the painted one isn't there), and the label.
+      if (!art) {
+        ctx.fillStyle = '#d9e6f2';
+        ctx.fillRect(Math.round(x) - 1, Math.round(y) - 6, 2, 6);
+        ctx.fillStyle = '#55b8ae';
+        ctx.fillRect(Math.round(x) - 2, Math.round(y) - 9, 4, 3);
+      }
       ctx.font = 'bold 8px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -4485,6 +5059,8 @@ async function boot() {
       const t = placed.get(id) ?? traps.find((x) => x.id === id);
       const shown = !!t && (match?.saboteur || !placed.has(id) || revealed.has(id) || placed.get(id)?.kind === 'fakeLoot');
       if (!t || !shown || !here((t as PlacedTrap).deck)) continue;
+      // The painted switched-off crackle over the trap itself.
+      drawAbilityFrame(ctx, 'trap-disabled-overlay', Math.floor(now / 90) % 8, Math.round(t.x - camX), Math.round(t.y - camY), OVERLAY_ART, { alpha: 0.85 });
       const x = Math.round(t.x - camX);
       const y = Math.round(t.y - 16 - camY);
       ctx.save();
@@ -4501,17 +5077,140 @@ async function boot() {
     }
   }
 
-  /** Fuse's scan: a ring sweeping out to its reach. */
+  /** Scout's knife: released from her hand, then spinning on a shallow arc with a cyan trail,
+   *  turned the way it flies. False while the painted knife isn't there. */
+  function drawKnife(k: { from: [number, number]; to: [number, number]; ms: number; windupMs: number }, since: number, camX: number, camY: number) {
+    const dx = k.to[0] - k.from[0];
+    const dy = k.to[1] - k.from[1];
+    const left = dx < 0;
+    if (since < k.windupMs) {
+      const hx = k.from[0] + Math.sign(dx) * 6 - camX;
+      const hy = k.from[1] - 14 + Math.sign(dy) * 4 - camY;
+      return drawAbilityFrame(ctx, 'scout-emp-knife-throw-pulse', since < k.windupMs / 2 ? 0 : 1, hx, hy, KNIFE_ART, { flip: left });
+    }
+    const at = (u: number) => [k.from[0] + dx * u - camX, k.from[1] + dy * u - 12 - Math.sin(u * Math.PI) * 10 - camY] as const;
+    const u = Math.min(1, (since - k.windupMs) / (k.ms || 1));
+    const [x, y] = at(u);
+    const [nx, ny] = at(Math.min(1, u + 0.03));
+    for (let j = 1; j <= 5; j++) {
+      const [tx, ty] = at(Math.max(0, u - j * 0.035));
+      ctx.save();
+      ctx.globalAlpha = 0.5 * (1 - j / 6);
+      ctx.fillStyle = '#7fe8ff';
+      ctx.fillRect(Math.round(tx) - 1, Math.round(ty) - 1, 2, 2);
+      ctx.restore();
+    }
+    // The painted knife spinning end over end; or the earlier blade, turned to its heading.
+    if (drawAbilityFrame(ctx, 'scout-knife-spin', Math.floor(since / 55) % 8, x, y, KNIFE_SPIN_ART, { flip: left })) return true;
+    const heading = Math.atan2(ny - y, nx - x || (left ? -0.01 : 0.01));
+    return drawAbilityFrame(ctx, 'scout-emp-knife-throw-pulse', 2 + (Math.floor(since / 70) % 2), x, y, KNIFE_ART, { rotate: heading + 0.26 });
+  }
+
+  /**
+   * Fuse's recon beacon: thrown in an arc that bounces exactly twice before it lands (game code
+   * sets the bounces; the server says where and when it lands), then it sits and pulses where it
+   * landed while the reveal lasts. Everyone sees it.
+   */
+  function drawBeacons(camX: number, camY: number) {
+    const now = performance.now();
+    for (const [id, b] of beacons) {
+      const t = (now - b.at) / b.ms;
+      // Landed, but the scan never came (the round ended, or Fuse left): let it go.
+      if (t > 1.6) {
+        beacons.delete(id);
+        continue;
+      }
+      if (!here(b.deck) || t >= 1) continue;
+      // Three hops: time and distance at each bounce, and how high each hop goes.
+      const k = t < BEACON_HOPS.time[1] ? 0 : t < BEACON_HOPS.time[2] ? 1 : 2;
+      const u = (t - BEACON_HOPS.time[k]) / (BEACON_HOPS.time[k + 1] - BEACON_HOPS.time[k]);
+      const along = BEACON_HOPS.dist[k] + (BEACON_HOPS.dist[k + 1] - BEACON_HOPS.dist[k]) * u;
+      const gx = b.from[0] + (b.to[0] - b.from[0]) * along;
+      const gy = b.from[1] + (b.to[1] - b.from[1]) * along;
+      const h = 4 * BEACON_HOPS.height[k] * u * (1 - u);
+      if (k > b.bounced) {
+        // Touched down: a little gold spark and dust.
+        b.bounced = k;
+        particles.burst(gx, gy, '#f0b94e', 6, 1);
+      }
+      ctx.save();
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(gx - camX, gy - camY, 4 - h * 0.08, 1.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      // In the air, then the contact frame just after each bounce.
+      const frame = k === 0 ? (u < 0.2 ? 0 : 1) : k === 1 ? (u < 0.18 ? 2 : 3) : u < 0.22 ? 4 : 5;
+      if (!drawAbilityFrame(ctx, 'fuse-recon-beacon-two-bounce', frame, gx - camX, gy - 5 - h - camY, BEACON_ART, { flip: b.to[0] < b.from[0] })) {
+        ctx.save();
+        ctx.fillStyle = '#f0b94e';
+        ctx.beginPath();
+        ctx.arc(gx - camX, gy - 4 - h - camY, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    for (let i = beaconLandings.length - 1; i >= 0; i--) {
+      const l = beaconLandings[i];
+      const age = now - l.at;
+      if (age > l.ms) {
+        beaconLandings.splice(i, 1);
+        continue;
+      }
+      if (!here(l.deck)) continue;
+      const fade = Math.min(1, (l.ms - age) / 500);
+      // The painted beacon scanning (its lens and beam pulsing) for as long as the sweep runs.
+      if (!drawAbilityFrame(ctx, 'fuse-beacon-scan-loop', Math.floor(age / 110) % 8, l.x - camX, l.y - camY, BEACON_ART, { alpha: fade })) {
+        drawAbilityFrame(ctx, 'fuse-recon-beacon-two-bounce', age < 650 ? 7 : 6, l.x - camX, l.y - camY, BEACON_ART, { alpha: fade });
+      }
+    }
+  }
+
+  /** Velvet's Energy Sprint: the painted streak behind her while she runs with it on, and the
+   *  burst at her feet when she switches it on. */
+  function drawSprints(camX: number, camY: number) {
+    if (result) return;
+    const now = performance.now();
+    for (const [id] of velvets) {
+      const r = id === myId ? null : remotes.get(id);
+      const b = id === myId ? me : r?.bandit;
+      if (!b || !sprinting(id) || !b.moving || (r && !here(r.state.deck))) continue;
+      // The streak trails away from the way she runs (it's painted for running right).
+      const f = b.facing;
+      const back = f === 'right' ? [-4, 0] : f === 'left' ? [4, 0] : f === 'up' ? [0, 4] : [0, -4];
+      drawAbilityFrame(ctx, 'velvet-sprint-trail', Math.floor(now / 80) % 8, b.x + back[0] - camX, b.y - 12 + back[1] - camY, TRAIL_ART, { flip: f === 'left', rotate: f === 'up' ? -Math.PI / 2 : f === 'down' ? Math.PI / 2 : 0, alpha: 0.85 });
+    }
+    for (let i = sprintBursts.length - 1; i >= 0; i--) {
+      const s = sprintBursts[i];
+      const t = (now - s.at) / 520;
+      const r = s.by === myId ? null : remotes.get(s.by);
+      const b = s.by === myId ? me : r?.bandit;
+      if (t >= 1 || !b) {
+        sprintBursts.splice(i, 1);
+        continue;
+      }
+      if (r && !here(r.state.deck)) continue;
+      drawAbilityFrame(ctx, 'velvet-sprint-burst', t * 8, b.x - camX, b.y + 1 - camY, BURST_ART);
+    }
+  }
+
+  /** Fuse's scan: a ring sweeping out to its reach, from where the beacon landed. */
   function drawScanPulses(camX: number, camY: number) {
     const now = performance.now();
     for (let i = scanPulses.length - 1; i >= 0; i--) {
       const p = scanPulses[i];
-      const t = (now - p.at) / 700;
+      const t = (now - p.at) / p.ms;
       if (t >= 1) {
         scanPulses.splice(i, 1);
         continue;
       }
       if (!here(p.deck)) continue;
+      // The painted sweep ring, slowly growing to the scan's reach (drawn round, as the reach is).
+      const r = p.radius * Math.max(0.04, t);
+      // It thins out as it grows (its painted line and ticks scale up with it), so a wide sweep
+      // reads as a light ring, not a band across the screen.
+      if (drawAbilityFrame(ctx, 'fuse-scan-sweep-ring', Math.floor((now - p.at) / 120) % 8, p.x - camX, p.y - camY, (2 * r) / SWEEP_RING_W, { sy: 2, alpha: Math.min(1, (1 - t) * 6) * (1 - 0.6 * t) })) continue;
       ctx.save();
       ctx.globalAlpha = 0.8 * (1 - t);
       ctx.strokeStyle = '#f0b94e';
@@ -4592,6 +5291,13 @@ async function boot() {
         ctx.lineTo(x, y - 4);
         ctx.stroke();
         ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+      // The painted anchor: it assembles where it's planted, then idles with its glow.
+      const since = now - a.at;
+      if (drawAbilityFrame(ctx, 'beacon-anchor-return', since < 360 ? 0 : 1 + (Math.floor(since / 220) % 3), x, y + 3, ANCHOR_ART)) {
+        ctx.restore();
+        continue;
       }
       const pulse = (now / 1200) % 1;
       ctx.globalAlpha = 0.7 * (1 - pulse);
@@ -4629,9 +5335,16 @@ async function boot() {
     }
     for (let i = warps.length - 1; i >= 0; i--) {
       const w = warps[i];
+      // The painted return: its ring, rising light, flare and scatter where she lands (the anchor
+      // was there); a scatter where she left.
+      const k = (now - w.at) / 640;
+      if (k < 1 && here(w.deck)) {
+        drawAbilityFrame(ctx, 'beacon-anchor-return', 4 + k * 4, w.to[0] - camX, w.to[1] - camY + 3, ANCHOR_ART);
+        if (k < 0.5) drawAbilityFrame(ctx, 'beacon-anchor-return', 7, w.from[0] - camX, w.from[1] - camY + 3, ANCHOR_ART, { alpha: 1 - k * 2 });
+      }
       const t = (now - w.at) / 400;
       if (t >= 1) {
-        warps.splice(i, 1);
+        if (k >= 1) warps.splice(i, 1);
         continue;
       }
       if (!here(w.deck)) continue;
@@ -4751,10 +5464,46 @@ async function boot() {
       ctx.moveTo(cl.from[0] - camX, cl.from[1] - camY);
       ctx.lineTo(b.x - camX, b.y - camY);
       ctx.stroke();
-      // The clone itself, flickering a little.
+      ctx.restore();
+      // The painted echo behind it: forming at the start, then running (mirrored going left).
+      const t = now - cl.at;
+      drawAbilityFrame(ctx, 'latch-decoy-echo', t < 140 ? 0 : 1 + (Math.floor(t / 90) % 6), b.x - camX, b.y - camY, ECHO_ART, { flip: cl.to[0] < cl.from[0], alpha: 0.55 });
+      // The clone itself (Latch, see-through), flickering a little.
+      ctx.save();
       ctx.globalAlpha = 0.45 + 0.15 * Math.sin(now / 50);
       b.draw(ctx, camX, camY, false);
       ctx.restore();
+    }
+    // At the end of its run, the echo dissolves.
+    for (let i = cloneEnds.length - 1; i >= 0; i--) {
+      const e = cloneEnds[i];
+      const t = (now - e.at) / (e.shattered ? 720 : 450);
+      if (t >= 1) {
+        cloneEnds.splice(i, 1);
+        continue;
+      }
+      if (!here(e.deck)) continue;
+      // A trap went off on it: it cracks and shatters there (painted); otherwise it dissolves.
+      if (!e.shattered || !drawAbilityFrame(ctx, 'latch-clone-shatter', t * 8, e.x - camX, e.y - camY, ECHO_ART, { flip: e.flip })) {
+        drawAbilityFrame(ctx, 'latch-decoy-echo', 7, e.x - camX, e.y - camY, ECHO_ART, { flip: e.flip, alpha: 0.6 * (1 - t) });
+      }
+    }
+  }
+
+  /** A shield that just broke: the painted impact, cracks and shatter (its last four frames). */
+  function drawShieldBreaks(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = shieldBreaks.length - 1; i >= 0; i--) {
+      const s = shieldBreaks[i];
+      const t = (now - s.at) / 520;
+      const r = s.id === myId ? null : remotes.get(s.id);
+      const b = s.id === myId ? me : r?.bandit;
+      if (t >= 1 || !b) {
+        shieldBreaks.splice(i, 1);
+        continue;
+      }
+      if (r && !here(r.state.deck)) continue;
+      drawAbilityFrame(ctx, 'rattle-shield-break', 4 + t * 4, b.x - camX, b.y - DRAW_H / 2 - 2 - camY - b.hop, SHIELD_ART, { alpha: 1 - Math.max(0, t - 0.75) * 4 });
     }
   }
 
@@ -4769,6 +5518,8 @@ async function boot() {
       if (!b || (r && (!here(r.state.deck) || r.state.hp <= 0)) || (id === myId && knockedOut)) continue;
       const x = b.x - camX;
       const y = b.y - DRAW_H / 2 - 2 - camY - b.hop;
+      // The painted shield: its four pulsing frames on a loop, round her body.
+      if (drawAbilityFrame(ctx, 'rattle-shield-break', Math.floor(now / 140) % 4, x, y, SHIELD_ART, { alpha: 0.85 })) continue;
       const rx = DRAW_W / 2 + 5;
       const ry = DRAW_H / 2 + 5;
       const pulse = 0.5 + 0.5 * Math.sin(now / 260);
@@ -4856,15 +5607,20 @@ async function boot() {
           ctx.moveTo(c.x - camX + 4, c.y - camY - 4);
           ctx.lineTo(c.x - camX - 4, c.y - camY + 4);
           ctx.stroke();
-        } else if (scanReveal && now < scanReveal.until && scanReveal.spots.has(sp.id)) {
-          // Fuse's scan: this one held a diamond when she scanned (fading out as it ends).
+        } else if (scanReveal && now < scanReveal.until && scanReveal.spots.has(sp.id) && now >= scanLitAt(sp)) {
+          // Fuse's scan: the sweep reached this one, and it held a diamond when she scanned.
           const left = (scanReveal.until - now) / scanReveal.ms;
+          const lit = now - scanLitAt(sp);
           ctx.save();
           ctx.strokeStyle = '#f0b94e';
-          ctx.globalAlpha = Math.min(1, left * 3) * (0.65 + 0.35 * Math.sin(now / 110));
+          ctx.globalAlpha = Math.min(1, left * 6) * (0.65 + 0.35 * Math.sin(now / 110));
           ctx.lineWidth = 2;
           ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-          gem(c.x - camX, c.y - camY - 6 - Math.abs(Math.sin(now / 200)) * 3, 4, '#ffe08a', Math.min(1, left * 3));
+          // The painted ping: popping in, pulsing while the sweep goes on, fading as it ends.
+          const ping = lit < 300 ? Math.floor(lit / 100) : scanReveal.until - now < 400 ? (scanReveal.until - now < 200 ? 7 : 6) : [3, 4, 5, 4][Math.floor(lit / 150) % 4];
+          if (!drawAbilityFrame(ctx, 'fuse-diamond-ping', ping, c.x - camX, c.y - camY - 8, PING_ART)) {
+            gem(c.x - camX, c.y - camY - 6 - Math.abs(Math.sin(now / 200)) * 3, 4, '#ffe08a', Math.min(1, left * 3));
+          }
           ctx.restore();
         } else if (crowdHint && now < crowdHint.until && crowdHint.spots.has(sp.id)) {
           // The crowd's Treasure Map: this one has a diamond in it.
@@ -4956,6 +5712,10 @@ async function boot() {
       const hover = 12 + Math.sin(now / 140) * 1.5;
       const sx = x - camX;
       const sy = y - camY;
+      if (abilityArtReady('patch-wingman-scout')) {
+        drawBeetle(w, t, sx, sy, dir, camX);
+        continue;
+      }
       ctx.save();
       // Shadow on the floor.
       ctx.globalAlpha = 0.3;
@@ -5014,6 +5774,58 @@ async function boot() {
       ctx.fillStyle = flying ? '#7ceaff' : now % 300 < 150 ? '#ffffff' : '#7ceaff';
       ctx.fillRect(Math.round(sx + dir * 2 - 1), Math.round(dy - 3), 2, 2);
       ctx.restore();
+    }
+  }
+
+  /** Patch's scout beetle (painted): it unfolds, scuttles along the route, then scans the furniture
+   *  with its eye while the search runs (the ring above fills); facing the way it's going. */
+  function drawBeetle(w: { spot: string; travelMs: number; searchMs: number }, t: number, sx: number, sy: number, dir: number, camX: number) {
+    const now = performance.now();
+    const BEETLE = 0.24;
+    if (t < w.travelMs) {
+      const frame = t < 160 ? 0 : 1 + (Math.floor(now / 110) % 3);
+      ctx.save();
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, 8, 2.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      drawAbilityFrame(ctx, 'patch-wingman-scout', frame, sx, sy, BEETLE, { flip: dir < 0 });
+      return;
+    }
+    const p = Math.min(1, (t - w.travelMs) / w.searchMs);
+    const spot = [...spots, ...decoys()].find((s) => s.id === w.spot);
+    const face = spot ? spotCenter(spot).x - camX < sx : dir < 0;
+    const frame = t - w.travelMs < 160 ? 4 : 5 + (Math.floor(now / 180) % 2);
+    drawAbilityFrame(ctx, 'patch-wingman-scout', frame, sx, sy, BEETLE, { flip: face });
+    // How far the search has got (as long as a Runner's hold of E).
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(sx, sy - 22, 4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = '#ffe39a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy - 22, 4, -Math.PI / 2, -Math.PI / 2 + p * Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Wingmen that just finished: the beetle's last frame (its eye sparkling), fading away. */
+  function drawWingmanEnds(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = wingmanEnds.length - 1; i >= 0; i--) {
+      const e = wingmanEnds[i];
+      const t = (now - e.at) / 700;
+      if (t >= 1) {
+        wingmanEnds.splice(i, 1);
+        continue;
+      }
+      if (here(e.deck)) drawAbilityFrame(ctx, 'patch-wingman-scout', 7, e.x - camX, e.y - camY, 0.24, { flip: e.flip, alpha: 1 - t * t });
     }
   }
 
@@ -6471,6 +7283,8 @@ async function boot() {
     requestAnimationFrame(tick);
     acc += Math.min(now - last, 250);
     last = now;
+    // Signal Divide static muffles what I hear while it lasts (and never outlives the heist).
+    setMuffled(scene === 'match' && phase === 'live' && !match?.saboteur && now < staticUntil);
     // A hit-stop: the world holds still (no catching up after), the camera keeps framing.
     const frozen = now < hitStopUntil;
     if (frozen) {

@@ -22,6 +22,11 @@ export type AbilityId =
   | 'trapRefresh'
   | 'firstAid'
   | 'doorJam'
+  | 'signalDivide'
+  | 'trackerPing'
+  | 'lootShift'
+  | 'shockwave'
+  | 'burnZone'
   | 'comingSoon';
 
 export interface Ability {
@@ -61,6 +66,11 @@ export const ABILITIES: Record<AbilityId, Ability> = {
   trapRefresh: { id: 'trapRefresh', name: 'Trap Refresh', blurb: 'Aim at a trap that just went off to make it ready again.', cooldown: 0, perRound: 1 },
   firstAid: { id: 'firstAid', name: 'First Aid', blurb: 'Heals herself or the most hurt Runner nearby to full HP, even from a knockout.', cooldown: 30, perRound: 3 },
   doorJam: { id: 'doorJam', name: 'Door Jam', blurb: 'Aim at a door to slam it shut and lock it for 8s.', cooldown: 15, perRound: 3 },
+  signalDivide: { id: 'signalDivide', name: 'Signal Divide', blurb: 'Aim at open floor: a 6-tile static barrier for 6s. Runners in it see less and hear muffled. It doesn’t block anyone.', cooldown: 25, perRound: 3 },
+  trackerPing: { id: 'trackerPing', name: 'Tracker Ping', blurb: 'Aim anywhere: a pulse 14 tiles wide marks every Runner it reaches, for you alone, for 4s.', cooldown: 30, perRound: 3 },
+  lootShift: { id: 'lootShift', name: 'Loot Shift', blurb: 'Aim at furniture hiding a diamond, then at empty furniture: the diamond moves there. 2 diamonds a round, each once.', cooldown: 20, perRound: 2 },
+  shockwave: { id: 'shockwave', name: 'Shockwave', blurb: 'Aim at open floor: after a warning flash, a wave knocks Runners within 3 tiles back and dazes them.', cooldown: 25, perRound: 3 },
+  burnZone: { id: 'burnZone', name: 'Burn Zone', blurb: 'Aim at open floor: after a warning, the floor burns for 5s, hurting Runners who stay in it.', cooldown: 30, perRound: 2 },
   comingSoon: { id: 'comingSoon', name: 'Coming Soon', blurb: 'This character’s unique ability is still in development.', cooldown: 0, needs: 'abilities' },
 };
 
@@ -80,11 +90,11 @@ export const CHARACTER_INFO: Record<CharacterId, CharacterInfo> = {
   zoya: { id: 'zoya', name: 'Zoya Khan', nick: 'Mule', runner: 'heavyCarry', saboteur: 'deepPockets', color: '#ffc94a' },
   rex: { id: 'rex', name: 'Rex Malhotra', nick: 'Rattle', runner: 'shield', saboteur: 'trapRefresh', color: '#e0409a' },
   iris: { id: 'iris', name: 'Iris Iyer', nick: 'Latch', runner: 'clone', saboteur: 'doorJam', color: '#8f7cff' },
-  theo: { id: 'theo', name: 'Theo Bennett', nick: 'Switch', runner: 'mend', saboteur: 'comingSoon', color: '#a2c66e' },
-  elise: { id: 'elise', name: 'Elise Hart', nick: 'Scout', runner: 'empKnife', saboteur: 'comingSoon', color: '#55b8ae' },
-  felix: { id: 'felix', name: 'Felix Morgan', nick: 'Fuse', runner: 'diamondScan', saboteur: 'comingSoon', color: '#f0b94e' },
-  clara: { id: 'clara', name: 'Clara Weiss', nick: 'Beacon', runner: 'anchor', saboteur: 'comingSoon', color: '#6d9ff0' },
-  miles: { id: 'miles', name: 'Miles Laurent', nick: 'Velvet', runner: 'energySprint', saboteur: 'comingSoon', color: '#b95b76' },
+  theo: { id: 'theo', name: 'Theo Bennett', nick: 'Switch', runner: 'mend', saboteur: 'signalDivide', color: '#a2c66e' },
+  elise: { id: 'elise', name: 'Elise Hart', nick: 'Scout', runner: 'empKnife', saboteur: 'trackerPing', color: '#55b8ae' },
+  felix: { id: 'felix', name: 'Felix Morgan', nick: 'Fuse', runner: 'diamondScan', saboteur: 'lootShift', color: '#f0b94e' },
+  clara: { id: 'clara', name: 'Clara Weiss', nick: 'Beacon', runner: 'anchor', saboteur: 'shockwave', color: '#6d9ff0' },
+  miles: { id: 'miles', name: 'Miles Laurent', nick: 'Velvet', runner: 'energySprint', saboteur: 'burnZone', color: '#b95b76' },
 };
 
 export const abilityFor = (id: CharacterId, role: Role) => ABILITIES[CHARACTER_INFO[id][role]];
@@ -99,19 +109,50 @@ export const MEND = { tickMs: 500, perTick: 5, ms: 4000, reach: 48, still: 6 };
 /** Beacon's Anchor: hold Q this long to move an unused anchor to where she stands. */
 export const ANCHOR_MOVE_HOLD_MS = 1000;
 
-/** Fuse's Diamond Scan: how far it reaches (art px, 12 tiles, furniture centres) and how long the marks last. */
-export const DIAMOND_SCAN = { radius: 192, ms: 4000 };
+/** Fuse's Diamond Scan: she throws a recon beacon up to `throwRange` (art px, 8 tiles; it stops
+ *  at walls) that bounces twice and lands `flightMs` later; it scans `radius` (12 tiles, furniture
+ *  centres) round where it lands, with a ring sweeping out over `ms` that lights each diamond as
+ *  it reaches it; the marks go when the sweep ends. */
+export const DIAMOND_SCAN = { radius: 192, ms: 6000, throwRange: 128, flightMs: 1700 };
 
-/** Scout's EMP Knife: flies up to `range` (art px, 6 tiles) at `speed` (px/s), then every trap
- *  within `radius` (Trap Jam's reach, 3.5 tiles) of where it lands is off for `ms`. */
-export const EMP = { range: 96, speed: 240, radius: 56, ms: 5000 };
+/** Scout's EMP Knife: a `windupMs` release, then it flies up to `range` (art px, 6 tiles) in
+ *  `flightMs`; stuck in the floor it charges for `chargeMs`, then a pulse spreads to `radius`
+ *  (Trap Jam's reach, 3.5 tiles) over `spreadMs`, switching each trap off for `ms` as it reaches it. */
+export const EMP = { range: 96, windupMs: 450, flightMs: 1250, chargeMs: 500, spreadMs: 1500, radius: 56, ms: 5000 };
 
-/** Latch's Clone: charges per refill, how far it runs (art px, 16 tiles), how fast (sprint, px/s),
- *  and how far either side of its path it spots traps (1 tile, plus a little for the trap's size). */
-export const CLONE = { charges: 2, range: 256, speed: 156, scan: 20 };
+/** Latch's Clone: charges per refill, how far it runs (art px, 16 tiles), how fast (px/s: about a
+ *  Runner's walk with a diamond in hand, 4 s for the full run), and how far either side of its
+ *  path it spots traps (1 tile, plus a little for the trap's size). The first ready trap it walks
+ *  into goes off on it, and it shatters there. */
+export const CLONE = { charges: 2, range: 256, speed: 64, scan: 20 };
 
 /** Mule's Heavy Carry: how many diamonds she can hold, and how much of the carry slowdown she shrugs off. */
 export const HEAVY_CARRY = { capacity: 2, slowCut: 0.6 };
 
 /** How many diamonds a heist Runner playing this character can hold at once. */
 export const carryCapacity = (character: CharacterId) => (CHARACTER_INFO[character].runner === 'heavyCarry' ? HEAVY_CARRY.capacity : 1);
+
+// ---------- Saboteur abilities (Switch, Scout, Fuse, Beacon, Velvet) ----------
+// All distances in art px (16 per tile), all times in ms. Cooldowns and uses are in ABILITIES.
+
+// The heist Saboteur has no body (a free camera), so these aim anywhere on the deck it's viewing.
+
+/** Switch's Signal Divide: a barrier `length` long across the floor (it turns to span the narrower
+ *  way through), `depth` deep each side; it builds for `deployMs`, then lasts `ms`. Every `tickMs`
+ *  each Runner in it gets `staticMs` of static (less sight, muffled sound). Nobody is blocked. */
+export const SIGNAL_DIVIDE = { length: 96, depth: 24, deployMs: 400, ms: 6000, tickMs: 250, staticMs: 800 };
+
+/** Scout's Tracker Ping: Runners within `radius` of the pulse are marked for the Saboteur for `ms`
+ *  (where they were at the pulse: the marks don't follow them). */
+export const TRACKER_PING = { radius: 224, ms: 4000 };
+
+/** Fuse's Loot Shift: how many different diamonds a round may move (each one only once). */
+export const LOOT_SHIFT = { maxDiamonds: 2, flyMs: 900 };
+
+/** Beacon's Shockwave: a `warnMs` warning, then Runners within `radius` are pushed `push` away
+ *  from its middle (never through walls) and dazed (slowed) for `dazeMs`. No damage. */
+export const SHOCKWAVE = { radius: 48, warnMs: 700, push: 40, dazeMs: 1500 };
+
+/** Velvet's Burn Zone: a `warnMs` warning, then for `ms` every `tickMs` Runners within `radius`
+ *  take `damage` (5 ticks: 40 at most, if they stand in it the whole time). */
+export const BURN_ZONE = { radius: 32, warnMs: 1200, ms: 5000, tickMs: 1000, damage: 8 };

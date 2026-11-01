@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
-import { ABILITIES, type AbilityId, CHARACTER_INFO, carryCapacity, CLONE, DOOR_JAM_DURATION_MS, EMP, DIAMOND_SCAN, MEND, RECHARGE_BANKS } from '../src/data/characters.ts';
+import { ABILITIES, type AbilityId, BURN_ZONE, CHARACTER_INFO, carryCapacity, CLONE, DOOR_JAM_DURATION_MS, EMP, DIAMOND_SCAN, LOOT_SHIFT, MEND, RECHARGE_BANKS, SHOCKWAVE, SIGNAL_DIVIDE, TRACKER_PING } from '../src/data/characters.ts';
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_MS, SEARCH_REACH, spotCenter, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { INSIDE, INSIDE_JOB_MIN_PLAYERS, INSIDE_SCORE, MEETING_LINES } from '../src/data/insideJob.ts';
@@ -1026,6 +1026,8 @@ function endMatch(matchId: string) {
   phases.delete(matchId);
   abilityUses.delete(matchId);
   abilityReadyAt.delete(matchId);
+  clearAbilityTimers(matchId);
+  lootShifted.delete(matchId);
   wingmen.delete(matchId);
   shields.delete(matchId);
   anchors.delete(matchId);
@@ -1152,6 +1154,8 @@ function startRound(matchId: string) {
   doorLocks.set(matchId, new Map());
   abilityUses.set(matchId, new Map());
   abilityReadyAt.set(matchId, new Map());
+  clearAbilityTimers(matchId);
+  lootShifted.set(matchId, new Set());
   wingmen.set(matchId, new Map());
   anchors.set(matchId, new Map());
   for (const e of energies.get(matchId)?.values() ?? []) clearTimeout(e.timer);
@@ -1908,6 +1912,9 @@ function handle(c: Client, msg: ClientMsg) {
       send(c, { t: 'doorJammed' });
       break;
     }
+    case 'sabAbility':
+      sabAbility(c, msg);
+      break;
     case 'place':
     case 'unplace': {
       // Only the Saboteur lays traps, only during setup, within the slot limits; everyone
@@ -2247,7 +2254,7 @@ function handle(c: Client, msg: ClientMsg) {
       }
       if (msg.ability === 'overclock') break;
       if (msg.ability === 'diamondScan') {
-        diamondScan(c);
+        diamondScan(c, msg.facing);
         break;
       }
       if (msg.ability === 'empKnife') {
@@ -2484,6 +2491,27 @@ function sendShield(matchId: string, id: string, change?: 'broke' | 'recharged')
   }
 }
 
+// ---------- Ability timers ----------
+
+/** Per match: ability effects still to land (Scout's knife, Fuse's beacon); cleared when the
+ *  round or the match ends, so nothing from an old round goes off in a new one. */
+const abilityTimers = new Map<string, Set<ReturnType<typeof setTimeout>>>();
+
+function later(matchId: string, ms: number, fn: () => void) {
+  const pending = abilityTimers.get(matchId) ?? new Set();
+  abilityTimers.set(matchId, pending);
+  const timer = setTimeout(() => {
+    pending.delete(timer);
+    fn();
+  }, ms);
+  pending.add(timer);
+}
+
+function clearAbilityTimers(matchId: string) {
+  for (const timer of abilityTimers.get(matchId) ?? []) clearTimeout(timer);
+  abilityTimers.delete(matchId);
+}
+
 // ---------- Trap jams (Trap Jam, Scout's EMP Knife) ----------
 
 /** The placed and fixed traps on a deck within `reach` of (x, y). */
@@ -2629,11 +2657,14 @@ function beaconAnchor(c: Client, act: unknown, x: unknown, y: unknown) {
 
 // ---------- Diamond Scan (Fuse) ----------
 
+let nextBeacon = 1;
+
 /**
- * Fuse's pulse: the furniture on her deck within reach that holds a diamond right now, for her
- * eyes only. It's a snapshot: nothing follows the diamonds afterwards.
+ * Fuse throws her recon beacon ahead; where it lands, it scans: the furniture on her deck within
+ * reach that holds a diamond at that moment, for her eyes only. A snapshot: nothing follows the
+ * diamonds afterwards.
  */
-function diamondScan(c: Client) {
+function diamondScan(c: Client, facing: unknown) {
   const s = c.state;
   const refuse = (reason: string) => send(c, { t: 'scanRefused', reason });
   const matchId = c.room;
@@ -2644,16 +2675,33 @@ function diamondScan(c: Client) {
   if (now < (ready.get(`${s.id}:diamondScan`) ?? 0) - COOLDOWN_SLACK_MS) return refuse('Not ready yet');
   if (!spendUse(c, 'diamondScan')) return refuse('No uses left');
   ready.set(`${s.id}:diamondScan`, now + ABILITIES.diamondScan.cooldown * 1000);
+  // The beacon goes the way she faces, as far as its throw or the first wall, furniture or
+  // closed door; everyone sees it fly (its two bounces are drawn by each game).
+  const dir: Facing = typeof facing === 'string' && facing in STEPS ? (facing as Facing) : s.facing;
+  const [dx, dy] = STEPS[dir];
   const deck = deckOf(c);
-  const held = new Set(vault.diamonds.flatMap((d) => (d.place.at === 'spot' ? [d.place.spot] : [])));
-  const spots = spotsOf(matchId)
-    .filter((sp) => held.has(sp.id) && spotDeck(matchId, sp) === deck)
-    .filter((sp) => Math.hypot(spotCenter(sp).x - s.x, spotCenter(sp).y - s.y) <= DIAMOND_SCAN.radius)
-    .map((sp) => sp.id);
-  for (const id of matches.get(matchId) ?? []) {
-    const member = clients.get(id);
-    if (member) send(member, { t: 'scan', by: s.id, deck, x: Math.round(s.x), y: Math.round(s.y), radius: DIAMOND_SCAN.radius, ms: DIAMOND_SCAN.ms, ...(member === c ? { spots } : {}) });
+  const [fx, fy] = [Math.round(s.x), Math.round(s.y)];
+  let len = 0;
+  while (len + 4 <= DIAMOND_SCAN.throwRange && !blocksShot(matchId, deck, fx + dx * (len + 4), fy - 4 + dy * (len + 4))) len += 4;
+  const to: [number, number] = [fx + dx * len, fy + dy * len];
+  const id = `beacon${nextBeacon++}`;
+  for (const mid of matches.get(matchId) ?? []) {
+    const member = clients.get(mid);
+    if (member) send(member, { t: 'scanThrow', id, by: s.id, deck, from: [fx, fy], to, ms: DIAMOND_SCAN.flightMs });
   }
+  // It scans once, where it lands; not if the round ended (the timer is cleared) or she's gone.
+  later(matchId, DIAMOND_SCAN.flightMs, () => {
+    if (phases.get(matchId)?.phase !== 'live' || !matches.get(matchId)?.has(s.id) || s.offline) return;
+    const held = new Set(vault.diamonds.flatMap((d) => (d.place.at === 'spot' ? [d.place.spot] : [])));
+    const spots = spotsOf(matchId)
+      .filter((sp) => held.has(sp.id) && spotDeck(matchId, sp) === deck)
+      .filter((sp) => Math.hypot(spotCenter(sp).x - to[0], spotCenter(sp).y - to[1]) <= DIAMOND_SCAN.radius)
+      .map((sp) => sp.id);
+    for (const mid of matches.get(matchId) ?? []) {
+      const member = clients.get(mid);
+      if (member) send(member, { t: 'scan', id, by: s.id, deck, x: to[0], y: to[1], radius: DIAMOND_SCAN.radius, ms: DIAMOND_SCAN.ms, ...(member === c ? { spots } : {}) });
+    }
+  });
 }
 
 // ---------- EMP Knife (Scout) ----------
@@ -2682,27 +2730,272 @@ function throwKnife(c: Client, facing: unknown) {
   let len = 0;
   while (len + 4 <= EMP.range && !blocksShot(matchId, deck, fx + dx * (len + 4), fy - 8 + dy * (len + 4))) len += 4;
   const to: [number, number] = [fx + dx * len, fy + dy * len];
-  const ms = Math.round((len / EMP.speed) * 1000);
   const id = `knife${nextKnife++}`;
   for (const mid of matches.get(matchId) ?? []) {
     const member = clients.get(mid);
-    if (member) send(member, { t: 'knife', id, by: s.id, deck, from: [fx, fy], to, ms });
+    if (member) send(member, { t: 'knife', id, by: s.id, deck, from: [fx, fy], to, ms: EMP.flightMs, windupMs: EMP.windupMs });
   }
-  setTimeout(() => {
+  // The knife lands (about 1.7 s after the throw) and charges; then its pulse spreads, switching
+  // each trap off as it reaches it. Each happens once, and not if the round ended first (the
+  // timers are cleared then).
+  later(matchId, EMP.windupMs + EMP.flightMs, () => {
     if (phases.get(matchId)?.phase !== 'live') return;
     const { placed, fixed } = trapsAround(matchId, deck, to[0], to[1], EMP.radius);
-    const sab = saboteurs.get(matchId);
-    // Hidden traps it caught are shown to the whole crew (and stay known, like any reveal).
-    for (const t of placed) {
-      const runtime = trapState.get(matchId)?.get(t.id);
-      for (const mid of matches.get(matchId) ?? []) if (mid !== sab && runtime) (runtime.revealedTo ??= new Set()).add(mid);
-    }
-    jamTraps(matchId, placed, fixed, Date.now() + EMP.ms, () => true);
     for (const mid of matches.get(matchId) ?? []) {
       const member = clients.get(mid);
-      if (member) send(member, { t: 'emp', id, by: s.id, deck, x: to[0], y: to[1], radius: EMP.radius, ms: EMP.ms, count: placed.length + fixed.length });
+      if (member) send(member, { t: 'emp', id, by: s.id, deck, x: to[0], y: to[1], radius: EMP.radius, ms: EMP.ms, count: placed.length + fixed.length, chargeMs: EMP.chargeMs, spreadMs: EMP.spreadMs });
     }
-  }, ms);
+    const sab = saboteurs.get(matchId);
+    for (const t of [...placed, ...fixed]) {
+      const reach = EMP.chargeMs + (Math.hypot(t.x - to[0], t.y - to[1]) / EMP.radius) * EMP.spreadMs;
+      later(matchId, Math.round(reach), () => {
+        if (phases.get(matchId)?.phase !== 'live') return;
+        const isPlaced = placed.includes(t as PlacedTrap);
+        if (isPlaced && placedTraps.get(matchId)?.get(t.id) !== t) return; // gone since
+        // A hidden trap it catches is shown to the whole crew (and stays known, like any reveal).
+        const runtime = trapState.get(matchId)?.get(t.id);
+        if (isPlaced && runtime) for (const mid of matches.get(matchId) ?? []) if (mid !== sab) (runtime.revealedTo ??= new Set()).add(mid);
+        jamTraps(matchId, isPlaced ? [t as PlacedTrap] : [], isPlaced ? [] : [t as TrapSpot], Date.now() + EMP.ms, () => true);
+      });
+    }
+  });
+}
+
+// ---------- Saboteur abilities (Switch, Scout, Fuse, Beacon, Velvet) ----------
+
+/** Per match: the diamonds Loot Shift has moved this round (each may move only once). */
+const lootShifted = new Map<string, Set<string>>();
+let nextSabEffect = 1;
+
+/** One Saboteur effect in play; `over` once it was called off. */
+interface SabEffect {
+  id: string;
+  by: string;
+  over: boolean;
+}
+
+/** Nothing solid (a wall, furniture, a closed door) between two points on a deck. */
+function clearLine(matchId: string, deck: MapId, x0: number, y0: number, x1: number, y1: number) {
+  const steps = Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 4);
+  for (let i = 1; i < steps; i++) if (blocksShot(matchId, deck, x0 + ((x1 - x0) * i) / steps, y0 + ((y1 - y0) * i) / steps)) return false;
+  return true;
+}
+
+/** This heist's connected Runners on a deck (not the Saboteur). */
+function runnersOn(matchId: string, deck: MapId) {
+  const sab = saboteurs.get(matchId);
+  return [...(matches.get(matchId) ?? [])]
+    .map((id) => clients.get(id))
+    .filter((m): m is Client => !!m && m.state.id !== sab && !m.state.offline && deckOf(m) === deck);
+}
+
+/** Up and able to be hit (not knocked out). */
+const standing = (m: Client) => m.state.hp > 0 && !((m.koUntil ?? 0) > Date.now());
+
+function sabNote(matchId: string, by: string, text: string) {
+  const sab = clients.get(by);
+  if (sab && sab.room === matchId) send(sab, { t: 'sabNote', text });
+}
+
+/**
+ * Is this effect still going? Not once the round is over (its timers are cleared at the next
+ * round anyway). If its Saboteur dropped out, it's called off and everyone stops drawing it.
+ */
+function stillOn(matchId: string, fx: SabEffect) {
+  if (fx.over || phases.get(matchId)?.phase !== 'live' || saboteurs.get(matchId) !== fx.by) return false;
+  const sab = clients.get(fx.by);
+  if (sab && matches.get(matchId)?.has(fx.by) && !sab.state.offline) return true;
+  fx.over = true;
+  toMatch(matchId, { t: 'sabEnd', id: fx.id });
+  return false;
+}
+
+/** Who's in the list, by name ("Maya and Dev"). */
+const namesOf = (ids: Iterable<string>) => {
+  const names = [...ids].map((id) => clients.get(id)?.state.name ?? 'someone');
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0] ?? '';
+};
+
+const SAB_ABILITIES = new Set<AbilityId>(['signalDivide', 'trackerPing', 'lootShift', 'shockwave', 'burnZone']);
+
+/**
+ * The heist Saboteur's Q for Switch, Scout, Fuse, Beacon and Velvet. Everything is checked here:
+ * that it's this Saboteur's own ability, the heist is live, the cooldown is over, a use is left,
+ * and the target is good. Then the cooldown starts, a use is spent and the effect runs. The
+ * Saboteur is always told which (a refusal says why and costs nothing).
+ */
+function sabAbility(c: Client, msg: Extract<ClientMsg, { t: 'sabAbility' }>) {
+  const s = c.state;
+  const matchId = c.room;
+  const ability = msg.ability;
+  const refuse = (reason: string) => send(c, { t: 'sabResult', ability, ok: false, reason });
+  const now = Date.now();
+  const ready = abilityReadyAt.get(matchId);
+  if (!SAB_ABILITIES.has(ability) || saboteurs.get(matchId) !== s.id || CHARACTER_INFO[s.character].saboteur !== ability || isHideSeek(matchId) || phases.get(matchId)?.phase !== 'live' || !ready) return refuse('Not right now');
+  if (now < (ready.get(`${s.id}:${ability}`) ?? 0) - COOLDOWN_SLACK_MS) return refuse('Not ready yet');
+  if ((abilityUses.get(matchId)?.get(`${s.id}:${ability}`) ?? 0) >= (ABILITIES[ability].perRound ?? Infinity)) return refuse('No uses left');
+  const deck = deckOf(c);
+  let go: string | (() => void);
+  if (ability === 'lootShift') go = lootShift(c, deck, msg.from, msg.to);
+  else {
+    const { x, y } = msg;
+    if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > mapData[deck].width * TILE || y > mapData[deck].height * TILE) return refuse('Aim at the map');
+    const at: [number, number] = [Math.round(x), Math.round(y)];
+    go = ability === 'signalDivide' ? signalDivide(c, deck, at) : ability === 'trackerPing' ? trackerPing(c, deck, at) : ability === 'shockwave' ? shockwave(c, deck, at) : burnZone(c, deck, at);
+  }
+  if (typeof go === 'string') return refuse(go);
+  if (!spendUse(c, ability)) return refuse('No uses left');
+  ready.set(`${s.id}:${ability}`, now + ABILITIES[ability].cooldown * 1000);
+  send(c, { t: 'sabResult', ability, ok: true });
+  go();
+}
+
+/** How far the floor is open from (x, y) one way, up to `max` (art px). */
+function openRun(matchId: string, deck: MapId, x: number, y: number, dx: number, dy: number, max: number) {
+  let n = 0;
+  while (n + 4 <= max && !blocksShot(matchId, deck, x + dx * (n + 4), y + dy * (n + 4))) n += 4;
+  return n;
+}
+
+/**
+ * Switch: a static barrier across the floor, turned to span the narrower way through (across a
+ * corridor). Everyone sees it; nobody is stopped by it. Runners standing in it get static (less
+ * sight, muffled sound) for a moment, over and over while they stay.
+ */
+function signalDivide(c: Client, deck: MapId, [x, y]: [number, number]): string | (() => void) {
+  const matchId = c.room;
+  if (!openFloor(deck, x, y, 4, 4)) return 'Aim at open floor';
+  const reach = SIGNAL_DIVIDE.length;
+  const vertical = openRun(matchId, deck, x, y, 1, 0, reach) + openRun(matchId, deck, x, y, -1, 0, reach) > openRun(matchId, deck, x, y, 0, 1, reach) + openRun(matchId, deck, x, y, 0, -1, reach);
+  return () => {
+    const fx: SabEffect = { id: `sab${nextSabEffect++}`, by: c.state.id, over: false };
+    const { length, depth, deployMs, ms, tickMs, staticMs } = SIGNAL_DIVIDE;
+    toMatch(matchId, { t: 'signalDivide', id: fx.id, by: fx.by, deck, x, y, vertical, length, depth, deployMs, ms });
+    const caught = new Set<string>();
+    const inBand = (m: Client) => {
+      const [along, across] = vertical ? [m.state.y - y, m.state.x - x] : [m.state.x - x, m.state.y - y];
+      return Math.abs(along) <= length / 2 && Math.abs(across) <= depth;
+    };
+    for (let k = 0; k * tickMs < ms; k++) {
+      later(matchId, deployMs + k * tickMs, () => {
+        if (!stillOn(matchId, fx)) return;
+        for (const m of runnersOn(matchId, deck)) {
+          if (!standing(m) || !inBand(m)) continue;
+          send(m, { t: 'signalStatic', ms: staticMs });
+          caught.add(m.state.id);
+        }
+      });
+    }
+    later(matchId, deployMs + ms, () => {
+      if (stillOn(matchId, fx)) sabNote(matchId, fx.by, caught.size ? `Signal Divide down · it scrambled ${namesOf(caught)}` : 'Signal Divide down · nobody crossed it');
+    });
+  };
+}
+
+/**
+ * Scout: a pulse where the Saboteur aims. Every Runner on that deck within its reach is marked
+ * where they stand, for the Saboteur alone (the marks stay put). Each marked Runner is only told
+ * that they were pinged. It never shows the Saboteur or any trap to anyone.
+ */
+function trackerPing(c: Client, deck: MapId, [x, y]: [number, number]): () => void {
+  const matchId = c.room;
+  return () => {
+    const id = `sab${nextSabEffect++}`;
+    const found = runnersOn(matchId, deck).filter((m) => Math.hypot(m.state.x - x, m.state.y - y) <= TRACKER_PING.radius);
+    const marks = found.map((m) => ({ id: m.state.id, x: Math.round(m.state.x), y: Math.round(m.state.y) }));
+    send(c, { t: 'trackerPing', id, deck, x, y, radius: TRACKER_PING.radius, ms: TRACKER_PING.ms, marks });
+    for (const m of found) send(m, { t: 'tracked', ms: TRACKER_PING.ms });
+  };
+}
+
+/**
+ * Fuse: a diamond still hidden in furniture moves to other furniture on the same deck, under the
+ * rules for hiding one in setup (empty furniture, not in the vault, two per room at most), and
+ * never into furniture the Runners already searched. Each diamond moves once at most, and two
+ * different diamonds a round. Banked, carried, dropped and vault diamonds never move.
+ */
+function lootShift(c: Client, deck: MapId, from: unknown, to: unknown): string | (() => void) {
+  const matchId = c.room;
+  const vault = vaults.get(matchId);
+  if (!vault) return 'Not right now';
+  if (typeof from !== 'string' || typeof to !== 'string') return 'Pick a diamond, then where it goes';
+  const a = spotsOf(matchId).find((sp) => sp.id === from);
+  const b = spotsOf(matchId).find((sp) => sp.id === to);
+  if (!a || !b || a === b) return 'Pick two different pieces of furniture';
+  if (spotDeck(matchId, a) !== deck || spotDeck(matchId, b) !== deck) return 'Both must be on this deck';
+  const d = vault.diamonds.find((x) => x.place.at === 'spot' && x.place.spot === from);
+  if (!d) return 'No diamond hidden there any more';
+  const key = keycards.get(matchId);
+  if (key?.vaulted.has(d.id)) return 'Vault diamonds stay in the vault';
+  const moved = lootShifted.get(matchId) ?? new Set<string>();
+  if (moved.has(d.id)) return 'That diamond has been moved already';
+  if (moved.size >= LOOT_SHIFT.maxDiamonds) return 'No uses left';
+  if (vault.diamonds.some((x) => x.place.at === 'spot' && x.place.spot === to)) return 'A diamond is hidden there already';
+  if (vault.searched.has(to)) return 'The Runners already searched that';
+  if (key && inVault(matchId, key, to)) return 'Not into the vault';
+  if (roomCount(matchId, vault, roomKey(matchId, b), d) >= DIAMONDS_PER_ROOM) return `That room has ${DIAMONDS_PER_ROOM} diamonds already`;
+  return () => {
+    d.place = { at: 'spot', spot: to };
+    moved.add(d.id);
+    lootShifted.set(matchId, moved);
+    send(c, { t: 'lootShift', from, to, ms: LOOT_SHIFT.flyMs });
+    for (const id of matches.get(matchId) ?? []) {
+      const m = clients.get(id);
+      if (m && m !== c) send(m, { t: 'lootShifted' });
+    }
+    sendDiamonds(matchId);
+    sendGlints(matchId);
+  };
+}
+
+/**
+ * Beacon: a warning where the Saboteur aims, then a wave. Runners within reach (with nothing
+ * solid in between) are pushed away from its middle and dazed for a moment. No damage. The
+ * push is each Runner's own game moving them, so it stops at walls like any movement.
+ */
+function shockwave(c: Client, deck: MapId, [x, y]: [number, number]): string | (() => void) {
+  const matchId = c.room;
+  if (!openFloor(deck, x, y, 4, 4)) return 'Aim at open floor';
+  return () => {
+    const fx: SabEffect = { id: `sab${nextSabEffect++}`, by: c.state.id, over: false };
+    toMatch(matchId, { t: 'shockwave', id: fx.id, by: fx.by, deck, x, y, radius: SHOCKWAVE.radius, warnMs: SHOCKWAVE.warnMs });
+    later(matchId, SHOCKWAVE.warnMs, () => {
+      if (!stillOn(matchId, fx)) return;
+      const hit = runnersOn(matchId, deck).filter((m) => standing(m) && Math.hypot(m.state.x - x, m.state.y - y) <= SHOCKWAVE.radius && clearLine(matchId, deck, x, y, m.state.x, m.state.y));
+      for (const m of hit) send(m, { t: 'shoved', x, y, dist: SHOCKWAVE.push, dazeMs: SHOCKWAVE.dazeMs });
+      sabNote(matchId, fx.by, hit.length ? `Shockwave knocked back ${namesOf(hit.map((m) => m.state.id))}` : 'Shockwave hit nobody');
+    });
+  };
+}
+
+/**
+ * Velvet: a warning where the Saboteur aims, then the floor burns. Every `tickMs` while it lasts,
+ * Runners in it (with nothing solid in between) take a little damage, so walking out stops it.
+ */
+function burnZone(c: Client, deck: MapId, [x, y]: [number, number]): string | (() => void) {
+  const matchId = c.room;
+  if (!openFloor(deck, x, y, 4, 4)) return 'Aim at open floor';
+  return () => {
+    const fx: SabEffect = { id: `sab${nextSabEffect++}`, by: c.state.id, over: false };
+    const { radius, warnMs, ms, tickMs, damage } = BURN_ZONE;
+    toMatch(matchId, { t: 'burnZone', id: fx.id, by: fx.by, deck, x, y, radius, warnMs, ms, tickMs });
+    const burned = new Set<string>();
+    let burns = 0;
+    for (let k = 0; k * tickMs < ms; k++) {
+      later(matchId, warnMs + k * tickMs, () => {
+        if (!stillOn(matchId, fx)) return;
+        for (const m of runnersOn(matchId, deck)) {
+          if (!standing(m) || Math.hypot(m.state.x - x, m.state.y - y) > radius || !clearLine(matchId, deck, x, y, m.state.x, m.state.y)) continue;
+          send(m, { t: 'burned', damage });
+          burned.add(m.state.id);
+          burns++;
+        }
+      });
+    }
+    later(matchId, warnMs + ms, () => {
+      if (stillOn(matchId, fx)) sabNote(matchId, fx.by, burned.size ? `Burn Zone out · ${burns} burn${burns === 1 ? '' : 's'} on ${namesOf(burned)}` : 'Burn Zone out · nobody was caught in it');
+    });
+  };
 }
 
 // ---------- Mend (Switch) ----------
@@ -2832,12 +3125,23 @@ function launchClone(c: Client, facing: unknown) {
     if (member) send(member, { t: 'clone', id, by: s.id, deck, facing: dir, from: [fx, fy], to, ms });
   }
   let found = 0;
+  let over = false;
+  const finish = (shattered?: [number, number]) => {
+    if (over || clonesOut.get(matchId) !== out) return; // done already, or the round moved on
+    over = true;
+    out.delete(s.id);
+    for (const mid of matches.get(matchId) ?? []) {
+      const member = clients.get(mid);
+      if (member) send(member, { t: 'cloneDone', id, by: s.id, found, ...(shattered ? { shattered } : {}) });
+    }
+  };
   for (const trap of placedTraps.get(matchId)?.values() ?? []) {
     if (onDeck(matchId, trap.deck) !== deck || distanceToSegment(trap.x, trap.y, fx, fy, to[0], to[1]) > CLONE.scan) continue;
-    const along = Math.max(0, (trap.x - fx) * dx + (trap.y - fy) * dy);
-    setTimeout(() => {
-      // Still there (not set off, the round still on): every Runner learns of it.
-      if (placedTraps.get(matchId)?.get(trap.id) !== trap || phases.get(matchId)?.phase !== 'live') return;
+    const along = Math.min(len, Math.max(0, (trap.x - fx) * dx + (trap.y - fy) * dy));
+    later(matchId, Math.round((along / CLONE.speed) * 1000), () => {
+      // Still there (not set off, the round still on), and the clone still going: every Runner
+      // learns of it.
+      if (over || placedTraps.get(matchId)?.get(trap.id) !== trap || phases.get(matchId)?.phase !== 'live') return;
       found++;
       const runtime = trapState.get(matchId)?.get(trap.id);
       for (const mid of matches.get(matchId) ?? []) {
@@ -2846,16 +3150,43 @@ function launchClone(c: Client, facing: unknown) {
         if (runtime) (runtime.revealedTo ??= new Set()).add(mid);
         send(member, { t: 'trapReveal', trap, clone: id });
       }
-    }, Math.round((Math.min(along, len) / CLONE.speed) * 1000));
+      // A trap it walks right into (ready, not switched off) goes off on it, and that's the end of it.
+      const at: [number, number] = [fx + dx * along, fy + dy * along];
+      const into = trap.kind === 'laser' ? enteredLaser(trap, fx, fy, to[0], to[1]) : distanceToSegment(trap.x, trap.y, fx, fy, to[0], to[1]) <= Math.max(12, Math.min(trapKind(trap.kind)!.w, trapKind(trap.kind)!.h) / 2);
+      if (trap.kind !== 'fakeLoot' && into && runtime && Date.now() >= runtime.jammedUntil && trapIsReady(runtime.firedAt, Date.now(), overclockWindows.get(matchId) ?? null)) {
+        fireOnClone(matchId, trap);
+        finish(at);
+      }
+    });
   }
-  setTimeout(() => {
-    if (clonesOut.get(matchId) !== out) return; // the round moved on
-    out.delete(s.id);
+  later(matchId, ms + 50, () => finish());
+}
+
+/**
+ * A placed trap goes off on Latch's clone: it's spent (cooling down, a Laser's beam live) as if
+ * a Runner had set it off, and its pull or cloud catches anyone nearby; the clone takes the hit.
+ */
+function fireOnClone(matchId: string, trap: PlacedTrap) {
+  const st = trapState.get(matchId)?.get(trap.id);
+  if (!st) return;
+  const now = Date.now();
+  st.firedAt = now;
+  st.tripwired = false;
+  if (trap.kind === 'laser') {
+    st.activeFrom = now + 800;
+    st.activeUntil = now + 4800;
+  }
+  for (const mid of matches.get(matchId) ?? []) {
+    const member = clients.get(mid);
+    if (member) send(member, { t: 'trapFired', id: trap.id, kind: trap.kind, x: trap.x, y: trap.y, victim: '' });
+  }
+  if (trap.kind === 'magnet') {
     for (const mid of matches.get(matchId) ?? []) {
-      const member = clients.get(mid);
-      if (member) send(member, { t: 'cloneDone', id, by: s.id, found });
+      const c = clients.get(mid);
+      if (!c || mid === saboteurs.get(matchId)) continue;
+      if (deckOf(c) === onDeck(matchId, trap.deck) && Math.hypot(c.state.x - trap.x, c.state.y - trap.y) <= MAGNET_REACH) dropDiamond(matchId, mid, trap.x, trap.y + 10);
     }
-  }, ms + 50);
+  }
 }
 
 // ---------- Wingman (Patch) ----------

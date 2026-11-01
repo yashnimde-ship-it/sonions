@@ -24,7 +24,7 @@ export const CHAR_GLOW = 0.75;
 
 // Movement in art pixels per frame (60 frames per second).
 export const WALK_SPEED = 1.6;
-export const SPRINT_SPEED = 2.6;
+export const SPRINT_SPEED = 2.2;
 
 // The bandit's feet hitbox, relative to the point between his feet (art pixels).
 // 9 px wide: just wider than one 8 px collision cell, so a one-cell gap in a wall or between

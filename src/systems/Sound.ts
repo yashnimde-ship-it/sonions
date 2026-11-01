@@ -11,6 +11,9 @@ let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
 /** Footsteps have their own, louder bus (straight to the speakers, not through `master`). */
 let stepBus: GainNode | null = null;
+/** Effects and footsteps pass through this low-pass on the way out (muffled in Signal Divide static). */
+let muffler: BiquadFilterNode | null = null;
+let muffled = false;
 let enabled = true;
 const unlockedListeners: (() => void)[] = [];
 
@@ -38,6 +41,13 @@ export function unlockSound() {
   void a.resume();
 }
 
+/** Muffle the game's effects and footsteps (as if through static), or let them through again. */
+export function setMuffled(on: boolean) {
+  if (on === muffled || !ctx || !muffler) return;
+  muffled = on;
+  muffler.frequency.setTargetAtTime(on ? 500 : 20000, ctx.currentTime, on ? 0.05 : 0.15);
+}
+
 /** The audio context for the soundtrack (it has its own volume and setting), or null. */
 export function audioOut() {
   return audio();
@@ -48,12 +58,16 @@ function audio() {
     const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AC) return null;
     ctx = new AC();
+    muffler = ctx.createBiquadFilter();
+    muffler.type = 'lowpass';
+    muffler.frequency.value = 20000;
+    muffler.connect(ctx.destination);
     master = ctx.createGain();
     master.gain.value = 0.35;
-    master.connect(ctx.destination);
+    master.connect(muffler);
     stepBus = ctx.createGain();
     stepBus.gain.value = 0.9;
-    stepBus.connect(ctx.destination);
+    stepBus.connect(muffler);
     const c = ctx;
     c.addEventListener('statechange', () => {
       if (c.state === 'running') for (const fn of unlockedListeners) fn();
