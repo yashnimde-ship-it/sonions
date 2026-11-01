@@ -56,7 +56,7 @@ export class ResultScreen {
           : `Time's up: only ${r.banked} of ${r.total} diamonds were banked (needed ${r.need}).`;
     const sides = ij ? (['THIEVES WIN', 'INSIDER WINS'] as const) : h ? (['HIDERS WIN', 'SEEKER WINS'] as const) : (['RUNNERS WIN', 'SABOTEUR WINS'] as const);
     const points = r.points
-      .map((p) => `<li class="${p.id === me ? 'me' : ''}"><span class="who">${esc(p.name)}${p.saboteur ? ` <em>${ij ? 'INSIDER' : h ? 'SEEKER' : 'SABOTEUR'}</em>` : ''}</span><b data-to="${p.points}">${p.points < 0 ? '' : '+'}${p.points}</b></li>`)
+      .map((p) => `<li class="${p.id === me ? 'me' : ''}"><span class="who">${esc(p.name)}${p.saboteur ? ` <em>${ij ? 'INSIDER' : h ? 'SEEKER' : 'SABOTEUR'}</em>` : ''}</span>${p.notes?.length ? `<small class="notes">${p.notes.map(esc).join(' · ')}</small>` : ''}<b data-to="${p.points}">${p.points < 0 ? '' : '+'}${p.points}</b></li>`)
       .join('');
     this.root.className = r.winner === 'none' ? 'off' : won ? 'win' : 'lose';
     this.root.innerHTML = `

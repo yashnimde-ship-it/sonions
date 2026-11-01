@@ -14,6 +14,7 @@ import { ABILITIES, type AbilityId, CHARACTER_INFO, carryCapacity, CLONE, DOOR_J
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_MS, SEARCH_REACH, spotCenter, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { INSIDE, INSIDE_JOB_MIN_PLAYERS, INSIDE_SCORE, MEETING_LINES } from '../src/data/insideJob.ts';
+import { CONTRACT_POINTS, type ContractDef, type ContractId, drawContract, REVENGE_POINTS } from '../src/data/contracts.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
@@ -185,6 +186,8 @@ interface Inside {
   caught: { how: 'shot' | 'vote'; by: string[] } | null;
   /** Thieves the Insider took out; shots a thief fired into another thief. */
   kills: number;
+  /** Got at least one vote against them in a meeting. */
+  votedAgainst: Set<string>;
   wrongShots: Map<string, number>;
 }
 const insides = new Map<string, Inside>();
@@ -200,6 +203,153 @@ const toMatch = (matchId: string, msg: ServerMsg) => {
     if (m) send(m, msg);
   }
 };
+
+// ---------- Secret Contracts and the Grudge ----------
+
+/** Per match: each player's contract this round, and points earned on the side (with why). */
+const contracts = new Map<string, Map<string, { def: ContractDef; got: number; done: boolean }>>();
+const bonuses = new Map<string, Map<string, { points: number; notes: string[] }>>();
+/** Per player (by key, so it lasts across games while the server runs): who they hold a grudge
+ *  against now, and how many times each rival has wronged them. */
+const grudges = new Map<string, { rival: string; name: string; reason: string }>();
+const wrongCounts = new Map<string, Map<string, number>>();
+/** Inside Job: who shot whom this round, told only when the round is over (it would give the
+ *  Insider away). */
+const pendingWrongs = new Map<string, [string, string, string][]>();
+const keyOf = (c: Client) => c.key ?? c.state.id;
+
+function addBonus(matchId: string, id: string, points: number, note: string) {
+  let m = bonuses.get(matchId);
+  if (!m) bonuses.set(matchId, (m = new Map()));
+  const b = m.get(id) ?? { points: 0, notes: [] };
+  b.points += points;
+  b.notes.push(note);
+  m.set(id, b);
+}
+
+function contractMsg(matchId: string, id: string): ServerMsg | null {
+  const k = contracts.get(matchId)?.get(id);
+  return k ? { t: 'contract', text: k.def.text, need: k.def.need, got: Math.min(k.got, k.def.need), done: k.done, points: CONTRACT_POINTS } : null;
+}
+
+/** Progress on a contract (only counts while the round is live). */
+function contractStep(matchId: string, id: string, which: ContractId, n = 1) {
+  const k = contracts.get(matchId)?.get(id);
+  if (!k || k.done || k.def.id !== which || k.def.atEnd || phases.get(matchId)?.phase !== 'live') return;
+  k.got += n;
+  if (k.got >= k.def.need) completeContract(matchId, id);
+  else {
+    const c = clients.get(id);
+    const msg = contractMsg(matchId, id);
+    if (c && msg) send(c, msg);
+  }
+}
+
+function completeContract(matchId: string, id: string) {
+  const k = contracts.get(matchId)?.get(id);
+  if (!k || k.done) return;
+  k.done = true;
+  k.got = k.def.need;
+  addBonus(matchId, id, CONTRACT_POINTS, `📜 Contract +${CONTRACT_POINTS}`);
+  const c = clients.get(id);
+  const msg = contractMsg(matchId, id);
+  if (c && msg) send(c, msg);
+}
+
+/** A grudge message for this player in this match (their rival, if the rival is playing). */
+function grudgeMsg(matchId: string, c: Client): ServerMsg {
+  const g = grudges.get(keyOf(c));
+  const rival = g ? [...(matches.get(matchId) ?? [])].map((id) => clients.get(id)).find((m) => m && keyOf(m) === g.rival) : undefined;
+  if (!g || !rival) return { t: 'grudge', id: null, name: '', reason: '', count: 0 };
+  return { t: 'grudge', id: rival.state.id, name: rival.state.name, reason: g.reason, count: wrongCounts.get(keyOf(c))?.get(g.rival) ?? 1 };
+}
+
+/** `by` wronged `victim`: from now on, `by` is the victim's Grudge. */
+function wronged(matchId: string, victimId: string, byId: string, reason: string) {
+  const victim = clients.get(victimId);
+  const by = clients.get(byId);
+  if (!victim || !by || victim === by) return;
+  const counts = wrongCounts.get(keyOf(victim)) ?? new Map<string, number>();
+  wrongCounts.set(keyOf(victim), counts);
+  counts.set(keyOf(by), (counts.get(keyOf(by)) ?? 0) + 1);
+  grudges.set(keyOf(victim), { rival: keyOf(by), name: by.state.name, reason });
+  send(victim, grudgeMsg(matchId, victim));
+}
+
+/** `holderId` got one back on `rivalId`: if that's their Grudge, it's REVENGE. */
+function payback(matchId: string, holderId: string, rivalId: string, tellRival = true) {
+  const holder = clients.get(holderId);
+  const rival = clients.get(rivalId);
+  if (!holder || !rival || holder === rival || grudges.get(keyOf(holder))?.rival !== keyOf(rival)) return;
+  grudges.delete(keyOf(holder));
+  addBonus(matchId, holderId, REVENGE_POINTS, `⚔ Revenge on ${rival.state.name} +${REVENGE_POINTS}`);
+  const msg: ServerMsg = { t: 'revenge', by: holderId, byName: holder.state.name, on: rivalId, onName: rival.state.name, points: REVENGE_POINTS };
+  send(holder, msg);
+  // (Not when it would say who fired a shot nobody else saw.)
+  if (tellRival) send(rival, msg);
+  send(holder, grudgeMsg(matchId, holder));
+  console.log(`${matchId}: ${holder.state.name} took revenge on ${rival.state.name}`);
+}
+
+/** A new round: a contract each, everyone's grudges, a clean slate of side points. */
+function dealSecrets(matchId: string, crew: Client[], saboteur: string, insider: string) {
+  const mode = matchModes.get(matchId) ?? 'heist';
+  const hasRed = !!vaults.get(matchId)?.diamonds.some((d) => d.kind === 'red');
+  contracts.set(matchId, new Map(crew.map((c) => {
+    const role = c.state.id === saboteur || c.state.id === insider ? 'saboteur' : 'runner';
+    return [c.state.id, { def: drawContract(mode, role, hasRed), got: 0, done: false }];
+  })));
+  bonuses.set(matchId, new Map());
+  pendingWrongs.set(matchId, []);
+  for (const c of crew) {
+    const msg = contractMsg(matchId, c.state.id);
+    if (msg) send(c, msg);
+    send(c, grudgeMsg(matchId, c));
+  }
+}
+
+/** The round is over: contracts that are checked at the end, grudges from the round's outcome. */
+function settleSecrets(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
+  const ids = [...(matches.get(matchId) ?? [])];
+  const ij = insides.get(matchId);
+  const hunt = hunts.get(matchId);
+  const vault = vaults.get(matchId);
+  const sab = saboteurs.get(matchId);
+  for (const [victim, by, reason] of pendingWrongs.get(matchId) ?? []) wronged(matchId, victim, by, reason);
+  pendingWrongs.set(matchId, []);
+  if (winner === 'none') return;
+  for (const id of ids) {
+    const k = contracts.get(matchId)?.get(id);
+    if (!k || k.done || !k.def.atEnd) continue;
+    const c = clients.get(id);
+    const ok =
+      k.def.id === 'untouched' ? (ij ? !ij.out.has(id) : !(c?.koCount ?? 0))
+      : k.def.id === 'keepRed' ? !vault?.diamonds.some((d) => d.kind === 'red' && d.place.at === 'banked')
+      : k.def.id === 'unshot' ? !!hunt && inPlay(hunt, id) && (hunt.hp.get(id) ?? MAX_HP) >= MAX_HP
+      : k.def.id === 'noVotes' ? !!ij && !ij.votedAgainst.has(id) && !ij.out.has(id)
+      : false;
+    if (ok) completeContract(matchId, id);
+  }
+  const banked = (id: string) => vault?.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).reduce((n, d) => n + valueOf(d), 0) ?? 0;
+  if (ij) {
+    // The Insider got away with it: they betrayed every thief.
+    if (winner === 'saboteur') for (const id of ids) if (id !== ij.insider) wronged(matchId, id, ij.insider, 'betrayed the crew');
+  } else if (hunt) {
+    // Hiders who made it through the hunt got one back on the Seeker.
+    if (winner === 'runners') for (const id of ids) if (id !== sab && inPlay(hunt, id)) payback(matchId, id, sab ?? '');
+  } else if (sab) {
+    if (winner === 'runners') for (const id of ids) if (id !== sab) payback(matchId, id, sab);
+  }
+  // Out-banking your rival counts too (heists and Inside Job).
+  if (vault && !hunt) {
+    for (const id of ids) {
+      const c = clients.get(id);
+      const g = c && grudges.get(keyOf(c));
+      const rival = g && ids.map((x) => clients.get(x)).find((m) => m && keyOf(m) === g.rival);
+      if (rival && rival.state.id !== sab && banked(id) > banked(rival.state.id)) payback(matchId, id, rival.state.id);
+    }
+  }
+}
 
 function insideStatus(c: Client, ij: Inside): ServerMsg {
   return { t: 'inside', out: [...ij.out], meetingsLeft: ij.meetingsLeft.get(c.state.id) ?? 0 };
@@ -218,6 +368,17 @@ function eliminate(matchId: string, ij: Inside, victim: Client, how: 'shot' | 'v
   dropDiamond(matchId, victim.state.id, victim.state.x, victim.state.y, true);
   dropKeycard(matchId, victim);
   const wasInsider = victim.state.id === ij.insider;
+  if (how === 'shot') {
+    // Who shot whom is told when the round ends: now it would give the shooter away.
+    pendingWrongs.get(matchId)?.push([victim.state.id, by[0], 'shot you']);
+    payback(matchId, by[0], victim.state.id, false);
+    if (by[0] === ij.insider) contractStep(matchId, by[0], 'shoot');
+  } else {
+    const accuser = by.find((v) => v !== victim.state.id);
+    if (accuser) wronged(matchId, victim.state.id, accuser, 'voted you out');
+    for (const v of by) payback(matchId, v, victim.state.id);
+    if (!wasInsider) contractStep(matchId, ij.insider, 'frame');
+  }
   if (wasInsider) ij.caught = { how, by };
   else if (how === 'shot' && by[0] === ij.insider) ij.kills++;
   else if (how === 'shot') ij.wrongShots.set(by[0], (ij.wrongShots.get(by[0]) ?? 0) + 1);
@@ -327,6 +488,13 @@ function closeVote(matchId: string, ij: Inside) {
   mt.revealAt = Date.now() + INSIDE.revealMs;
   mt.ejected = ejected?.state.id ?? null;
   const votes = [...mt.votes] as [string, string | null][];
+  for (const [voter, t] of votes) {
+    if (!t) continue;
+    ij.votedAgainst.add(t);
+    if (t === ij.insider) contractStep(matchId, voter, 'voteInsider');
+  }
+  // Voted against, and still in: that's the 'accused' contract.
+  for (const t of new Set(votes.map(([, x]) => x))) if (t && t !== ejected?.state.id) contractStep(matchId, t, 'accused');
   toMatch(matchId, { t: 'meetResult', ejected: mt.ejected, name: ejected?.state.name ?? '', insider: mt.ejected === ij.insider, votes, ms: INSIDE.revealMs });
   if (ejected) eliminate(matchId, ij, ejected, 'vote', votes.filter(([, t]) => t === ejected.state.id).map(([v]) => v));
 }
@@ -363,6 +531,7 @@ function stash(c: Client, spotId: string) {
   const key = keycards.get(matchId);
   if (key && inVault(matchId, key, spot.id)) return;
   d.place = { at: 'spot', spot: spot.id };
+  contractStep(matchId, c.state.id, 'stash');
   // It looks unsearched again: whoever searched it before would have to look twice.
   vault.searched.delete(spot.id);
   c.state.carrying = !!carrierOf(vault, c.state.id);
@@ -490,6 +659,12 @@ function catchHider(matchId: string, hider: Client) {
   if (!hunt || hunt.caught.has(hider.state.id)) return;
   hunt.caught.add(hider.state.id);
   hunt.hidden.delete(hider.state.id);
+  const seekerId = saboteurs.get(matchId) ?? '';
+  wronged(matchId, hider.state.id, seekerId, 'caught you');
+  payback(matchId, seekerId, hider.state.id);
+  contractStep(matchId, seekerId, 'catch');
+  const round = phases.get(matchId);
+  if (round && HUNT_TIME - (round.endsAt - Date.now()) <= 60_000) contractStep(matchId, seekerId, 'quickCatch');
   const left = huntersLeft(matchId, hunt);
   for (const id of matches.get(matchId) ?? []) {
     const m = clients.get(id);
@@ -525,6 +700,7 @@ function checkEscape(matchId: string, c: Client) {
   const z = ESCAPE_ZONE;
   if (c.state.x < z.x * TILE || c.state.x > (z.x + z.w) * TILE || c.state.y < z.y * TILE || c.state.y > (z.y + z.h) * TILE) return;
   hunt.escaped.add(c.state.id);
+  contractStep(matchId, c.state.id, 'escape');
   const left = huntersLeft(matchId, hunt);
   for (const id of matches.get(matchId) ?? []) {
     const m = clients.get(id);
@@ -852,6 +1028,9 @@ function endMatch(matchId: string) {
   hunts.delete(matchId);
   insides.delete(matchId);
   pastInsiders.delete(matchId);
+  contracts.delete(matchId);
+  bonuses.delete(matchId);
+  pendingWrongs.delete(matchId);
 }
 
 function startMatch(size: number, crew: Client[]): string {
@@ -948,7 +1127,7 @@ function startRound(matchId: string) {
   const gems: Diamond[] = kinds.map((kind, i) => ({ id: `d${i + 1}`, place: { at: 'tray' }, ...(kind ? { kind } : {}) }));
   const worth = gems.reduce((n, d) => n + valueOf(d), 0);
   vaults.set(matchId, { diamonds: gems, searched: new Set(), banked: 0, need: inside ? Math.ceil(worth * INSIDE.needShare) : diamondsToWin(worth), winner: null, hits: 0, glints: new Map(), lastSearch: new Map() });
-  if (inside) insides.set(matchId, { insider, ammo: new Map(ids.map((id) => [id, id === insider ? INSIDE.insiderAmmo : INSIDE.thiefAmmo])), insiderReady: 0, out: new Set(), meetingsLeft: new Map(ids.map((id) => [id, INSIDE.meetingsEach])), meeting: null, lastChat: new Map(), caught: null, kills: 0, wrongShots: new Map() });
+  if (inside) insides.set(matchId, { insider, ammo: new Map(ids.map((id) => [id, id === insider ? INSIDE.insiderAmmo : INSIDE.thiefAmmo])), insiderReady: 0, out: new Set(), meetingsLeft: new Map(ids.map((id) => [id, INSIDE.meetingsEach])), meeting: null, lastChat: new Map(), caught: null, kills: 0, wrongShots: new Map(), votedAgainst: new Set() });
   else insides.delete(matchId);
   keycards.delete(matchId);
   if (!hs) setupVault(matchId, map, vaults.get(matchId)!);
@@ -994,6 +1173,7 @@ function startRound(matchId: string) {
       sendInsideGun(c, ij);
     }
   }
+  dealSecrets(matchId, crew, saboteur, insider);
   console.log(`${matchId}: round ${sr.round + 1}/${sr.rounds} on ${MAPS[map].name}, ${inside ? 'Insider' : 'Saboteur'} ${clients.get(inside ? insider : saboteur)?.state.name}`);
 }
 
@@ -1350,6 +1530,12 @@ function handle(c: Client, msg: ClientMsg) {
       if (heistRunner && hpBefore > 0 && s.hp === 0) {
         const st = statsOf(c.room, s.id);
         if (st) st.knockouts++;
+        const sabId = saboteurs.get(c.room);
+        if (sabId && clients.has(sabId) && phases.get(c.room)?.phase === 'live') {
+          wronged(c.room, s.id, sabId, 'knocked you out');
+          payback(c.room, sabId, s.id);
+          contractStep(c.room, sabId, 'ko');
+        }
         knockOut(c, held);
         dropKeycard(c.room, c);
       }
@@ -1469,6 +1655,7 @@ function handle(c: Client, msg: ClientMsg) {
       if (!spot || distToSpot(spot, s.x, s.y) > SEARCH_REACH + 10 || now - (vault.lastSearch.get(s.id) ?? 0) < 900) break;
       vault.lastSearch.set(s.id, now);
       makeNoise(c, 'search');
+      contractStep(c.room, s.id, 'search');
       const key = keycards.get(c.room);
       if (key && key.spot === spot.id && !key.holder && !key.floor && !key.unlocked) {
         // The keycard! It doesn't take up your hands; the diamond (if any) is still in there.
@@ -1535,6 +1722,9 @@ function handle(c: Client, msg: ClientMsg) {
         d.place = { at: 'banked', by: s.id };
         vault.banked += valueOf(d);
       }
+      const realBanked = carried.filter((d) => d.kind !== 'cursed');
+      contractStep(c.room, s.id, 'bank', realBanked.length);
+      if (realBanked.some((d) => d.kind === 'red')) contractStep(c.room, s.id, 'bankRed');
       // The new count first, so the pop-up that follows shows it.
       sendDiamonds(c.room);
       if (carried.some((d) => d.kind !== 'cursed')) announce(c.room, 'banked', c, 'the getaway');
@@ -1757,6 +1947,7 @@ function handle(c: Client, msg: ClientMsg) {
       lastTrapHit.set(s.id, now);
       const vault = vaults.get(c.room);
       if (vault) vault.hits++;
+      contractStep(c.room, saboteurs.get(c.room) ?? '', 'hits');
       const st = statsOf(c.room, s.id);
       if (st) st.trapped++;
       // Where it happened: where the Runner says, if that's close to where we last saw them.
@@ -1794,6 +1985,7 @@ function handle(c: Client, msg: ClientMsg) {
       d.place = { at: 'carried', by: target.state.id };
       s.carrying = !!carrierOf(vault, s.id);
       target.state.carrying = true;
+      contractStep(c.room, s.id, 'pass');
       sendDiamonds(c.room);
       for (const id of matches.get(c.room) ?? []) {
         const m = clients.get(id);
@@ -1814,6 +2006,7 @@ function handle(c: Client, msg: ClientMsg) {
       target.koUntil = 0;
       const st = statsOf(c.room, s.id);
       if (st) st.revives++;
+      contractStep(c.room, s.id, 'revive');
       for (const id of matches.get(c.room) ?? []) {
         const m = clients.get(id);
         if (m) send(m, { t: 'revived', id: target.state.id, name: target.state.name, by: s.id, byName: s.name });
@@ -2874,6 +3067,8 @@ function finish(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
   const sr = series.get(matchId);
   if (!vault || !round || round.phase === 'over') return;
   vault.winner = winner;
+  // End-of-round contracts and grudges first (while the phase still reads live), then the score.
+  settleSecrets(matchId, winner);
   round.phase = 'over';
   round.endsAt = Date.now();
   const ij = insides.get(matchId);
@@ -2902,7 +3097,7 @@ function finish(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
       } else if (matches.get(matchId)?.has(id)) {
         pts = vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).reduce((n, d) => n + valueOf(d), 0) * SCORE.bank + (winner === 'runners' ? SCORE.runnersWin : 0);
       }
-      p.perRound[sr.round] = pts;
+      p.perRound[sr.round] = pts + (bonuses.get(matchId)?.get(id)?.points ?? 0);
       // The awards' tally for this round.
       const st = p.stats;
       if (!matches.get(matchId)?.has(id) || winner === 'none') continue;
@@ -2947,7 +3142,7 @@ function resultMsg(matchId: string): ServerMsg {
     placed: [...(placedTraps.get(matchId)?.values() ?? [])],
     round: r + 1,
     rounds: sr?.rounds ?? 1,
-    points: [...(sr?.players ?? [])].map(([id, p]) => ({ id, name: p.name, points: p.perRound[r] ?? 0, saboteur: id === sab })).sort((a, b) => b.points - a.points),
+    points: [...(sr?.players ?? [])].map(([id, p]) => ({ id, name: p.name, points: p.perRound[r] ?? 0, saboteur: id === sab, ...(bonuses.get(matchId)?.get(id)?.notes.length ? { notes: bonuses.get(matchId)!.get(id)!.notes } : {}) })).sort((a, b) => b.points - a.points),
     standings: standings(matchId),
     nextMs: Math.max(0, (sr?.nextAt ?? Date.now()) - Date.now()),
     last: !sr || r + 1 >= sr.rounds,
@@ -3034,6 +3229,9 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
       if (hunt.hidden.has(known.state.id)) send(known, { t: 'hidden', spot: hunt.hidden.get(known.state.id)!, x: known.state.x, y: known.state.y });
       if (saboteurs.get(known.room) === known.state.id) sendGun(known, hunt);
     }
+    const contract = contractMsg(known.room, known.state.id);
+    if (contract) send(known, contract);
+    send(known, grudgeMsg(known.room, known));
     const ij = insides.get(known.room);
     if (ij) {
       send(known, insideStatus(known, ij));

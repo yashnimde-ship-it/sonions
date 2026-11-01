@@ -259,6 +259,9 @@ async function boot() {
   let aimAt: [number, number] = [0, 0];
   const meetingUI = new MeetingUI();
   const amOut = () => outNow.has(myId);
+  /** My secret contract this round, and my Grudge in this game (from the server; only mine). */
+  let contract: Extract<ServerMsg, { t: 'contract' }> | null = null;
+  let grudge: Extract<ServerMsg, { t: 'grudge' }> | null = null;
   try {
     const saved = localStorage.getItem('bandit-map');
     if (isMapId(saved)) myMap = saved;
@@ -935,6 +938,8 @@ async function boot() {
     seekerNow = msg.seeker ?? '';
     insiderMe = !!msg.insider;
     meetingUI.close();
+    contract = null;
+    grudge = null;
     if (!msg.resume) {
       outNow.clear();
       disturbed.clear();
@@ -1697,6 +1702,38 @@ async function boot() {
         break;
       case 'trapFired':
         trapFired(msg);
+        break;
+      case 'contract': {
+        const was = contract;
+        contract = msg;
+        if (msg.done && was && !was.done) {
+          sfx('award');
+          trapImpact('#ffc94a', 0, 500);
+          particles.pop(me.x, me.y - 40, `CONTRACT +${msg.points}`, '#ffc94a');
+          hud.alert(`<span class="who">📜 Contract complete</span> <b>${esc(msg.text)}</b><span class="where">+${msg.points}</span>`, 'good');
+        } else if (msg.got > (was?.got ?? 0) && was) sfx('coin');
+        break;
+      }
+      case 'grudge': {
+        const fresh = msg.id && msg.id !== grudge?.id;
+        grudge = msg.id ? msg : null;
+        if (fresh && scene === 'match') {
+          sfx('alert');
+          hud.alert(`<span class="who">☠ New grudge</span> <b>${esc(msg.name)} ${esc(msg.reason)}</b><span class="where">get them back: +200</span>`, 'danger');
+        }
+        break;
+      }
+      case 'revenge':
+        if (msg.by === myId) {
+          sfx('combo');
+          trapImpact('#ff3b4a', 9, 900);
+          showCount('REVENGE!', 'go');
+          particles.pop(me.x, me.y - 44, `REVENGE +${msg.points}`, '#ff4d6a');
+          hud.alert(`<span class="who">⚔ REVENGE</span> <b>You got ${esc(msg.onName)} back</b><span class="where">+${msg.points}</span>`, 'good');
+        } else if (msg.on === myId) {
+          sfx('down');
+          hud.alert(`<span class="who">⚔ ${esc(msg.byName)}</span> <b>got their revenge on you</b><span class="where">you had it coming</span>`, 'danger');
+        }
         break;
       case 'inside':
         outNow.clear();
@@ -2791,6 +2828,7 @@ async function boot() {
     resultScreen.tick();
     updateObjective();
     renderInsideBar();
+    renderSecretCard();
     if (meetingUI.open) {
       meetingUI.tick();
       phaseEndsAt = performance.now() + meetingClock;
@@ -3397,6 +3435,7 @@ async function boot() {
     if (hideSeek() && !result) drawHideSeekMarks(camX, camY);
     if (insideJob() && !result) drawInsideMarks(camX, camY);
     if (settings.values.nameTags && !result) drawNameTags(camX, camY);
+    if (!result) drawGrudgeMark(camX, camY);
     if (!result) drawPings(camX, camY);
     drawKnockout();
     drawTrapMinimap();
@@ -6103,6 +6142,49 @@ async function boot() {
     ctx.fillRect(sx - w / 2, sy - size * 1.7, w, size * 1.7);
     ctx.fillStyle = color;
     ctx.fillText(text, sx, sy - size * 0.35);
+  }
+
+  /** My Grudge, marked for me alone: a red ring at their feet and a skull over their head. */
+  function drawGrudgeMark(camX: number, camY: number) {
+    const r = grudge && scene === 'match' ? remotes.get(grudge.id ?? '') : undefined;
+    if (!r || !here(r.state.deck)) return;
+    const b = r.bandit;
+    const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 160);
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.strokeStyle = '#ff3b4a';
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath();
+    ctx.ellipse((b.x - camX) * scale, (b.y - camY) * scale, 11 * scale, 4 * scale, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.font = `bold ${Math.round(16 * dpr)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    const sx = (b.x - camX) * scale;
+    const sy = (b.y - DRAW_H - 14 - camY) * scale - 4 * dpr * pulse;
+    ctx.lineWidth = 3 * dpr;
+    ctx.strokeStyle = '#0e0a1a';
+    ctx.strokeText('☠', sx, sy);
+    ctx.fillStyle = '#ff3b4a';
+    ctx.fillText('☠', sx, sy);
+    ctx.restore();
+  }
+
+  /** The secret card, top right: my contract this round and my Grudge in this game. */
+  const secretEl = document.createElement('div');
+  secretEl.id = 'secret-card';
+  secretEl.hidden = true;
+  document.getElementById('hud')!.append(secretEl);
+  let secretHtml = '';
+  function renderSecretCard() {
+    let html = '';
+    if (scene === 'match' && !result && match) {
+      if (contract) html += `<div class="contract${contract.done ? ' done' : ''}"><span class="tag">📜 SECRET CONTRACT</span><span class="what">${esc(contract.text)}</span><span class="prog">${contract.done ? '✔ DONE' : `${contract.got}/${contract.need}`} · +${contract.points}</span></div>`;
+      if (grudge?.id) html += `<div class="grudge"><span class="tag">☠ GRUDGE</span><span class="what">${esc(grudge.name)} ${esc(grudge.reason)}${grudge.count > 1 ? ` (×${grudge.count})` : ''}</span><span class="prog">get them back · +200</span></div>`;
+    }
+    secretEl.hidden = !html;
+    if (html !== secretHtml) secretEl.innerHTML = secretHtml = html;
   }
 
   /** Inside Job: can I fire right now (a bullet, not reloading, up and about)? */

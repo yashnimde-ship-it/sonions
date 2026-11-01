@@ -4418,3 +4418,42 @@ body.touch .gadget-card .gc-key kbd { display: none; }
   #meeting .meet-chat { max-height: 22vh; min-height: 70px; }
   #inside-bar { top: auto; bottom: 64px; font-size: 12px; }
 }
+
+/* Secret Contracts and the Grudge: my private card, top right. */
+#secret-card {
+  position: absolute;
+  top: 44px;
+  right: 16px;
+  width: min(280px, 40vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 6;
+}
+#secret-card[hidden] { display: none; }
+#secret-card > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(14, 10, 26, 0.86);
+  border: 2px solid var(--gold);
+  color: var(--paper);
+  font-size: 12px;
+  animation: secret-in 0.35s ease-out;
+}
+@keyframes secret-in { from { opacity: 0; transform: translateX(16px); } }
+#secret-card .tag { font-size: 10px; letter-spacing: 1px; color: var(--gold); font-weight: 700; }
+#secret-card .what { font-weight: 700; line-height: 1.25; }
+#secret-card .prog { font-size: 11px; opacity: 0.8; }
+#secret-card .contract.done { border-color: #6fe07a; }
+#secret-card .contract.done .tag, #secret-card .contract.done .prog { color: #6fe07a; opacity: 1; }
+#secret-card .grudge { border-color: #ff3b4a; box-shadow: 0 0 12px rgba(255, 59, 74, 0.35); }
+#secret-card .grudge .tag { color: #ff6b78; }
+.result-card .points .notes { display: block; font-size: 10px; color: var(--gold); font-style: normal; opacity: 0.9; }
+@media (max-width: 700px), (max-height: 520px) {
+  #secret-card { top: 36px; right: 8px; width: min(220px, 46vw); font-size: 11px; }
+  #secret-card > div { padding: 4px 7px; }
+}

@@ -224,7 +224,7 @@ export type ServerMsg =
       round: number;
       rounds: number;
       /** Points each player scored this round, and the running totals. */
-      points: { id: string; name: string; points: number; saboteur: boolean }[];
+      points: { id: string; name: string; points: number; saboteur: boolean; notes?: string[] }[];
       standings: Standing[];
       /** Until the next round starts, or until the final results (last round). */
       nextMs: number;
@@ -353,6 +353,12 @@ export type ServerMsg =
   | { t: 'bang'; x: number; y: number; deck?: MapId }
   /** Furniture near you was disturbed just now (someone put something in it). */
   | { t: 'disturbed'; spot: string; ms: number }
+  /** My secret contract this round (only I get it), and how far along it is. */
+  | { t: 'contract'; text: string; need: number; got: number; done: boolean; points: number }
+  /** My Grudge in this game: who wronged me (null: none here, or I got my revenge). */
+  | { t: 'grudge'; id: string | null; name: string; reason: string; count: number }
+  /** Someone got their revenge (sent to the two of them during a round). */
+  | { t: 'revenge'; by: string; byName: string; on: string; onName: string; points: number }
   /** Someone in your match left. */
   | { t: 'left'; id: string };
 
