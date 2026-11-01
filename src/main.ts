@@ -163,6 +163,20 @@ function playerKey() {
   }
   return key;
 }
+/** This browser's profile key: unlike the tab's player key it lasts (localStorage), so the
+ *  saved profile (level, stats) is still yours next week. Two tabs share one profile. */
+function profileKey() {
+  try {
+    let key = localStorage.getItem('bandit-profile-key');
+    if (!key || !/^[\w-]{16,64}$/.test(key)) {
+      key = Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem('bandit-profile-key', key);
+    }
+    return key;
+  } catch {
+    return undefined;
+  }
+}
 /** How long the game keeps trying to reconnect (the server holds the seat about as long). */
 const RECONNECT_FOR_MS = 30_000;
 
@@ -871,7 +885,7 @@ async function boot() {
   }
 
   function sayHello() {
-    net.send({ t: 'hello', name: myName, character: myCharacter, key: playerKey() });
+    net.send({ t: 'hello', name: myName, character: myCharacter, key: playerKey(), profile: profileKey() });
   }
 
   /** The connection dropped by accident: keep trying for a while, the server is holding our seat. */
@@ -1702,6 +1716,10 @@ async function boot() {
         break;
       case 'trapFired':
         trapFired(msg);
+        break;
+      case 'profile':
+        profile.fromServer(msg.matches);
+        lobby.setMe(myName, myCharacter, profile);
         break;
       case 'contract': {
         const was = contract;

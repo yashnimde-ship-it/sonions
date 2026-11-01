@@ -8,3 +8,7 @@ __pycache__/
 
 # Local-only media (licensed music etc.): never committed
 public/local-assets/
+
+# Secrets (the database connection string) and local saved profiles: never committed
+.env
+data/

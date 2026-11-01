@@ -58,6 +58,12 @@ export class Profile {
     return [...RANKS].reverse().find((r) => this.level >= r.from) ?? RANKS[0];
   }
 
+  /** The server's saved record wins over what this browser counted. */
+  fromServer(matches: number) {
+    this.saved.heists = matches;
+    this.save();
+  }
+
   recordHeist() {
     this.saved.heists++;
     this.save();

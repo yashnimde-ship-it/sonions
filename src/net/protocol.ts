@@ -55,7 +55,7 @@ export interface PortalState {
 /** Game -> server */
 export type ClientMsg =
   /** `key` is this tab's secret player key: sending a known one resumes that player. */
-  | { t: 'hello'; name: string; character: CharacterId; key?: string }
+  | { t: 'hello'; name: string; character: CharacterId; key?: string; profile?: string }
   // `room` says where the sender was; a lobby move that arrives after a teleport is dropped.
   | { t: 'move'; room: RoomKind; x: number; y: number; facing: Facing; moving: boolean; sprint: boolean; carrying: boolean; hp: number; stunned: boolean }
   /** Explicit lobby portal selection (also used when the player clicks a portal pad). */
@@ -353,6 +353,8 @@ export type ServerMsg =
   | { t: 'bang'; x: number; y: number; deck?: MapId }
   /** Furniture near you was disturbed just now (someone put something in it). */
   | { t: 'disturbed'; spot: string; ms: number }
+  /** My saved profile (from the database): what the server has on record for me. */
+  | { t: 'profile'; matches: number; wins: number; points: number; saved: boolean }
   /** My secret contract this round (only I get it), and how far along it is. */
   | { t: 'contract'; text: string; need: number; got: number; done: boolean; points: number }
   /** My Grudge in this game: who wronged me (null: none here, or I got my revenge). */

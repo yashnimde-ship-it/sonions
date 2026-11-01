@@ -14,6 +14,7 @@ import { ABILITIES, type AbilityId, CHARACTER_INFO, carryCapacity, CLONE, DOOR_J
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_MS, SEARCH_REACH, spotCenter, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { INSIDE, INSIDE_JOB_MIN_PLAYERS, INSIDE_SCORE, MEETING_LINES } from '../src/data/insideJob.ts';
+import { newProfile, openStore, profileId, type SavedProfile } from './store.ts';
 import { CONTRACT_POINTS, type ContractDef, type ContractId, drawContract, REVENGE_POINTS } from '../src/data/contracts.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
@@ -27,6 +28,8 @@ import { type Energy, energyAt, VELVET } from '../src/data/velvet.ts';
 import { type Facing, NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type WatchInfo, type WatchPlayer, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+/** Where saved profiles live: the database (MONGODB_URI) or, locally, a file. */
+const store = await openStore(ROOT);
 const PORT = Number(process.env.PORT ?? 3001);
 // For playtests: SETUP_SECONDS=10 HEIST_SECONDS=30 npm run server makes rounds quick.
 const SETUP_TIME = Number(process.env.SETUP_SECONDS ?? 0) * 1000 || SETUP_MS;
@@ -76,6 +79,9 @@ interface Client {
   lastEmote?: number;
   /** 'lobby' or the id of the match the player is in. */
   room: string;
+  /** Their saved profile (loaded after hello), and its id. */
+  profileId?: string;
+  profile?: SavedProfile;
   /** When the player stepped into the portal they are standing in (ms), keyed by portal size. */
   portalSince: Map<number, number>;
   /** Portal chosen from the lobby UI; positional walk-in detection remains supported. */
@@ -251,6 +257,8 @@ function completeContract(matchId: string, id: string) {
   k.done = true;
   k.got = k.def.need;
   addBonus(matchId, id, CONTRACT_POINTS, `📜 Contract +${CONTRACT_POINTS}`);
+  const st = statsOf(matchId, id);
+  if (st) st.contracts++;
   const c = clients.get(id);
   const msg = contractMsg(matchId, id);
   if (c && msg) send(c, msg);
@@ -283,6 +291,8 @@ function payback(matchId: string, holderId: string, rivalId: string, tellRival =
   if (!holder || !rival || holder === rival || grudges.get(keyOf(holder))?.rival !== keyOf(rival)) return;
   grudges.delete(keyOf(holder));
   addBonus(matchId, holderId, REVENGE_POINTS, `⚔ Revenge on ${rival.state.name} +${REVENGE_POINTS}`);
+  const st = statsOf(matchId, holderId);
+  if (st) st.revenges++;
   const msg: ServerMsg = { t: 'revenge', by: holderId, byName: holder.state.name, on: rivalId, onName: rival.state.name, points: REVENGE_POINTS };
   send(holder, msg);
   // (Not when it would say who fired a shot nobody else saw.)
@@ -774,8 +784,10 @@ interface Stats {
   survived: number;
   hiderRounds: number;
   revives: number;
+  contracts: number;
+  revenges: number;
 }
-const newStats = (): Stats => ({ banked: 0, trapped: 0, knockouts: 0, runnerRounds: 0, sabHits: 0, catches: 0, escapes: 0, survived: 0, hiderRounds: 0, revives: 0 });
+const newStats = (): Stats => ({ banked: 0, trapped: 0, knockouts: 0, runnerRounds: 0, sabHits: 0, catches: 0, escapes: 0, survived: 0, hiderRounds: 0, revives: 0, contracts: 0, revenges: 0 });
 const statsOf = (matchId: string, id: string) => series.get(matchId)?.players.get(id)?.stats;
 
 /** The match's awards: each goes to whoever did the most of something (ties share it). */
@@ -1187,6 +1199,50 @@ function standings(matchId: string): Standing[] {
     .sort((a, b) => b.total - a.total);
 }
 
+// ---------- Saved profiles ----------
+
+const profileMsg = (p: SavedProfile, saved: boolean): ServerMsg => ({ t: 'profile', matches: p.matches, wins: p.wins, points: p.points, saved });
+
+/** After hello: this player's saved profile (a new one the first time), sent to them. */
+async function loadProfile(c: Client, key: string) {
+  const id = profileId(key);
+  c.profileId = id;
+  try {
+    const p = (await store.get(id)) ?? newProfile(id, c.state.name);
+    p.name = c.state.name;
+    p.seenAt = Date.now();
+    c.profile = p;
+    await store.put(p);
+    send(c, profileMsg(p, true));
+  } catch (err) {
+    console.error(`profiles: couldn't load ${c.state.name}'s (${(err as Error).message})`);
+  }
+}
+
+/** A match finished: every player still in it gets it on their record. */
+async function saveResults(matchId: string, sr: Series, final: Standing[]) {
+  const top = final[0];
+  for (const [id, entry] of sr.players) {
+    const c = clients.get(id);
+    const p = c?.profile;
+    if (!c || !p || c.room !== matchId) continue;
+    const mine = final.find((f) => f.id === id);
+    p.matches++;
+    if (top && top.id === id && top.total > 0) p.wins++;
+    p.points += Math.max(0, mine?.total ?? 0);
+    p.stats.banked += entry.stats.banked;
+    p.stats.contracts += entry.stats.contracts;
+    p.stats.revenges += entry.stats.revenges;
+    p.seenAt = Date.now();
+    try {
+      await store.put(p);
+      send(c, profileMsg(p, true));
+    } catch (err) {
+      console.error(`profiles: couldn't save ${p.name}'s (${(err as Error).message})`);
+    }
+  }
+}
+
 /** The match is over: the final results, then everyone heads back to the safehouse themselves. */
 function finishSeries(matchId: string) {
   const sr = series.get(matchId);
@@ -1196,6 +1252,7 @@ function finishSeries(matchId: string) {
   const round = phases.get(matchId);
   if (round) round.phase = 'over';
   const msg: ServerMsg = { t: 'final', standings: standings(matchId), rounds: sr.history, mode: matchModes.get(matchId), awards: awardsFor(sr, isHideSeek(matchId)) };
+  void saveResults(matchId, sr, msg.standings);
   for (const id of matches.get(matchId) ?? []) {
     const c = clients.get(id);
     if (c) send(c, msg);
@@ -1362,6 +1419,7 @@ function handle(c: Client, msg: ClientMsg) {
       // Nothing offensive in the lobby: a blocked name becomes a plain one.
       s.name = cleanName(msg.name, `Bandit ${s.id}`);
       s.character = free;
+      if (typeof msg.profile === 'string' && /^[\w-]{16,64}$/.test(msg.profile)) void loadProfile(c, msg.profile);
       // On the menu until they create or join a room.
       c.room = 'menu';
       console.log(`${s.name} connected (${clients.size} connected)`);
@@ -3574,7 +3632,8 @@ const TYPES: Record<string, string> = {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://x');
   if (url.pathname === '/health') {
-    res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok');
+    // Says where profiles are saved (never how to reach it), to check a deploy is wired up.
+    res.writeHead(200, { 'Content-Type': 'text/plain' }).end(`ok · profiles: ${store.kind}`);
     return;
   }
   const file = path.join(DIST, url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname));

@@ -10,7 +10,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lobby": "node scripts/generate-lobby.mjs",
-    "server": "node server/index.ts",
+    "server": "node --env-file-if-exists=.env server/index.ts",
     "characters": "python3 scripts/build-characters.py",
     "bots": "node scripts/bots.ts",
     "museum": "node scripts/generate-museum.mjs",
@@ -28,6 +28,7 @@
   "dependencies": {
     "@fontsource/cinzel": "^5.3.0",
     "@fontsource/press-start-2p": "^5.3.0",
+    "mongodb": "^6.21.0",
     "qrcode-generator": "^1.4.4",
     "ws": "^8.22.0"
   }
