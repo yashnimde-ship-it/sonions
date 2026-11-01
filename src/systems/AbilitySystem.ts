@@ -59,6 +59,16 @@ export class AbilitySystem {
   private nameEl = document.getElementById('ability-name')!;
   private stateEl = document.getElementById('ability-state')!;
   private cdEl = document.getElementById('ability-cd')!;
+  /** A bar under the name (Velvet's energy); hidden for everyone else. */
+  private meter = document.createElement('div');
+  private meterFill = document.createElement('i');
+
+  constructor() {
+    this.meter.className = 'ability-meter';
+    this.meter.hidden = true;
+    this.meter.append(this.meterFill);
+    this.root.querySelector('.ability-body')!.append(this.meter);
+  }
 
   /** Call at the start of every round: picks the ability and resets its cooldown and uses. */
   setRound(character: CharacterId, role: Role) {
@@ -69,6 +79,7 @@ export class AbilitySystem {
     this.busyUntil = 0;
     this.status = null;
     this.spentNote = null;
+    this.meter.hidden = true;
     this.overclock = null;
     this.root.dataset.role = role;
     this.roleEl.textContent = role === 'runner' ? 'RUNNER' : 'SABOTEUR';
@@ -107,7 +118,7 @@ export class AbilitySystem {
     if (fail) return this.note(fail);
     // Trap Jam's target is hidden from the client, and Wingman's might be gone by now. Wait for
     // the server to confirm before spending a use or starting cooldown; a refusal can be retried.
-    if (a.id === 'trapJam' || a.id === 'wingman' || a.id === 'clone' || a.id === 'mend' || a.id === 'empKnife') {
+    if (a.id === 'trapJam' || a.id === 'wingman' || a.id === 'clone' || a.id === 'mend' || a.id === 'empKnife' || a.id === 'diamondScan') {
       this.waitingForServer = true;
       this.waitingSince = now;
       return;
@@ -117,10 +128,10 @@ export class AbilitySystem {
     if (a.id !== 'tripwire' && a.id !== 'trapRefresh' && a.id !== 'doorJam') ctx.send({ t: 'ability', ability: a.id });
   }
 
-  /** Resolve an attempt the server had to accept first (Trap Jam, Wingman, Clone, Mend, EMP Knife). */
+  /** Resolve an attempt the server had to accept first (Trap Jam, Wingman, Clone, Mend, EMP Knife, Diamond Scan). */
   resolvePending(success: boolean) {
     const id = this.ability?.id;
-    if (!this.waitingForServer || !this.ability || (id !== 'trapJam' && id !== 'wingman' && id !== 'clone' && id !== 'mend' && id !== 'empKnife')) return;
+    if (!this.waitingForServer || !this.ability || (id !== 'trapJam' && id !== 'wingman' && id !== 'clone' && id !== 'mend' && id !== 'empKnife' && id !== 'diamondScan')) return;
     this.waitingForServer = false;
     if (!success) return;
     this.readyAt = performance.now() + this.ability.cooldown * 1000;
@@ -175,6 +186,10 @@ export class AbilitySystem {
         if (!ctx.wingmanTarget) return 'No unsearched furniture in reach';
         ctx.send({ t: 'ability', ability: 'wingman', spot: ctx.wingmanTarget.id });
         return null;
+      case 'diamondScan':
+        if (ctx.knockedOut) return 'Knocked out';
+        ctx.send({ t: 'ability', ability: 'diamondScan' });
+        return null;
       case 'empKnife':
         // Straight ahead; the server flies it and sets off the EMP where it lands.
         if (ctx.knockedOut) return 'Knocked out';
@@ -199,13 +214,35 @@ export class AbilitySystem {
     }
   }
 
+  /** Fill the slot's bar (0-1); `on` shows it draining. */
+  setMeter(fraction: number, on: boolean) {
+    this.meter.hidden = false;
+    this.meter.classList.toggle('on', on);
+    this.meterFill.style.width = `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
+  }
+
+  /** Seconds-or-so until the cooldown is over (ms; 0 when ready). */
+  get cooldownLeft() {
+    return Math.max(0, this.readyAt - performance.now());
+  }
+
+  /** Start the cooldown now (Beacon's warp, which main.ts runs itself). */
+  startCooldown() {
+    if (this.ability) this.readyAt = performance.now() + this.ability.cooldown * 1000;
+  }
+
+  /** A short note in the slot (for abilities main.ts drives itself). */
+  say(text: string) {
+    this.note(text);
+  }
+
   /** Latch's clone charges (from the server), and what to bank for more once they're gone. */
   setCharges(charges: number, bankMore: number) {
     this.usesLeft = charges;
     this.spentNote = `BANK ${bankMore} MORE`;
   }
 
-  /** A passive's state for the slot: `on` lights it up (Shield up). */
+  /** A passive's state for the slot, or what an active one does next (Beacon); `on` lights it up. */
   setStatus(text: string, on: boolean) {
     this.status = { text, on };
   }
@@ -247,7 +284,7 @@ export class AbilitySystem {
           ? this.spentNote ?? 'No uses left'
           : left
             ? `${Math.ceil(left / 1000)}s`
-            : 'READY') + usesNote;
+            : this.status?.text ?? 'READY') + usesNote;
   }
 }
 

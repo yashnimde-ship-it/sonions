@@ -2235,6 +2235,25 @@ kbd {
   color: #c9c2d6;
 }
 
+.ability-meter {
+  width: 120px;
+  height: 6px;
+  border: 1px solid var(--c);
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.ability-meter i {
+  display: block;
+  height: 100%;
+  background: var(--c);
+  transition: width 0.1s linear;
+}
+
+.ability-meter.on i {
+  background: #ffd36e;
+  box-shadow: 0 0 6px #ffd36e;
+}
+
 .ability-slot.ready .ability-state {
   color: #6fe07a;
 }

@@ -16,6 +16,9 @@ export type AbilityId =
   | 'clone'
   | 'mend'
   | 'empKnife'
+  | 'diamondScan'
+  | 'anchor'
+  | 'energySprint'
   | 'trapRefresh'
   | 'firstAid'
   | 'doorJam'
@@ -51,6 +54,9 @@ export const ABILITIES: Record<AbilityId, Ability> = {
   clone: { id: 'clone', name: 'Clone', blurb: 'Sends a clone running straight ahead: traps on its path show up for the crew. 2 charges; bank 2 diamonds to refill.', cooldown: 2 },
   mend: { id: 'mend', name: 'Mend', blurb: 'Tap Q and stand still: teammates within 3 tiles heal 10 HP a second for 4s (not her, not anyone down).', cooldown: 20, perRound: 3 },
   empKnife: { id: 'empKnife', name: 'EMP Knife', blurb: 'Throws a knife straight ahead: every trap within 3.5 tiles of where it lands is off for 5s, hidden ones shown to the crew.', cooldown: 15, perRound: 3 },
+  diamondScan: { id: 'diamondScan', name: 'Diamond Scan', blurb: 'A pulse out to 12 tiles: furniture hiding a diamond lights up for her alone, for 4s. Remember it.', cooldown: 25, perRound: 3 },
+  anchor: { id: 'anchor', name: 'Anchor', blurb: 'Q plants an anchor; Q again warps her back to it, once (hold Q to move it). Not in the getaway.', cooldown: 30 },
+  energySprint: { id: 'energySprint', name: 'Energy Sprint', blurb: 'Q switches it on and off: 40% faster while her 100-point bar drains (4s full); it refills while off.', cooldown: 0 },
   shakeItOff: { id: 'shakeItOff', name: 'Shake It Off', blurb: 'Instantly break free of a trap stun or knockout.', cooldown: 35, perRound: 3 },
   trapRefresh: { id: 'trapRefresh', name: 'Trap Refresh', blurb: 'Aim at a trap that just went off to make it ready again.', cooldown: 0, perRound: 1 },
   firstAid: { id: 'firstAid', name: 'First Aid', blurb: 'Heals herself or the most hurt Runner nearby to full HP, even from a knockout.', cooldown: 30, perRound: 3 },
@@ -76,9 +82,9 @@ export const CHARACTER_INFO: Record<CharacterId, CharacterInfo> = {
   iris: { id: 'iris', name: 'Iris Iyer', nick: 'Latch', runner: 'clone', saboteur: 'doorJam', color: '#8f7cff' },
   theo: { id: 'theo', name: 'Theo Bennett', nick: 'Switch', runner: 'mend', saboteur: 'comingSoon', color: '#a2c66e' },
   elise: { id: 'elise', name: 'Elise Hart', nick: 'Scout', runner: 'empKnife', saboteur: 'comingSoon', color: '#55b8ae' },
-  felix: { id: 'felix', name: 'Felix Morgan', nick: 'Fuse', runner: 'comingSoon', saboteur: 'comingSoon', color: '#f0b94e' },
-  clara: { id: 'clara', name: 'Clara Weiss', nick: 'Beacon', runner: 'comingSoon', saboteur: 'comingSoon', color: '#6d9ff0' },
-  miles: { id: 'miles', name: 'Miles Laurent', nick: 'Velvet', runner: 'comingSoon', saboteur: 'comingSoon', color: '#b95b76' },
+  felix: { id: 'felix', name: 'Felix Morgan', nick: 'Fuse', runner: 'diamondScan', saboteur: 'comingSoon', color: '#f0b94e' },
+  clara: { id: 'clara', name: 'Clara Weiss', nick: 'Beacon', runner: 'anchor', saboteur: 'comingSoon', color: '#6d9ff0' },
+  miles: { id: 'miles', name: 'Miles Laurent', nick: 'Velvet', runner: 'energySprint', saboteur: 'comingSoon', color: '#b95b76' },
 };
 
 export const abilityFor = (id: CharacterId, role: Role) => ABILITIES[CHARACTER_INFO[id][role]];
@@ -89,6 +95,12 @@ export const RECHARGE_BANKS = 2;
 /** Switch's Mend: a heal of `perTick` HP every `tickMs` to each teammate in `reach` (art px, the
  *  heal reach), for up to `ms`, while she stands still (`still`: how far she may drift, art px). */
 export const MEND = { tickMs: 500, perTick: 5, ms: 4000, reach: 48, still: 6 };
+
+/** Beacon's Anchor: hold Q this long to move an unused anchor to where she stands. */
+export const ANCHOR_MOVE_HOLD_MS = 1000;
+
+/** Fuse's Diamond Scan: how far it reaches (art px, 12 tiles, furniture centres) and how long the marks last. */
+export const DIAMOND_SCAN = { radius: 192, ms: 4000 };
 
 /** Scout's EMP Knife: flies up to `range` (art px, 6 tiles) at `speed` (px/s), then every trap
  *  within `radius` (Trap Jam's reach, 3.5 tiles) of where it lands is off for `ms`. */

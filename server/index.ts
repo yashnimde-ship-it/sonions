@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS, type CharacterId } from '../src/config.ts';
-import { ABILITIES, type AbilityId, CHARACTER_INFO, carryCapacity, CLONE, DOOR_JAM_DURATION_MS, EMP, MEND, RECHARGE_BANKS } from '../src/data/characters.ts';
+import { ABILITIES, type AbilityId, CHARACTER_INFO, carryCapacity, CLONE, DOOR_JAM_DURATION_MS, EMP, DIAMOND_SCAN, MEND, RECHARGE_BANKS } from '../src/data/characters.ts';
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_MS, SEARCH_REACH, spotCenter, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
@@ -21,6 +21,7 @@ import { CHAOS, CHAOS_CARDS, type ChaosId, chaosOptions, isChaosId } from '../sr
 import { DEPART_MS, normalizeCode, QUICK_PLAY_SIZE, ROOM_CODE_CHARS, ROOM_CODE_LENGTH, ROOM_MAX, ROOM_MIN, START_COUNTDOWN_MS, WAVE_LINES, type RoomInfo, type RoomSummary } from '../src/data/rooms.ts';
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
 import { WINGMAN_MAX_PATH, WINGMAN_RANGE, WINGMAN_SPEED, type WingmanResult } from '../src/data/wingman.ts';
+import { type Energy, energyAt, VELVET } from '../src/data/velvet.ts';
 import { type Facing, NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type WatchInfo, type WatchPlayer, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -65,6 +66,8 @@ interface Client {
   hpGrantUntil?: number;
   /** When First Aid was last spent (a heal for a teammate must follow it), and the last noise. */
   firstAidAt?: number;
+  /** When Beacon last warped (moves from before it are ignored for a moment). */
+  warpedAt?: number;
   lastNoise?: number;
   /** When they last waved in the safehouse (ms), so waves can't be spammed. */
   lastEmote?: number;
@@ -609,6 +612,9 @@ function endMatch(matchId: string) {
   abilityReadyAt.delete(matchId);
   wingmen.delete(matchId);
   shields.delete(matchId);
+  anchors.delete(matchId);
+  for (const e of energies.get(matchId)?.values() ?? []) clearTimeout(e.timer);
+  energies.delete(matchId);
   cloneCharges.delete(matchId);
   clonesOut.delete(matchId);
   for (const m of mends.get(matchId)?.values() ?? []) clearInterval(m.timer);
@@ -711,6 +717,12 @@ function startRound(matchId: string) {
   abilityUses.set(matchId, new Map());
   abilityReadyAt.set(matchId, new Map());
   wingmen.set(matchId, new Map());
+  anchors.set(matchId, new Map());
+  for (const e of energies.get(matchId)?.values() ?? []) clearTimeout(e.timer);
+  // Velvet starts every heist round with a full bar.
+  const roundEnergy = new Map<string, Energy & { timer?: ReturnType<typeof setTimeout> }>();
+  if (!isHideSeek(matchId)) for (const c of crew) if (c.state.id !== saboteur && CHARACTER_INFO[c.state.character].runner === 'energySprint') roundEnergy.set(c.state.id, { on: false, energy: VELVET.max, since: 0 });
+  energies.set(matchId, roundEnergy);
   // Rattle's Shield starts every heist round charged.
   const roundShields = new Map<string, Shield>();
   if (!isHideSeek(matchId)) for (const c of crew) if (c.state.id !== saboteur && CHARACTER_INFO[c.state.character].runner === 'shield') roundShields.set(c.state.id, { up: true, banked: 0 });
@@ -730,6 +742,7 @@ function startRound(matchId: string) {
     if (key) send(c, key);
     for (const msg of shieldMsgs(matchId)) send(c, msg);
     sendCharges(c);
+    for (const [id, e] of roundEnergy) send(c, { t: 'velvet', by: id, on: false, energy: e.energy, ago: VELVET.refillDelayMs });
   }
   console.log(`${matchId}: round ${sr.round + 1}/${sr.rounds} on ${MAPS[map].name}, Saboteur ${clients.get(saboteur)?.state.name}`);
 }
@@ -1059,6 +1072,8 @@ function handle(c: Client, msg: ClientMsg) {
         if (!round || round.phase === 'over') break;
         if (isHideSeek(c.room) ? round.phase === 'setup' && seekerHere : round.phase !== 'live' || saboteurs.get(c.room) === s.id) break;
       }
+      // Just after Beacon's warp, a move from where she was is stale (sent before she knew).
+      if (c.warpedAt && Date.now() - c.warpedAt < 600 && Math.hypot(msg.x - s.x, msg.y - s.y) > 48) break;
       s.x = msg.x;
       s.y = msg.y;
       // Once a selected-party player walks off the chosen pad, leave that party.
@@ -1074,6 +1089,8 @@ function handle(c: Client, msg: ClientMsg) {
       const claimedHp = Math.max(0, Math.min(MAX_HP, Number(msg.hp) || 0));
       const heistRunner = c.room !== 'lobby' && !isHideSeek(c.room) && saboteurs.get(c.room) !== s.id;
       s.hp = heistRunner ? checkedHp(c, claimedHp, fromX, fromY) : claimedHp;
+      // Velvet's sprint cuts out when she's stunned or knocked out.
+      if (energies.get(c.room)?.get(s.id)?.on && (s.hp <= 0 || msg.stunned)) setSprint(c, false, s.hp <= 0 ? 'Knocked out' : 'Stunned');
       if (heistRunner && hpBefore > 0 && s.hp === 0) {
         const st = statsOf(c.room, s.id);
         if (st) st.knockouts++;
@@ -1292,6 +1309,12 @@ function handle(c: Client, msg: ClientMsg) {
       if (vault.banked >= vault.need) finish(c.room, 'runners');
       break;
     }
+    case 'anchor':
+      beaconAnchor(c, msg.act, msg.x, msg.y);
+      break;
+    case 'energySprint':
+      setSprint(c, msg.on === true);
+      break;
     case 'mendStop':
       endMend(c.room, s.id);
       break;
@@ -1679,6 +1702,10 @@ function handle(c: Client, msg: ClientMsg) {
         break;
       }
       if (msg.ability === 'overclock') break;
+      if (msg.ability === 'diamondScan') {
+        diamondScan(c);
+        break;
+      }
       if (msg.ability === 'empKnife') {
         throwKnife(c, msg.facing);
         break;
@@ -1943,6 +1970,145 @@ function jamTraps(matchId: string, placed: PlacedTrap[], fixed: TrapSpot[], unti
     if (!member) continue;
     for (const t of fixed) send(member, { t: 'jam', id: t.id, ms });
     for (const t of placed) send(member, { t: 'jam', id: t.id, ms, ...(shown(id) ? { trap: t } : {}) });
+  }
+}
+
+// ---------- Energy Sprint (Velvet) ----------
+
+/** Per match: each Velvet's bar (on or off, energy then, since when) and the timer for running dry. */
+const energies = new Map<string, Map<string, Energy & { timer?: ReturnType<typeof setTimeout> }>>();
+
+/**
+ * Velvet switches her sprint on (with enough energy, not stunned) or off; it also goes off by
+ * itself when the bar runs dry. The server keeps the bar; her game moves her faster while it's on.
+ */
+function setSprint(c: Client, on: boolean, reason?: string) {
+  const s = c.state;
+  const matchId = c.room;
+  const e = energies.get(matchId)?.get(s.id);
+  if (!e) return;
+  const now = Date.now();
+  const energy = energyAt(e, now);
+  const tell = (why?: string) => {
+    for (const id of matches.get(matchId) ?? []) {
+      const member = clients.get(id);
+      if (member) send(member, { t: 'velvet', by: s.id, on: e.on, energy: e.energy, ago: Date.now() - e.since, ...(why && member === c ? { reason: why } : {}) });
+    }
+  };
+  if (on === e.on) return tell();
+  if (on) {
+    const refusal = phases.get(matchId)?.phase !== 'live' ? 'Not right now' : s.hp <= 0 ? 'Knocked out' : s.stunned ? 'Stunned' : energy < VELVET.minToStart ? `Needs ${VELVET.minToStart} energy` : null;
+    // (A refusal changes nothing: the refill carries on as it was.)
+    if (refusal) return tell(refusal);
+    Object.assign(e, { on: true, energy, since: now });
+    e.timer = setTimeout(() => {
+      if (energies.get(matchId)?.get(s.id) === e && e.on) setSprint(c, false, 'Out of energy');
+    }, (energy / VELVET.drainPerSec) * 1000 + 30);
+  } else {
+    clearTimeout(e.timer);
+    Object.assign(e, { on: false, energy, since: now });
+  }
+  tell(reason);
+}
+
+// ---------- Anchor (Beacon) ----------
+
+/** Per match: each Beacon's unused anchor, by player id. */
+const anchors = new Map<string, Map<string, { x: number; y: number; deck: MapId }>>();
+
+/** Can Beacon stand at (x, y)? Open floor for her feet, no closed door, and (to plant) not in the getaway. */
+function anchorSpot(matchId: string, deck: MapId, x: number, y: number) {
+  if (!openFloor(deck, x, y, 4, 4) || blocksShot(matchId, deck, x, y - 2)) return 'Not on open floor';
+  return null;
+}
+function inGetaway(deck: MapId, x: number, y: number) {
+  const g = MAPS[deck].getaway;
+  return x >= g.x * TILE && x <= (g.x + g.w) * TILE && y >= g.y * TILE && y <= (g.y + g.h) * TILE;
+}
+
+/** Tell Beacon and the other Runners where her anchor is (or that it's gone); never the Saboteur. */
+function sendAnchor(matchId: string, by: string, a: { x: number; y: number; deck: MapId }, gone = false) {
+  const sab = saboteurs.get(matchId);
+  for (const id of matches.get(matchId) ?? []) {
+    const member = clients.get(id);
+    if (member && id !== sab) send(member, { t: 'anchor', by, deck: a.deck, x: a.x, y: a.y, ...(gone ? { gone } : {}) });
+  }
+}
+
+/**
+ * Beacon plants an anchor where she stands (anywhere but the getaway), can move it while it's
+ * unused, and warps back to it once: she keeps her health and whatever she carries, and the
+ * 30 s cooldown starts. No range limit.
+ */
+function beaconAnchor(c: Client, act: unknown, x: unknown, y: unknown) {
+  const s = c.state;
+  const refuse = (reason: string) => send(c, { t: 'anchorRefused', reason });
+  const matchId = c.room;
+  const mine = anchors.get(matchId);
+  const ready = abilityReadyAt.get(matchId);
+  if (CHARACTER_INFO[s.character].runner !== 'anchor' || isHideSeek(matchId) || saboteurs.get(matchId) === s.id || phases.get(matchId)?.phase !== 'live' || s.hp <= 0 || !mine || !ready) return refuse('Not right now');
+  const deck = deckOf(c);
+  const anchor = mine.get(s.id);
+  if (act === 'plant' || act === 'move') {
+    if ((act === 'plant') !== !anchor) return refuse(anchor ? 'Your anchor is already down' : 'No anchor to move');
+    // Where she pressed it (her last move may still be on its way), if that's close.
+    const near = typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y) && Math.hypot(x - s.x, y - s.y) <= 32;
+    const [ax, ay] = near ? [Math.round(x as number), Math.round(y as number)] : [Math.round(s.x), Math.round(s.y)];
+    const bad = anchorSpot(matchId, deck, ax, ay) ?? (inGetaway(deck, ax, ay) ? 'Not in the getaway' : null);
+    if (bad) return refuse(bad);
+    const a = { x: ax, y: ay, deck };
+    mine.set(s.id, a);
+    sendAnchor(matchId, s.id, a);
+    return;
+  }
+  if (act !== 'warp') return;
+  if (!anchor) return refuse('Plant an anchor first');
+  const now = Date.now();
+  if (now < (ready.get(`${s.id}:anchor`) ?? 0) - COOLDOWN_SLACK_MS) return refuse('Not ready yet');
+  if (s.stunned) return refuse('Stunned!');
+  if (anchor.deck !== deck) return refuse('Your anchor is on another floor');
+  // A door may have shut on it since.
+  const bad = anchorSpot(matchId, deck, anchor.x, anchor.y);
+  if (bad) return refuse('Something is in the way at your anchor');
+  const from: [number, number] = [Math.round(s.x), Math.round(s.y)];
+  mine.delete(s.id);
+  ready.set(`${s.id}:anchor`, now + ABILITIES.anchor.cooldown * 1000);
+  s.x = anchor.x;
+  s.y = anchor.y;
+  c.warpedAt = now;
+  sendAnchor(matchId, s.id, anchor, true);
+  for (const id of matches.get(matchId) ?? []) {
+    const member = clients.get(id);
+    if (member) send(member, { t: 'warp', by: s.id, deck, from, to: [anchor.x, anchor.y] });
+  }
+}
+
+// ---------- Diamond Scan (Fuse) ----------
+
+/**
+ * Fuse's pulse: the furniture on her deck within reach that holds a diamond right now, for her
+ * eyes only. It's a snapshot: nothing follows the diamonds afterwards.
+ */
+function diamondScan(c: Client) {
+  const s = c.state;
+  const refuse = (reason: string) => send(c, { t: 'scanRefused', reason });
+  const matchId = c.room;
+  const now = Date.now();
+  const ready = abilityReadyAt.get(matchId);
+  const vault = vaults.get(matchId);
+  if (CHARACTER_INFO[s.character].runner !== 'diamondScan' || isHideSeek(matchId) || saboteurs.get(matchId) === s.id || phases.get(matchId)?.phase !== 'live' || s.hp <= 0 || !ready || !vault) return refuse('Not right now');
+  if (now < (ready.get(`${s.id}:diamondScan`) ?? 0) - COOLDOWN_SLACK_MS) return refuse('Not ready yet');
+  if (!spendUse(c, 'diamondScan')) return refuse('No uses left');
+  ready.set(`${s.id}:diamondScan`, now + ABILITIES.diamondScan.cooldown * 1000);
+  const deck = deckOf(c);
+  const held = new Set(vault.diamonds.flatMap((d) => (d.place.at === 'spot' ? [d.place.spot] : [])));
+  const spots = spotsOf(matchId)
+    .filter((sp) => held.has(sp.id) && spotDeck(matchId, sp) === deck)
+    .filter((sp) => Math.hypot(spotCenter(sp).x - s.x, spotCenter(sp).y - s.y) <= DIAMOND_SCAN.radius)
+    .map((sp) => sp.id);
+  for (const id of matches.get(matchId) ?? []) {
+    const member = clients.get(id);
+    if (member) send(member, { t: 'scan', by: s.id, deck, x: Math.round(s.x), y: Math.round(s.y), radius: DIAMOND_SCAN.radius, ms: DIAMOND_SCAN.ms, ...(member === c ? { spots } : {}) });
   }
 }
 
@@ -2542,6 +2708,7 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
     if (key) send(known, key);
     for (const msg of shieldMsgs(known.room)) send(known, msg);
     sendCharges(known);
+    for (const [id, e] of energies.get(known.room) ?? []) send(known, { t: 'velvet', by: id, on: e.on, energy: e.energy, ago: Date.now() - e.since });
     if (phases.get(known.room)?.phase === 'over') send(known, resultMsg(known.room));
     const sr = series.get(known.room);
     // Hide & Seek: who's out, my hiding place, the Seeker's gun.

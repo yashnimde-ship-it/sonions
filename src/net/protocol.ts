@@ -133,6 +133,10 @@ export type ClientMsg =
   | { t: 'unlock'; door: string }
   /** A quick ping on the map for my teammates (TRAP / DIAMOND / LOOK HERE). */
   | { t: 'ping'; x: number; y: number; label: string }
+  /** Velvet switches her Energy Sprint on or off. */
+  | { t: 'energySprint'; on: boolean }
+  /** Beacon: plant her anchor here, move it here, or warp back to it. */
+  | { t: 'anchor'; act: 'plant' | 'move' | 'warp'; x: number; y: number }
   /** Switch stops her Mend early (Q again, or she moved). */
   | { t: 'mendStop' }
   /** Rattle's Shield just absorbed a hit (her game worked out the hit, as for all damage). */
@@ -229,6 +233,20 @@ export type ServerMsg =
   | { t: 'snapshot'; room: RoomKind; players: PlayerState[]; portals: PortalState[]; online: number; taken: Taken[] }
   | { t: 'door'; id: string; open: boolean }
   | { t: 'ability'; ability: AbilityId; by: string }
+  /** Velvet's Energy Sprint: on or off, with `energy` as it was `ago` ms back when it last changed
+   *  (it drains or refills from there). `reason`: why it went off by itself, or why switching on
+   *  was refused (to her). */
+  | { t: 'velvet'; by: string; on: boolean; energy: number; ago: number; reason?: string }
+  /** Beacon's anchor (to her and the other Runners), or `gone` once she's used it. */
+  | { t: 'anchor'; by: string; deck: MapId; x: number; y: number; gone?: boolean }
+  /** Beacon's anchor request was refused (nothing spent); private to her. */
+  | { t: 'anchorRefused'; reason: string }
+  /** Beacon warped from `from` to `to`; everyone sees the flash. She is put at `to`. */
+  | { t: 'warp'; by: string; deck: MapId; from: [number, number]; to: [number, number] }
+  /** Fuse scanned: everyone sees the pulse; only Fuse gets `spots` (furniture hiding a diamond, as it was then). */
+  | { t: 'scan'; by: string; deck: MapId; x: number; y: number; radius: number; ms: number; spots?: string[] }
+  /** Fuse's scan was refused (nothing spent); private to Fuse. */
+  | { t: 'scanRefused'; reason: string }
   /** Scout's knife is flying from `from` to `to` (art px) for `ms`; then its EMP: traps off around (x, y). */
   | { t: 'knife'; id: string; by: string; deck: MapId; from: [number, number]; to: [number, number]; ms: number }
   | { t: 'emp'; id: string; by: string; deck: MapId; x: number; y: number; radius: number; ms: number; count: number }

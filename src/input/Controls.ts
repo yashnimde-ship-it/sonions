@@ -10,6 +10,8 @@ export interface ControlState {
   action: boolean;
   /** Ability was pressed this frame (Q, or X on a gamepad). */
   ability: boolean;
+  /** Q (or the pad's ability button) is down right now (Beacon holds it to move her anchor). */
+  abilityHeld: boolean;
   /** Action is being held down (searching furniture takes a long press). */
   actionHeld: boolean;
 }
@@ -104,5 +106,5 @@ export function readControls(): ControlState {
     sprint ||= !!(gp.buttons[7]?.pressed || gp.buttons[5]?.pressed);
   }
   if (!dx && !dy) [dx, dy] = touchMove;
-  return { dx, dy, sprint, action: [...pressed].some((c) => ACTION.has(c)) || padAction, ability: pressed.has(ABILITY) || padAbility, actionHeld: [...held].some((c) => ACTION.has(c)) || padActionWasDown };
+  return { dx, dy, sprint, action: [...pressed].some((c) => ACTION.has(c)) || padAction, ability: pressed.has(ABILITY) || padAbility, abilityHeld: held.has(ABILITY) || padAbilityWasDown, actionHeld: [...held].some((c) => ACTION.has(c)) || padActionWasDown };
 }

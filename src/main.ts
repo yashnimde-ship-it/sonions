@@ -4,8 +4,9 @@ import '@fontsource/press-start-2p';
 import '@fontsource/cinzel/600.css';
 import '@fontsource/cinzel/700.css';
 import { ART_TILE, CHAR_GLOW, CHAR_SCREEN_FRACTION, CHARACTERS, type CharacterId, characterSheet, HITBOX } from './config';
-import { CHARACTER_INFO, carryCapacity, CLONE, HEAVY_CARRY, MEND } from './data/characters';
+import { ANCHOR_MOVE_HOLD_MS, CHARACTER_INFO, carryCapacity, CLONE, HEAVY_CARRY, MEND } from './data/characters';
 import { WINGMAN_RANGE } from './data/wingman';
+import { type Energy, energyAt, VELVET } from './data/velvet';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
 import { drawExhibitEffect, drawExhibitIdle } from './systems/ExhibitTraps';
@@ -635,6 +636,16 @@ async function boot() {
   const trapJammedUntil = new Map<string, number>();
   /** Patch's Wingmen out searching: their route (art px), and when they set off (performance.now()). */
   const wingmen = new Map<string, { by: string; spot: string; deck: MapId; path: [number, number][]; travelMs: number; searchMs: number; at: number }>();
+  /** Velvet's Energy Sprint, by player (times are performance.now()). */
+  const velvets = new Map<string, Energy>();
+  const sprinting = (id: string) => !!velvets.get(id)?.on;
+  /** Beacon's anchors (mine, and teammates' if I'm a Runner), warp flashes, and my Q hold. */
+  const anchorsSeen = new Map<string, { x: number; y: number; deck: MapId }>();
+  const warps: { deck: MapId; from: [number, number]; to: [number, number]; at: number }[] = [];
+  let anchorQ: { since: number; moved: boolean } | null = null;
+  /** Fuse's last scan as she saw it (which furniture, until when), and scan pulses to draw. */
+  let scanReveal: { spots: Set<string>; until: number; ms: number } | null = null;
+  const scanPulses: { deck: MapId; x: number; y: number; radius: number; at: number }[] = [];
   /** Scout's knives in the air, and the EMPs they set off (where, when, how many traps went off). */
   const knives = new Map<string, { deck: MapId; from: [number, number]; to: [number, number]; ms: number; at: number }>();
   const emps: { deck: MapId; x: number; y: number; radius: number; ms: number; at: number; count: number }[] = [];
@@ -951,6 +962,12 @@ async function boot() {
     clones.clear();
     mending.clear();
     knives.clear();
+    scanReveal = null;
+    anchorsSeen.clear();
+    velvets.clear();
+    warps.length = 0;
+    anchorQ = null;
+    scanPulses.length = 0;
     emps.length = 0;
     mendLinks.length = 0;
     tripwireArmed.clear();
@@ -1497,6 +1514,65 @@ async function boot() {
         else if (msg.found && !match?.saboteur) toast(`${remotes.get(msg.by)?.state.name ?? 'Latch'}'s clone spotted ${msg.found} trap${msg.found > 1 ? 's' : ''}`);
         break;
       }
+      case 'anchor':
+        if (msg.gone) anchorsSeen.delete(msg.by);
+        else {
+          const moved = anchorsSeen.has(msg.by);
+          anchorsSeen.set(msg.by, { x: msg.x, y: msg.y, deck: msg.deck });
+          if (here(msg.deck)) particles.ring(msg.x, msg.y, '#6d9ff0', 16);
+          if (msg.by === myId) {
+            sfx('tap');
+            toast(moved ? 'Anchor moved here' : 'Anchor planted · tap Q to warp back to it');
+          }
+        }
+        break;
+      case 'velvet': {
+        const was = sprinting(msg.by);
+        velvets.set(msg.by, { on: msg.on, energy: msg.energy, since: performance.now() - msg.ago });
+        const who = msg.by === myId ? me : remotes.get(msg.by)?.bandit;
+        if (msg.on && !was && who && (msg.by === myId || here(remotes.get(msg.by)?.state.deck))) particles.burst(who.x, who.y - 6, '#ffd36e', 10, 1.4);
+        if (msg.by === myId) {
+          if (msg.on && !was) sfx('boost');
+          if (msg.reason) toast(`Energy Sprint: ${msg.reason}`);
+        }
+        break;
+      }
+      case 'anchorRefused':
+        toast(`Anchor: ${msg.reason}`);
+        break;
+      case 'warp': {
+        warps.push({ deck: msg.deck, from: msg.from, to: msg.to, at: performance.now() });
+        if (here(msg.deck)) {
+          particles.burst(msg.from[0], msg.from[1] - 14, '#6d9ff0', 18, 1.8);
+          particles.burst(msg.to[0], msg.to[1] - 14, '#bcd4ff', 22, 2);
+          particles.ring(msg.to[0], msg.to[1], '#6d9ff0', 24);
+        }
+        if (msg.by !== myId) break;
+        // Here now, with whatever health and loot I had: only a Snare's grip is left behind.
+        me.x = msg.to[0];
+        me.y = msg.to[1];
+        me.vx = me.vy = 0;
+        me.rootFrames = 0;
+        abilities.startCooldown();
+        sfx('whoosh');
+        hitStop(60);
+        break;
+      }
+      case 'scan': {
+        scanPulses.push({ deck: msg.deck, x: msg.x, y: msg.y, radius: msg.radius, at: performance.now() });
+        if (msg.by !== myId || !msg.spots) break;
+        abilities.resolvePending(true);
+        abilities.busy(msg.ms, 'SCAN');
+        // A snapshot: these marks show what was there now, and fade after a few seconds.
+        scanReveal = { spots: new Set(msg.spots), until: performance.now() + msg.ms, ms: msg.ms };
+        sfx('ping');
+        toast(msg.spots.length ? `Scan: ${msg.spots.length} diamond${msg.spots.length > 1 ? 's' : ''} nearby · remember where` : 'Scan: no diamonds within 12 tiles');
+        break;
+      }
+      case 'scanRefused':
+        abilities.resolvePending(false);
+        toast(`Diamond Scan: ${msg.reason}`);
+        break;
       case 'knife':
         knives.set(msg.id, { deck: msg.deck, from: msg.from, to: msg.to, ms: msg.ms, at: performance.now() });
         if (msg.by === myId) {
@@ -2448,7 +2524,10 @@ async function boot() {
       // In the getaway the crew is moved by the scene's script, the same on every screen.
       if (departure?.crew.includes(id)) continue;
       r.bandit.follow(r.state.x, r.state.y, r.state.facing, r.state.moving, r.state.sprint, r.state.stunned);
+      // Velvet's Energy Sprint leaves a streak behind her.
+      if (sprinting(id) && r.state.moving) r.bandit.showTrail(6);
     }
+    if (sprinting(myId) && me.moving) me.showTrail(6);
     // Latch's clones run their straight line, sprinting.
     for (const cl of clones.values()) {
       const k = cl.ms ? Math.min(1, (performance.now() - cl.at) / cl.ms) : 1;
@@ -2589,7 +2668,9 @@ async function boot() {
     if (hs && sab && phase === 'live' && keyPressed('KeyR')) net.send({ t: 'reload' });
     // A finished reload: the gun is full again (the server agrees on its next shot).
     if (hs && sab && gun.ammo === 0 && gun.reloadEnd && performance.now() >= gun.reloadEnd) gun = { ...gun, ammo: GUN.ammo, reloadEnd: 0 };
-    if (input.ability && !hud.messageOpen && phase === 'live' && !hs) {
+    if (abilities.has('anchor') && match && !match.saboteur && phase === 'live' && !hs) anchorInput(input);
+    else if (abilities.has('energySprint') && match && !match.saboteur && phase === 'live' && !hs) sprintInput(input);
+    else if (input.ability && !hud.messageOpen && phase === 'live' && !hs) {
       // Q again during my Mend stops it; otherwise it's the ability.
       if (mending.has(myId)) stopMend();
       else abilities.use(abilityContext());
@@ -2656,7 +2737,7 @@ async function boot() {
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
       const now = performance.now();
-      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (1 - myDiamonds().reduce((slow, d) => slow + CARRY_SLOW + (d.kind === 'red' ? RED_EXTRA_SLOW : 0), 0) * (abilities.has('heavyCarry') ? 1 - HEAVY_CARRY.slowCut : 1)) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1) * (now < crowdFastUntil ? 1.4 : 1);
+      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (1 - myDiamonds().reduce((slow, d) => slow + CARRY_SLOW + (d.kind === 'red' ? RED_EXTRA_SLOW : 0), 0) * (abilities.has('heavyCarry') ? 1 - HEAVY_CARRY.slowCut : 1)) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1) * (now < crowdFastUntil ? 1.4 : 1) * (sprinting(myId) ? VELVET.speed : 1);
       // Confusion Gas: left is right and up is down.
       // (In a hiding place you can't move.)
       const move = hiddenIn ? { ...input, dx: 0, dy: 0, sprint: false } : input;
@@ -3148,6 +3229,8 @@ async function boot() {
     drawClones(camX, camY);
     drawMends(camX, camY);
     drawEmps(camX, camY);
+    drawScanPulses(camX, camY);
+    drawAnchors(camX, camY);
     myDiamonds().forEach((d, i, all) => carriedGem(me, camX, camY, d, (i - (all.length - 1) / 2) * 10));
     for (const [id, r] of remotes) {
       if (!r.state.carrying) continue;
@@ -4144,6 +4227,152 @@ async function boot() {
     }
   }
 
+  /** Fuse's scan: a ring sweeping out to its reach. */
+  function drawScanPulses(camX: number, camY: number) {
+    const now = performance.now();
+    for (let i = scanPulses.length - 1; i >= 0; i--) {
+      const p = scanPulses[i];
+      const t = (now - p.at) / 700;
+      if (t >= 1) {
+        scanPulses.splice(i, 1);
+        continue;
+      }
+      if (!here(p.deck)) continue;
+      ctx.save();
+      ctx.globalAlpha = 0.8 * (1 - t);
+      ctx.strokeStyle = '#f0b94e';
+      ctx.lineWidth = 3 - t * 2;
+      ctx.beginPath();
+      ctx.ellipse(p.x - camX, p.y - camY, p.radius * t, p.radius * t * 0.75, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 0.12 * (1 - t);
+      ctx.fillStyle = '#f0b94e';
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  /** Velvet's Q: switch the Energy Sprint on or off (the server keeps the bar); the slot shows it. */
+  function sprintInput(input: { ability: boolean }) {
+    const e = velvets.get(myId);
+    if (!e) return;
+    const energy = Math.round(energyAt(e, performance.now()));
+    abilities.setMeter(energy / VELVET.max, e.on);
+    abilities.setStatus(e.on ? `ON · ${energy}` : energy >= VELVET.minToStart ? `READY · ${energy}` : `CHARGING · ${energy}`, e.on);
+    if (input.ability && !hud.messageOpen) {
+      if (!e.on && knockedOut) abilities.say('Knocked out');
+      else if (!e.on && me.stunned) abilities.say('Stunned!');
+      else if (!e.on && energy < VELVET.minToStart) abilities.say(`Needs ${VELVET.minToStart} energy`);
+      else net.send({ t: 'energySprint', on: !e.on });
+    }
+  }
+
+  /**
+   * Beacon's Q: with no anchor down, plant one here. With one down, a tap warps her to it and a
+   * 1 s hold moves it here instead. The server checks it all.
+   */
+  function anchorInput(input: { ability: boolean; abilityHeld: boolean }) {
+    const now = performance.now();
+    const mine = anchorsSeen.get(myId);
+    abilities.setStatus(mine ? 'ANCHOR SET · TAP Q' : 'PLANT · Q', !!mine);
+    if (input.ability && !hud.messageOpen) {
+      if (knockedOut) abilities.say('Knocked out');
+      else if (!mine) net.send({ t: 'anchor', act: 'plant', x: Math.round(me.x), y: Math.round(me.y) });
+      else anchorQ = { since: now, moved: false };
+    }
+    if (!anchorQ) return;
+    if (input.abilityHeld) {
+      if (!anchorQ.moved && mine && now - anchorQ.since >= ANCHOR_MOVE_HOLD_MS) {
+        anchorQ.moved = true;
+        net.send({ t: 'anchor', act: 'move', x: Math.round(me.x), y: Math.round(me.y) });
+      }
+      return;
+    }
+    // Let go before the hold: warp.
+    if (!anchorQ.moved && mine) {
+      const left = abilities.cooldownLeft;
+      if (left > 0) abilities.say(`Warp ready in ${Math.ceil(left / 1000)}s`);
+      else if (me.stunned) abilities.say('Stunned!');
+      else net.send({ t: 'anchor', act: 'warp', x: Math.round(me.x), y: Math.round(me.y) });
+    }
+    anchorQ = null;
+  }
+
+  /** Beacon's anchors as a little blue pylon with a pulsing ring (a dotted line to it from her), my
+   *  hold-to-move ring, and the warp's flash line. */
+  function drawAnchors(camX: number, camY: number) {
+    if (result) return;
+    const now = performance.now();
+    for (const [id, a] of anchorsSeen) {
+      if (!here(a.deck)) continue;
+      const x = Math.round(a.x - camX);
+      const y = Math.round(a.y - camY);
+      ctx.save();
+      if (id === myId) {
+        ctx.globalAlpha = 0.35;
+        ctx.strokeStyle = '#6d9ff0';
+        ctx.setLineDash([2, 4]);
+        ctx.lineDashOffset = -now / 60;
+        ctx.beginPath();
+        ctx.moveTo(me.x - camX, me.y - 4 - camY);
+        ctx.lineTo(x, y - 4);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      const pulse = (now / 1200) % 1;
+      ctx.globalAlpha = 0.7 * (1 - pulse);
+      ctx.strokeStyle = '#6d9ff0';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 6 + pulse * 10, (6 + pulse * 10) * 0.5, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#26344f';
+      ctx.fillRect(x - 3, y - 3, 7, 3);
+      ctx.fillStyle = '#6d9ff0';
+      ctx.fillRect(x - 1, y - 12, 3, 9);
+      const bob = Math.sin(now / 250) * 1.5;
+      ctx.fillStyle = '#bcd4ff';
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, y - 20 + bob);
+      ctx.lineTo(x + 4.5, y - 15 + bob);
+      ctx.lineTo(x + 0.5, y - 10 + bob);
+      ctx.lineTo(x - 3.5, y - 15 + bob);
+      ctx.fill();
+      ctx.restore();
+    }
+    if (anchorQ && !anchorQ.moved && anchorsSeen.has(myId)) {
+      const k = Math.min(1, (now - anchorQ.since) / ANCHOR_MOVE_HOLD_MS);
+      if (k > 0.15) {
+        ctx.save();
+        ctx.strokeStyle = '#bcd4ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(me.x - camX, me.y - DRAW_H - 12 - camY, 5, -Math.PI / 2, -Math.PI / 2 + k * Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    for (let i = warps.length - 1; i >= 0; i--) {
+      const w = warps[i];
+      const t = (now - w.at) / 400;
+      if (t >= 1) {
+        warps.splice(i, 1);
+        continue;
+      }
+      if (!here(w.deck)) continue;
+      ctx.save();
+      ctx.globalAlpha = 0.8 * (1 - t);
+      ctx.strokeStyle = '#bcd4ff';
+      ctx.lineWidth = 3 * (1 - t) + 1;
+      ctx.beginPath();
+      ctx.moveTo(w.from[0] - camX, w.from[1] - 14 - camY);
+      ctx.lineTo(w.to[0] - camX, w.to[1] - 14 - camY);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   function stopMend() {
     if (mendStopSent) return;
     mendStopSent = true;
@@ -4353,6 +4582,16 @@ async function boot() {
           ctx.moveTo(c.x - camX + 4, c.y - camY - 4);
           ctx.lineTo(c.x - camX - 4, c.y - camY + 4);
           ctx.stroke();
+        } else if (scanReveal && now < scanReveal.until && scanReveal.spots.has(sp.id)) {
+          // Fuse's scan: this one held a diamond when she scanned (fading out as it ends).
+          const left = (scanReveal.until - now) / scanReveal.ms;
+          ctx.save();
+          ctx.strokeStyle = '#f0b94e';
+          ctx.globalAlpha = Math.min(1, left * 3) * (0.65 + 0.35 * Math.sin(now / 110));
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+          gem(c.x - camX, c.y - camY - 6 - Math.abs(Math.sin(now / 200)) * 3, 4, '#ffe08a', Math.min(1, left * 3));
+          ctx.restore();
         } else if (crowdHint && now < crowdHint.until && crowdHint.spots.has(sp.id)) {
           // The crowd's Treasure Map: this one has a diamond in it.
           ctx.save();
