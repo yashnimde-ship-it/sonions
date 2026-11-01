@@ -16,6 +16,7 @@ export class ResultScreen {
   private nextAt = 0;
   private last = false;
   private hideSeek = false;
+  private insideJob = false;
   /** Awards on the final screen (main.ts plays a chime for each as it pops in). */
   awardCount = 0;
 
@@ -32,8 +33,17 @@ export class ResultScreen {
   show(r: Result, me: string, saboteur: boolean) {
     const won = r.winner !== 'none' && (r.winner === 'saboteur') === saboteur;
     const h = r.hunt;
+    const ij = r.inside;
     const list = (names: string[]) => names.map(esc).join(', ');
-    const reason = h
+    const reason = ij
+      ? r.winner === 'none'
+        ? 'The Insider left, so this round is called off.'
+        : `<b>${esc(ij.name)}</b> was the Insider. ${
+          r.winner === 'runners'
+            ? ij.caught === 'shot' ? 'Shot down by the crew!' : ij.caught === 'vote' ? 'Voted out by the crew!' : `The thieves banked ${r.banked} of ${r.total} diamonds (needed ${r.need}).`
+            : r.banked < r.need && !ij.out.length ? `Time's up: only ${r.banked} of ${r.total} diamonds were banked (needed ${r.need}).` : `Taken out: ${list(ij.out) || 'nobody'}. Banked ${r.banked} of ${r.need}.`
+        }`
+      : h
       ? r.winner === 'none'
         ? 'The Seeker left, so this round is called off.'
         : r.winner === 'saboteur'
@@ -44,14 +54,14 @@ export class ResultScreen {
         : r.winner === 'runners'
           ? `The Runners banked ${r.banked} of ${r.total} diamonds (needed ${r.need}).`
           : `Time's up: only ${r.banked} of ${r.total} diamonds were banked (needed ${r.need}).`;
-    const sides = h ? (['HIDERS WIN', 'SEEKER WINS'] as const) : (['RUNNERS WIN', 'SABOTEUR WINS'] as const);
+    const sides = ij ? (['THIEVES WIN', 'INSIDER WINS'] as const) : h ? (['HIDERS WIN', 'SEEKER WINS'] as const) : (['RUNNERS WIN', 'SABOTEUR WINS'] as const);
     const points = r.points
-      .map((p) => `<li class="${p.id === me ? 'me' : ''}"><span class="who">${esc(p.name)}${p.saboteur ? ` <em>${h ? 'SEEKER' : 'SABOTEUR'}</em>` : ''}</span><b data-to="${p.points}">+${p.points}</b></li>`)
+      .map((p) => `<li class="${p.id === me ? 'me' : ''}"><span class="who">${esc(p.name)}${p.saboteur ? ` <em>${ij ? 'INSIDER' : h ? 'SEEKER' : 'SABOTEUR'}</em>` : ''}</span><b data-to="${p.points}">${p.points < 0 ? '' : '+'}${p.points}</b></li>`)
       .join('');
     this.root.className = r.winner === 'none' ? 'off' : won ? 'win' : 'lose';
     this.root.innerHTML = `
       <div class="result-card">
-        <span class="kicker">ROUND ${r.round} OF ${r.rounds} · ${h ? 'HIDE &amp; SEEK · ' : ''}${r.winner === 'none' ? 'CALLED OFF' : r.winner === 'runners' ? sides[0] : sides[1]}</span>
+        <span class="kicker">ROUND ${r.round} OF ${r.rounds} · ${h ? 'HIDE &amp; SEEK · ' : ij ? 'INSIDE JOB · ' : ''}${r.winner === 'none' ? 'CALLED OFF' : r.winner === 'runners' ? sides[0] : sides[1]}</span>
         <h1>${r.winner === 'none' ? 'NO CONTEST' : won ? 'YOU WIN' : 'YOU LOSE'}</h1>
         <p class="reason">${reason}</p>
         <div class="result-cols">
@@ -68,6 +78,7 @@ export class ResultScreen {
     this.nextAt = performance.now() + r.nextMs;
     this.last = r.last;
     this.hideSeek = !!h;
+    this.insideJob = !!ij;
     this.root.hidden = false;
     this.tick();
   }
@@ -125,7 +136,7 @@ export class ResultScreen {
   tick() {
     if (!this.countdown || this.root.hidden) return;
     const s = Math.max(0, Math.ceil((this.nextAt - performance.now()) / 1000));
-    const text = this.last ? `Final results in ${s}...` : `Next round starts in ${s}... ${this.hideSeek ? '(new Seeker)' : '(new Saboteur, new map)'}`;
+    const text = this.last ? `Final results in ${s}...` : `Next round starts in ${s}... ${this.hideSeek ? '(new Seeker)' : this.insideJob ? '(a new secret Insider, new map)' : '(new Saboteur, new map)'}`;
     if (this.countdown.textContent !== text) this.countdown.textContent = text;
   }
 
@@ -181,7 +192,7 @@ function countUp(el: HTMLElement, from: number, to: number, delay: number, fmt: 
 function countUpScores(root: HTMLElement) {
   if (reducedMotion.matches) return;
   const points = [...root.querySelectorAll<HTMLElement>('.points b[data-to]')];
-  points.forEach((el, i) => countUp(el, 0, Number(el.dataset.to), 450 + i * 160, (v) => `+${v}`));
+  points.forEach((el, i) => countUp(el, 0, Number(el.dataset.to), 450 + i * 160, (v) => `${v < 0 ? '' : '+'}${v}`));
   const boardAt = 450 + points.length * 160 + 450;
   const rows = [...root.querySelectorAll<HTMLElement>('.scores tbody tr')];
   const rowH = rows[0]?.getBoundingClientRect().height ?? 0;

@@ -4265,3 +4265,156 @@ body.touch .gadget-card .gc-key kbd { display: none; }
 .crowd-qr-modal .actions { display: flex; gap: 12px; justify-content: center; }
 .room-bar .crowd-btn { color: #ff4fb0; border-color: rgba(255, 79, 176, 0.6); }
 .crew-foot .crowd-btn { color: #ff4fb0; border-color: rgba(255, 79, 176, 0.6); margin-left: auto; }
+
+/* Inside Job: the role, bullets and meeting strip under the timer. */
+#inside-bar {
+  position: absolute;
+  left: 50%;
+  top: 150px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(14, 10, 26, 0.85);
+  color: var(--paper);
+  font-size: 13px;
+  pointer-events: auto;
+  z-index: 6;
+}
+#inside-bar[hidden] { display: none; }
+#inside-bar .role { font-weight: 700; letter-spacing: 1px; padding: 2px 6px; border-radius: 4px; }
+#inside-bar .role.thief { background: rgba(46, 196, 182, 0.2); color: var(--teal); }
+#inside-bar .role.insider { background: rgba(255, 77, 106, 0.2); color: #ff4d6a; }
+#inside-bar button {
+  font: inherit;
+  color: var(--paper);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+#inside-bar button small { opacity: 0.6; margin-left: 2px; }
+#inside-bar button.spent { opacity: 0.4; }
+#inside-bar [data-meeting]:not(.spent) { border-color: #ff4d6a; color: #ffb3bf; }
+
+/* Inside Job's meeting: the whole screen stops for it. */
+#meeting {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(8, 4, 16, 0.78);
+  backdrop-filter: blur(3px);
+  color: var(--paper);
+  animation: meet-in 0.25s ease-out;
+}
+#meeting[hidden] { display: none; }
+@keyframes meet-in { from { opacity: 0; transform: scale(1.04); } }
+#meeting .meet-card {
+  position: relative;
+  width: min(920px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 3px solid #ff4d6a;
+  border-radius: 10px;
+  background: #1a1030;
+  box-shadow: 0 0 40px rgba(255, 77, 106, 0.35);
+  overflow: hidden;
+}
+#meeting .meet-head {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: #ff4d6a;
+  color: #fff;
+}
+#meeting .meet-title { font-weight: 800; font-size: 20px; letter-spacing: 1px; }
+#meeting .meet-by { opacity: 0.85; }
+#meeting .meet-time { margin-left: auto; font-weight: 800; font-size: 20px; }
+#meeting .meet-count { font-weight: 700; }
+#meeting .meet-body { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 12px; min-height: 0; overflow: auto; }
+#meeting .meet-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; align-content: start; }
+#meeting .meet-player {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.06);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  cursor: pointer;
+}
+#meeting .meet-player:disabled { cursor: default; }
+#meeting .meet-player img { width: 36px; height: 36px; image-rendering: pixelated; border-radius: 4px; background: rgba(0, 0, 0, 0.3); }
+#meeting .meet-player .pname { font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+#meeting .meet-player small { opacity: 0.6; font-weight: 400; }
+#meeting .meet-player.picked { border-color: var(--gold); background: rgba(255, 201, 74, 0.15); }
+#meeting .meet-player.my-vote { border-color: #ff4d6a; background: rgba(255, 77, 106, 0.2); }
+#meeting .meet-player .voted { position: absolute; top: -7px; right: 6px; padding: 0 5px; border-radius: 3px; background: var(--teal); color: var(--ink); font-size: 10px; font-weight: 800; }
+#meeting .meet-side { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+#meeting .meet-chat { flex: 1; min-height: 120px; max-height: 32vh; overflow-y: auto; padding: 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.35); font-size: 14px; }
+#meeting .meet-chat p { margin: 0 0 4px; overflow-wrap: anywhere; }
+#meeting .meet-chat p.sys { color: #b9a9d9; font-style: italic; }
+#meeting .meet-lines { display: flex; flex-wrap: wrap; gap: 5px; }
+#meeting .meet-lines button,
+#meeting .meet-say button,
+#meeting .meet-vote button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--paper);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+#meeting .meet-say { display: flex; gap: 6px; }
+#meeting .meet-say input { flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 6px 8px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.3); background: rgba(0, 0, 0, 0.4); color: var(--paper); }
+#meeting .meet-vote { display: flex; gap: 8px; }
+#meeting .meet-vote button { flex: 1; font-size: 15px; font-weight: 800; padding: 9px; }
+#meeting .meet-vote .vote-out:not(:disabled) { background: #ff4d6a; border-color: #ff4d6a; color: #fff; }
+#meeting .meet-vote button:disabled { opacity: 0.5; cursor: default; }
+#meeting.ghost .meet-side .meet-lines,
+#meeting.ghost .meet-say { opacity: 0.4; pointer-events: none; }
+#meeting .meet-reveal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  background: rgba(10, 4, 20, 0.95);
+  text-align: center;
+  animation: meet-in 0.3s ease-out;
+}
+#meeting .meet-reveal[hidden] { display: none; }
+#meeting .meet-reveal h2 { margin: 0; font-size: 28px; }
+#meeting .meet-reveal p { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 1px; }
+#meeting .meet-reveal p.caught { color: var(--teal); }
+#meeting .meet-reveal p.innocent { color: #ff8a9d; }
+#meeting .meet-reveal ul { list-style: none; margin: 8px 0 0; padding: 0; font-size: 14px; color: #cbbde6; }
+#meeting .meet-reveal li span { opacity: 0.75; }
+@media (max-width: 700px), (max-height: 520px) {
+  #meeting { padding: 6px; }
+  #meeting .meet-body { grid-template-columns: 1fr; }
+  #meeting .meet-list { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  #meeting .meet-player img { width: 26px; height: 26px; }
+  #meeting .meet-chat { max-height: 22vh; min-height: 70px; }
+  #inside-bar { top: auto; bottom: 64px; font-size: 12px; }
+}

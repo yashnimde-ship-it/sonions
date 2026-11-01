@@ -95,6 +95,12 @@ export type ClientMsg =
   /** Hide & Seek: the Seeker fires at (x, y), art px on their deck; or reloads. */
   | { t: 'shoot'; x: number; y: number }
   | { t: 'reload' }
+  /** Inside Job: call my meeting; vote (null: skip); say a quick line (about a player) or type one. */
+  | { t: 'callMeeting' }
+  | { t: 'meetVote'; target: string | null }
+  | { t: 'meetSay'; line?: number; about?: string; text?: string }
+  /** Inside Job: the Insider puts the diamond they carry back in this furniture (held E). */
+  | { t: 'stash'; spot: string }
   /** Hide & Seek: a Hider gets into a hiding place (or back out); the Seeker searches one. */
   | { t: 'hideIn'; spot: string }
   | { t: 'unhide' }
@@ -181,7 +187,7 @@ export type ServerMsg =
    * A portal filled up: you are in a new match with these players. `role` is only your own:
    * nobody is told who the Saboteur is (except the Saboteur).
    */
-  | { t: 'match'; matchId: string; size: number; map: MapId; deck?: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean; round: number; rounds: number; mode: GameMode; seeker?: string }
+  | { t: 'match'; matchId: string; size: number; map: MapId; deck?: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean; round: number; rounds: number; mode: GameMode; seeker?: string; insider?: boolean }
   /** The server rejected an optimistic trap placement. */
   | { t: 'placementRejected'; id: string; reason: string }
   /** Current Saboteur trap energy after a placement or pickup. */
@@ -225,6 +231,8 @@ export type ServerMsg =
       last: boolean;
       /** Hide & Seek rounds: who was caught, who escaped, who just survived. */
       hunt?: { caught: string[]; escaped: string[]; survived: string[] };
+      /** Inside Job rounds: who the Insider was, how it ended for them, who was taken out. */
+      inside?: { insider: string; name: string; caught: 'shot' | 'vote' | null; out: string[] };
     }
   /** The match is over: everyone's totals, and what happened each round. */
   | { t: 'final'; standings: Standing[]; rounds: { map: MapId; saboteur: string; winner: 'runners' | 'saboteur' | 'none' }[]; mode?: GameMode; awards?: Award[] }
@@ -330,6 +338,21 @@ export type ServerMsg =
   | { t: 'revived'; id: string; name: string; by: string; byName: string }
   /** A teammate pinged a spot. */
   | { t: 'ping'; x: number; y: number; label: string; id: string; name: string; deck: string }
+  /** Inside Job: who's out, my meetings left; then the meeting's steps. A meeting freezes play. */
+  | { t: 'inside'; out: string[]; meetingsLeft: number }
+  | { t: 'meeting'; by: string; byName: string; ms: number; alive: { id: string; name: string; character: CharacterId }[]; voted: string[] }
+  | { t: 'meetVoted'; id: string }
+  | { t: 'meetChat'; id: string; name: string; text: string }
+  /** The vote's outcome: who's out (null: nobody), whether they were the Insider, who voted what. */
+  | { t: 'meetResult'; ejected: string | null; name: string; insider: boolean; votes: [string, string | null][]; ms: number }
+  /** Play goes on; `ms` is what's left on the round's clock. */
+  | { t: 'meetingEnd'; ms: number }
+  /** Inside Job: a player is out for the round (shot, or voted out). `insider`: only once known. */
+  | { t: 'eliminated'; id: string; name: string; how: 'shot' | 'vote'; insider?: boolean }
+  /** A shot too far away to see: just the bang, from about here. */
+  | { t: 'bang'; x: number; y: number; deck?: MapId }
+  /** Furniture near you was disturbed just now (someone put something in it). */
+  | { t: 'disturbed'; spot: string; ms: number }
   /** Someone in your match left. */
   | { t: 'left'; id: string };
 

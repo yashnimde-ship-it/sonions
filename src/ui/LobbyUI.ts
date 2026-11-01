@@ -4,6 +4,9 @@ import type { Profile } from '../data/profile';
 import type { GameMode } from '../data/hideSeek';
 import type { MapId } from '../data/maps';
 import { HIDE_SEEK_MIN_PLAYERS } from '../data/hideSeek';
+import { INSIDE_JOB_BEST, INSIDE_JOB_MIN_PLAYERS } from '../data/insideJob';
+
+const MODE_NAMES: Record<GameMode, string> = { heist: 'HEIST', hideSeek: 'HIDE & SEEK', insideJob: 'INSIDE JOB' };
 import { ROOM_MAX, ROOM_MIN, type RoomInfo } from '../data/rooms';
 import type { Taken } from '../net/protocol';
 import { iconHtml, type IconName } from './pixelIcons';
@@ -195,7 +198,7 @@ export class LobbyUI {
     }, opts);
     // Which game: a heist, or Hide & Seek on the cruise ship.
     this.modeRow.className = 'mode-row';
-    this.modeRow.innerHTML = `<span class="label">MODE</span><button type="button" data-mode="heist">HEIST</button><button type="button" data-mode="hideSeek">HIDE &amp; SEEK</button><span class="mode-note">Hide &amp; Seek: 3+ players, on the cruise ship</span>`;
+    this.modeRow.innerHTML = `<span class="label">MODE</span><button type="button" data-mode="heist">HEIST</button><button type="button" data-mode="hideSeek">HIDE &amp; SEEK</button><button type="button" data-mode="insideJob">INSIDE JOB</button><span class="mode-note">Hide &amp; Seek: 3+ players, on the cruise ship</span>`;
     this.portalList.before(this.modeRow);
     this.portalList.before(this.sizeRow);
     this.modeRow.addEventListener('click', (e) => {
@@ -327,13 +330,18 @@ export class LobbyUI {
   private renderMode() {
     const hideSeek = this.mode === 'hideSeek';
     for (const b of this.modeRow.querySelectorAll<HTMLButtonElement>('[data-mode]')) b.classList.toggle('on', b.dataset.mode === this.mode);
-    this.partyTitle.closest('section')?.setAttribute('aria-label', hideSeek ? 'Hide & Seek room' : 'Heist room');
+    const inside = this.mode === 'insideJob';
+    this.partyTitle.closest('section')?.setAttribute('aria-label', hideSeek ? 'Hide & Seek room' : inside ? 'Inside Job room' : 'Heist room');
     this.modeRow.querySelector('.mode-note')!.textContent = hideSeek
       ? '3+ players on the cruise ship · smaller crews play Heist'
-      : '2–9 players · set traps, hide diamonds, and escape';
+      : inside
+        ? `${INSIDE_JOB_MIN_PLAYERS}–9 players (best with ${INSIDE_JOB_BEST}+) · one of you is secretly the Insider · guns and meetings`
+        : '2–9 players · set traps, hide diamonds, and escape';
     this.lobbyHint.textContent = hideSeek
       ? 'Hide & Seek aboard the cruise ship needs 3 or more. Smaller crews play Heist.'
-      : 'Share the code. Your crew stands on the lit pad to ready up, then the host starts.';
+      : inside
+        ? `No setup and no Saboteur watching: everyone goes in together, one of you is the Insider. Trust nobody.`
+        : 'Share the code. Your crew stands on the lit pad to ready up, then the host starts.';
   }
 
   private get isHost() {
@@ -424,13 +432,13 @@ export class LobbyUI {
     this.stripSeen = new Map(room.members.map((m) => [m.id, m.id === room.host || m.ready]));
     this.stripCode = room.code;
     this.crewStrip.innerHTML = `<div class="crew-row"><div class="crew-faces">${faces.join('')}</div><span class="crew-count"><span class="label">CREW</span>${room.members.length}/${room.size}</span></div>
-      <div class="crew-foot"><span class="crew-what">${room.mode === 'hideSeek' ? 'HIDE &amp; SEEK' : 'HEIST'} · ${esc(map)}</span><button type="button" class="crowd-btn" data-crowd="1" title="A QR for the audience">CROWD QR</button><button type="button" data-copy="link">COPY LINK</button></div>`;
+      <div class="crew-foot"><span class="crew-what">${esc(MODE_NAMES[room.mode] ?? 'HEIST')} · ${esc(map)}</span><button type="button" class="crowd-btn" data-crowd="1" title="A QR for the audience">CROWD QR</button><button type="button" data-copy="link">COPY LINK</button></div>`;
     // START (host) or READY (everyone else), and what it's waiting for.
     const here = room.members.filter((m) => !m.inGame && !m.offline);
     const waiting = here.filter((m) => m.id !== room.host && !m.ready);
     const me = room.members.find((m) => m.id === myId);
     const canStart = room.status === 'waiting' && here.length >= ROOM_MIN && !waiting.length;
-    const label = room.mode === 'hideSeek' && here.length >= HIDE_SEEK_MIN_PLAYERS ? 'HIDE & SEEK' : 'HEIST';
+    const label = room.mode === 'hideSeek' && here.length >= HIDE_SEEK_MIN_PLAYERS ? 'HIDE & SEEK' : room.mode === 'insideJob' && here.length >= INSIDE_JOB_MIN_PLAYERS ? 'INSIDE JOB' : 'HEIST';
     // One button, four clear states: waiting (amber), go (green, pulsing), ready (teal), in game.
     let button: string;
     let state: 'wait' | 'go' | 'ready';
@@ -484,7 +492,7 @@ export class LobbyUI {
   /** What the garage door's sign offers, or null when there's nothing to do there. */
   get carPrompt(): string | null {
     if (!this.room || this.room.status === 'playing') return null;
-    if (this.isHost) return this.room.mode === 'hideSeek' ? 'START HIDE & SEEK' : 'START THE HEIST';
+    if (this.isHost) return this.room.mode === 'hideSeek' ? 'START HIDE & SEEK' : this.room.mode === 'insideJob' ? 'START THE INSIDE JOB' : 'START THE HEIST';
     return this.room.members.find((m) => m.id === this.myId)?.ready ? 'NOT READY' : 'READY UP';
   }
 

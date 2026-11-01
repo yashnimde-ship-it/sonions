@@ -13,6 +13,7 @@ import { CHARACTERS, type CharacterId } from '../src/config.ts';
 import { ABILITIES, type AbilityId, CHARACTER_INFO, carryCapacity, CLONE, DOOR_JAM_DURATION_MS, EMP, DIAMOND_SCAN, MEND, RECHARGE_BANKS } from '../src/data/characters.ts';
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_MS, SEARCH_REACH, spotCenter, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
+import { INSIDE, INSIDE_JOB_MIN_PLAYERS, INSIDE_SCORE, MEETING_LINES } from '../src/data/insideJob.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
 import { trapKind, type PlacedTrap, type TrapKindId } from '../src/data/trapKinds.ts';
@@ -32,6 +33,7 @@ const LIVE_TIME = Number(process.env.HEIST_SECONDS ?? 0) * 1000 || LIVE_MS;
 // The same playtest overrides shorten Hide & Seek's count and hunt.
 const HIDE_TIME = Number(process.env.SETUP_SECONDS ?? 0) * 1000 || HIDE_MS;
 const HUNT_TIME = Number(process.env.HEIST_SECONDS ?? 0) * 1000 || HUNT_MS;
+const INSIDE_TIME = Number(process.env.HEIST_SECONDS ?? 0) * 1000 || INSIDE.liveMs;
 const TILE = 16;
 
 const readJson = (rel: string) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
@@ -144,12 +146,233 @@ const doorsOf = (matchId: string) => decksIn(matchId).flatMap((d) => mapData[d].
 /** The crew's map: the most-picked one; a tie goes to whoever got there first (crew is in arrival order). */
 /** The crew's mode: Hide & Seek if most of them want it and there are enough of them. */
 function crewMode(crew: Client[]): GameMode {
-  const want = crew.filter((c) => c.modePref === 'hideSeek').length;
-  return crew.length >= HIDE_SEEK_MIN_PLAYERS && want * 2 > crew.length ? 'hideSeek' : 'heist';
+  const want = (mode: GameMode) => crew.filter((c) => c.modePref === mode).length * 2 > crew.length;
+  if (crew.length >= INSIDE_JOB_MIN_PLAYERS && want('insideJob')) return 'insideJob';
+  return crew.length >= HIDE_SEEK_MIN_PLAYERS && want('hideSeek') ? 'hideSeek' : 'heist';
 }
 /** Per match: a heist or Hide & Seek. */
 const matchModes = new Map<string, GameMode>();
 const isHideSeek = (matchId: string) => matchModes.get(matchId) === 'hideSeek';
+
+/**
+ * Inside Job: there is no Saboteur outside the house (the saboteurs map holds NO_SABOTEUR, so
+ * every heist rule treats the whole crew as Runners). The Insider is one of them, known only
+ * to the server and to themselves.
+ */
+const NO_SABOTEUR = '-';
+interface Meeting {
+  by: string;
+  endsAt: number;
+  /** Voter -> who they voted out (null: skip). */
+  votes: Map<string, string | null>;
+  /** After the vote: the result shows until then; then play goes on. */
+  revealAt: number | null;
+  /** The round's clock as it was when the meeting was called. */
+  clockLeft: number;
+  ejected: string | null;
+}
+interface Inside {
+  insider: string;
+  ammo: Map<string, number>;
+  /** The Insider's next shot is ready at. */
+  insiderReady: number;
+  /** Out for the round: shot or voted out. */
+  out: Set<string>;
+  meetingsLeft: Map<string, number>;
+  meeting: Meeting | null;
+  lastChat: Map<string, number>;
+  /** How the Insider was caught (and by whom, for a shot; who voted them out, for a vote). */
+  caught: { how: 'shot' | 'vote'; by: string[] } | null;
+  /** Thieves the Insider took out; shots a thief fired into another thief. */
+  kills: number;
+  wrongShots: Map<string, number>;
+}
+const insides = new Map<string, Inside>();
+/** Who has been the Insider so far in each match (a new one each round while there are any). */
+const pastInsiders = new Map<string, Set<string>>();
+const isOut = (matchId: string, id: string) => !!insides.get(matchId)?.out.has(id);
+const meetingOn = (matchId: string) => !!insides.get(matchId)?.meeting;
+/** Thieves still in the round (not the Insider, not out). */
+const thievesLeft = (matchId: string, ij: Inside) => [...(matches.get(matchId) ?? [])].filter((id) => id !== ij.insider && !ij.out.has(id)).length;
+const toMatch = (matchId: string, msg: ServerMsg) => {
+  for (const id of matches.get(matchId) ?? []) {
+    const m = clients.get(id);
+    if (m) send(m, msg);
+  }
+};
+
+function insideStatus(c: Client, ij: Inside): ServerMsg {
+  return { t: 'inside', out: [...ij.out], meetingsLeft: ij.meetingsLeft.get(c.state.id) ?? 0 };
+}
+function sendInsideGun(c: Client, ij: Inside) {
+  const insider = ij.insider === c.state.id;
+  send(c, { t: 'gun', ammo: ij.ammo.get(c.state.id) ?? 0, reloadMs: insider ? Math.max(0, ij.insiderReady - Date.now()) : 0, hp: c.state.hp });
+}
+
+/** Out for the round: down where they stand, their diamonds dropped. */
+function eliminate(matchId: string, ij: Inside, victim: Client, how: 'shot' | 'vote', by: string[]) {
+  if (ij.out.has(victim.state.id)) return;
+  ij.out.add(victim.state.id);
+  victim.state.hp = 0;
+  victim.koUntil = 0;
+  dropDiamond(matchId, victim.state.id, victim.state.x, victim.state.y, true);
+  dropKeycard(matchId, victim);
+  const wasInsider = victim.state.id === ij.insider;
+  if (wasInsider) ij.caught = { how, by };
+  else if (how === 'shot' && by[0] === ij.insider) ij.kills++;
+  else if (how === 'shot') ij.wrongShots.set(by[0], (ij.wrongShots.get(by[0]) ?? 0) + 1);
+  // A vote says what they were; a shot only says so when it caught the Insider (that ends it).
+  toMatch(matchId, { t: 'eliminated', id: victim.state.id, name: victim.state.name, how, ...(how === 'vote' || wasInsider ? { insider: wasInsider } : {}) });
+}
+
+/** The Insider is out: the thieves win. One thief or none left: the Insider wins. */
+function insideWinCheck(matchId: string) {
+  const ij = insides.get(matchId);
+  if (!ij || ij.meeting || phases.get(matchId)?.phase !== 'live') return;
+  // With three or more thieves the Insider needs all but one; a smaller crew, all of them.
+  if (ij.out.has(ij.insider)) finish(matchId, 'runners');
+  else if (thievesLeft(matchId, ij) <= (ij.ammo.size - 1 >= 3 ? 1 : 0)) finish(matchId, 'saboteur');
+}
+
+/** Anyone can fire their gun: the first wall or body along the line takes the bullet. */
+function insideShoot(c: Client, tx: number, ty: number) {
+  const matchId = c.room;
+  const ij = insides.get(matchId);
+  const now = Date.now();
+  if (!ij || ij.meeting || phases.get(matchId)?.phase !== 'live' || ij.out.has(c.state.id) || c.state.hp <= 0) return;
+  const insider = c.state.id === ij.insider;
+  const ammo = ij.ammo.get(c.state.id) ?? 0;
+  if (ammo <= 0 || (insider && now < ij.insiderReady)) return sendInsideGun(c, ij);
+  ij.ammo.set(c.state.id, ammo - 1);
+  if (insider) ij.insiderReady = now + INSIDE.insiderCooldownMs;
+  const deck = deckOf(c);
+  const x0 = c.state.x;
+  const y0 = c.state.y - 14;
+  const len = Math.hypot(tx - x0, ty - y0) || 1;
+  const dx = (tx - x0) / len;
+  const dy = (ty - y0) / len;
+  const targets = [...(matches.get(matchId) ?? [])]
+    .map((id) => clients.get(id))
+    .filter((t): t is Client => !!t && t !== c && !ij.out.has(t.state.id) && deckOf(t) === deck);
+  let hit: Client | null = null;
+  let d = 6;
+  for (; d < INSIDE.range; d += 2) {
+    const x = x0 + dx * d;
+    const y = y0 + dy * d;
+    if (blocksShot(matchId, deck, x, y)) break;
+    hit = targets.find((t) => Math.hypot(t.state.x - x, t.state.y - 12 - y) <= INSIDE.hitRadius) ?? null;
+    if (hit) break;
+  }
+  const end = hit ? { x: hit.state.x, y: hit.state.y - 12 } : { x: x0 + dx * d, y: y0 + dy * d };
+  // Close by you see who fired; further off you only hear a bang from about there.
+  for (const id of matches.get(matchId) ?? []) {
+    const m = clients.get(id);
+    if (!m || deckOf(m) !== deck) continue;
+    const dist = Math.hypot(m.state.x - x0, m.state.y - y0);
+    if (m === c || m === hit || ij.out.has(id) || dist <= INSIDE.seeRange) send(m, { t: 'gunshot', x0, y0, x1: end.x, y1: end.y, hit: hit?.state.id ?? null, deck });
+    else if (dist <= INSIDE.hearRange) send(m, { t: 'bang', x: Math.round(x0 + (Math.random() - 0.5) * 80), y: Math.round(y0 + (Math.random() - 0.5) * 80), deck });
+  }
+  if (hit) {
+    eliminate(matchId, ij, hit, 'shot', [c.state.id]);
+    insideWinCheck(matchId);
+  }
+  sendInsideGun(c, ij);
+}
+
+/** Someone with a meeting left calls it: everything stops, the crew talks and votes. */
+function callMeeting(c: Client) {
+  const matchId = c.room;
+  const ij = insides.get(matchId);
+  const round = phases.get(matchId);
+  const now = Date.now();
+  if (!ij || !round || ij.meeting || round.phase !== 'live' || ij.out.has(c.state.id) || c.state.hp <= 0 || (ij.meetingsLeft.get(c.state.id) ?? 0) <= 0) return;
+  ij.meetingsLeft.set(c.state.id, (ij.meetingsLeft.get(c.state.id) ?? 1) - 1);
+  const clockLeft = Math.max(0, round.endsAt - now);
+  ij.meeting = { by: c.state.id, endsAt: now + INSIDE.meetingMs, votes: new Map(), revealAt: null, clockLeft, ejected: null };
+  // The clock waits (well past the meeting; it's set again when play goes on).
+  round.endsAt = now + clockLeft + INSIDE.meetingMs + INSIDE.revealMs + 60_000;
+  for (const id of matches.get(matchId) ?? []) {
+    const m = clients.get(id);
+    if (!m) continue;
+    m.state.moving = false;
+    send(m, meetingMsg(matchId, ij));
+    send(m, insideStatus(m, ij));
+  }
+  console.log(`${matchId}: ${c.state.name} called a meeting`);
+}
+
+function meetingMsg(matchId: string, ij: Inside): ServerMsg {
+  const mt = ij.meeting!;
+  const alive = [...(matches.get(matchId) ?? [])].map((id) => clients.get(id)).filter((m): m is Client => !!m && !ij.out.has(m.state.id));
+  return { t: 'meeting', by: mt.by, byName: clients.get(mt.by)?.state.name ?? '?', ms: Math.max(0, mt.endsAt - Date.now()), alive: alive.map((m) => ({ id: m.state.id, name: m.state.name, character: m.state.character })), voted: [...mt.votes.keys()] };
+}
+
+const meetingVoters = (matchId: string, ij: Inside) => [...(matches.get(matchId) ?? [])].filter((id) => !ij.out.has(id) && !clients.get(id)?.state.offline);
+
+/** Votes are in (or time's up): most votes is out, unless skip has as many or it's a tie. */
+function closeVote(matchId: string, ij: Inside) {
+  const mt = ij.meeting;
+  if (!mt || mt.revealAt !== null) return;
+  const tally = new Map<string | null, number>();
+  for (const t of mt.votes.values()) tally.set(t, (tally.get(t) ?? 0) + 1);
+  let top: string | null = null;
+  let best = 0;
+  let tie = false;
+  for (const [t, n] of tally) {
+    if (t === null) continue;
+    if (n > best) [top, best, tie] = [t, n, false];
+    else if (n === best) tie = true;
+  }
+  const ejected = top && !tie && best > (tally.get(null) ?? 0) ? clients.get(top) ?? null : null;
+  mt.revealAt = Date.now() + INSIDE.revealMs;
+  mt.ejected = ejected?.state.id ?? null;
+  const votes = [...mt.votes] as [string, string | null][];
+  toMatch(matchId, { t: 'meetResult', ejected: mt.ejected, name: ejected?.state.name ?? '', insider: mt.ejected === ij.insider, votes, ms: INSIDE.revealMs });
+  if (ejected) eliminate(matchId, ij, ejected, 'vote', votes.filter(([, t]) => t === ejected.state.id).map(([v]) => v));
+}
+
+/** The result has been seen: play goes on with the clock where it was (or the round is decided). */
+function endMeeting(matchId: string, ij: Inside) {
+  const mt = ij.meeting;
+  const round = phases.get(matchId);
+  if (!mt || !round) return;
+  ij.meeting = null;
+  round.endsAt = Date.now() + mt.clockLeft;
+  toMatch(matchId, { t: 'meetingEnd', ms: mt.clockLeft });
+  insideWinCheck(matchId);
+}
+
+function tickInside(matchId: string, now: number) {
+  const ij = insides.get(matchId);
+  const mt = ij?.meeting;
+  if (!ij || !mt) return;
+  if (mt.revealAt === null && (now >= mt.endsAt || meetingVoters(matchId, ij).every((id) => mt.votes.has(id)))) closeVote(matchId, ij);
+  else if (mt.revealAt !== null && now >= mt.revealAt) endMeeting(matchId, ij);
+}
+
+/** The Insider hides the diamond they carry in a piece of furniture: anyone close notices. */
+function stash(c: Client, spotId: string) {
+  const matchId = c.room;
+  const ij = insides.get(matchId);
+  const vault = vaults.get(matchId);
+  if (!ij || !vault || ij.meeting || ij.insider !== c.state.id || phases.get(matchId)?.phase !== 'live' || c.state.hp <= 0) return;
+  const d = carriedBy(vault, c.state.id)[0];
+  const spot = spotsOf(matchId).find((x) => x.id === spotId && spotDeck(matchId, x) === deckOf(c));
+  if (!d || !spot || distToSpot(spot, c.state.x, c.state.y) > SEARCH_REACH + 10) return;
+  if (vault.diamonds.some((x) => x.place.at === 'spot' && x.place.spot === spot.id)) return;
+  const key = keycards.get(matchId);
+  if (key && inVault(matchId, key, spot.id)) return;
+  d.place = { at: 'spot', spot: spot.id };
+  // It looks unsearched again: whoever searched it before would have to look twice.
+  vault.searched.delete(spot.id);
+  c.state.carrying = !!carrierOf(vault, c.state.id);
+  const at = spotCenter(spot);
+  for (const id of matches.get(matchId) ?? []) {
+    const m = clients.get(id);
+    if (m && deckOf(m) === deckOf(c) && (m === c || Math.hypot(m.state.x - at.x, m.state.y - at.y) <= INSIDE.disturbSeeRange)) send(m, { t: 'disturbed', spot: spot.id, ms: INSIDE.disturbedMs });
+  }
+  sendDiamonds(matchId);
+}
 
 /** Per Hide & Seek round: the Seeker's gun and health, each Hider's health, who's caught. */
 interface Hunt {
@@ -585,6 +808,11 @@ function leaveMatch(c: Client) {
     return finishSeries(matchId);
   }
   if (saboteurs.get(matchId) === c.state.id && phases.get(matchId)?.phase !== 'over') finish(matchId, 'none');
+  const ij = insides.get(matchId);
+  if (ij && phases.get(matchId)?.phase !== 'over') {
+    if (ij.insider === c.state.id) finish(matchId, 'none');
+    else insideWinCheck(matchId);
+  }
 }
 
 function endMatch(matchId: string) {
@@ -622,6 +850,8 @@ function endMatch(matchId: string) {
   series.delete(matchId);
   matchModes.delete(matchId);
   hunts.delete(matchId);
+  insides.delete(matchId);
+  pastInsiders.delete(matchId);
 }
 
 function startMatch(size: number, crew: Client[]): string {
@@ -631,7 +861,7 @@ function startMatch(size: number, crew: Client[]): string {
   // Saboteur turns in a random order; the map starts with the crew's pick and then rotates.
   // Hide & Seek always plays on the cruise ship.
   const order = crew.map((c) => c.state.id).sort(() => Math.random() - 0.5);
-  const rounds = roundsFor(crew.length);
+  const rounds = mode === 'insideJob' ? Math.min(INSIDE.rounds, crew.length) : roundsFor(crew.length);
   const maps = Array.from({ length: rounds }, (_, i) => (mode === 'hideSeek' ? HIDE_SEEK_MAP : MAP_IDS[(MAP_IDS.indexOf(first) + i) % MAP_IDS.length]));
   matchModes.set(matchId, mode);
   matches.set(matchId, new Set(crew.map((c) => c.state.id)));
@@ -651,7 +881,7 @@ function startMatch(size: number, crew: Client[]): string {
     c.portalSince.clear();
     c.portalChoice = null;
   }
-  console.log(`${matchId}: ${size}-player ${mode === 'hideSeek' ? 'Hide & Seek' : 'heist'} match, ${rounds} rounds, with ${crew.map((c) => c.state.name).join(', ')}`);
+  console.log(`${matchId}: ${size}-player ${mode === 'hideSeek' ? 'Hide & Seek' : mode === 'insideJob' ? 'Inside Job' : 'heist'} match, ${rounds} rounds, with ${crew.map((c) => c.state.name).join(', ')}`);
   startRound(matchId);
   return matchId;
 }
@@ -661,11 +891,22 @@ function startRound(matchId: string) {
   const sr = series.get(matchId);
   const ids = [...(matches.get(matchId) ?? [])];
   if (!sr || !ids.length) return;
+  const inside = matchModes.get(matchId) === 'insideJob';
   // The next Saboteur still in the match (anyone who left loses their turn).
-  while (sr.round < sr.rounds && !ids.includes(sr.order[sr.round])) sr.round++;
+  // Inside Job: a new secret Insider each round, from those who haven't been it yet.
+  while (!inside && sr.round < sr.rounds && !ids.includes(sr.order[sr.round])) sr.round++;
   if (sr.round >= sr.rounds || ids.length < 2) return finishSeries(matchId);
   const map = sr.maps[sr.round];
-  const saboteur = sr.order[sr.round];
+  let insider = '';
+  if (inside) {
+    const past = pastInsiders.get(matchId) ?? new Set<string>();
+    pastInsiders.set(matchId, past);
+    const fresh = ids.filter((id) => !past.has(id));
+    const pool = fresh.length ? fresh : ids;
+    insider = pool[Math.floor(Math.random() * pool.length)];
+    past.add(insider);
+  }
+  const saboteur = inside ? NO_SABOTEUR : sr.order[sr.round];
   const crew = ids.map((id) => clients.get(id)).filter((c): c is Client => !!c);
   const spawn = mapData[map].spawn;
   matchMaps.set(matchId, map);
@@ -695,19 +936,23 @@ function startRound(matchId: string) {
     seeker.x = SEEKER_START.x * TILE;
     seeker.y = SEEKER_START.y * TILE;
   }
-  const sabCharacter = clients.get(saboteur)!.state.character;
+  const sabCharacter = clients.get(saboteur)?.state.character ?? crew[0].state.character;
   const size = matchSizes.get(matchId) ?? crew.length;
   const maxEnergy = saboteurMaxEnergy(sabCharacter, size);
   saboteurEnergy.set(matchId, { current: maxEnergy, max: maxEnergy });
   placedTraps.set(matchId, new Map());
   // The diamonds start in the Saboteur's hands; they hide them during setup.
+  // (Inside Job: the house hides them when the doors open.)
   const total = hs ? 0 : diamondCount(size);
   const kinds = diamondKinds(total);
   const gems: Diamond[] = kinds.map((kind, i) => ({ id: `d${i + 1}`, place: { at: 'tray' }, ...(kind ? { kind } : {}) }));
-  vaults.set(matchId, { diamonds: gems, searched: new Set(), banked: 0, need: diamondsToWin(gems.reduce((n, d) => n + valueOf(d), 0)), winner: null, hits: 0, glints: new Map(), lastSearch: new Map() });
+  const worth = gems.reduce((n, d) => n + valueOf(d), 0);
+  vaults.set(matchId, { diamonds: gems, searched: new Set(), banked: 0, need: inside ? Math.ceil(worth * INSIDE.needShare) : diamondsToWin(worth), winner: null, hits: 0, glints: new Map(), lastSearch: new Map() });
+  if (inside) insides.set(matchId, { insider, ammo: new Map(ids.map((id) => [id, id === insider ? INSIDE.insiderAmmo : INSIDE.thiefAmmo])), insiderReady: 0, out: new Set(), meetingsLeft: new Map(ids.map((id) => [id, INSIDE.meetingsEach])), meeting: null, lastChat: new Map(), caught: null, kills: 0, wrongShots: new Map() });
+  else insides.delete(matchId);
   keycards.delete(matchId);
   if (!hs) setupVault(matchId, map, vaults.get(matchId)!);
-  phases.set(matchId, { phase: 'setup', endsAt: Date.now() + (hs ? HIDE_TIME : SETUP_TIME) });
+  phases.set(matchId, { phase: 'setup', endsAt: Date.now() + (hs ? HIDE_TIME : inside ? INSIDE.briefMs : SETUP_TIME) });
   trapState.set(matchId, new Map(MAPS[map].traps.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
   overclockReadyAt.set(matchId, 0);
@@ -743,8 +988,13 @@ function startRound(matchId: string) {
     for (const msg of shieldMsgs(matchId)) send(c, msg);
     sendCharges(c);
     for (const [id, e] of roundEnergy) send(c, { t: 'velvet', by: id, on: false, energy: e.energy, ago: VELVET.refillDelayMs });
+    const ij = insides.get(matchId);
+    if (ij) {
+      send(c, insideStatus(c, ij));
+      sendInsideGun(c, ij);
+    }
   }
-  console.log(`${matchId}: round ${sr.round + 1}/${sr.rounds} on ${MAPS[map].name}, Saboteur ${clients.get(saboteur)?.state.name}`);
+  console.log(`${matchId}: round ${sr.round + 1}/${sr.rounds} on ${MAPS[map].name}, ${inside ? 'Insider' : 'Saboteur'} ${clients.get(inside ? insider : saboteur)?.state.name}`);
 }
 
 /** Everyone's totals, best first. */
@@ -803,6 +1053,7 @@ function matchMsg(c: Client, matchId: string, resume = false): ServerMsg {
     mode: matchModes.get(matchId) ?? 'heist',
     // Hide & Seek's Seeker is no secret: everyone knows the owner has the gun.
     ...(isHideSeek(matchId) && saboteur ? { seeker: saboteur } : {}),
+    ...(insides.get(matchId)?.insider === c.state.id ? { insider: true } : {}),
   };
 }
 
@@ -892,6 +1143,7 @@ function tick() {
       if (victim?.room !== matchId || now >= (state.activeUntil ?? 0) || now < state.jammedUntil) continue;
       if (inLaser(trap, victim.state.x, victim.state.y)) laserHit(matchId, trap, victim, pending.fromX, pending.fromY);
     }
+    tickInside(matchId, now);
     // The round's clock: setup, then the heist, then time's up.
     const p = phases.get(matchId);
     if (p && p.phase !== 'over' && now >= p.endsAt) {
@@ -915,8 +1167,11 @@ function tick() {
 }
 setInterval(tick, 1000 / NET_HZ);
 
+const MEETING_MSGS = new Set<ClientMsg['t']>(['meetVote', 'meetSay', 'leave', 'leaveRoom', 'browse', 'roomReady']);
+
 function handle(c: Client, msg: ClientMsg) {
   const s = c.state;
+  if (meetingOn(c.room) && !MEETING_MSGS.has(msg.t)) return;
   switch (msg.t) {
     case 'hello': {
       if (s.name) break;
@@ -1072,6 +1327,7 @@ function handle(c: Client, msg: ClientMsg) {
         if (!round || round.phase === 'over') break;
         if (isHideSeek(c.room) ? round.phase === 'setup' && seekerHere : round.phase !== 'live' || saboteurs.get(c.room) === s.id) break;
       }
+      if (isOut(c.room, s.id)) break;
       // Just after Beacon's warp, a move from where she was is stale (sent before she knew).
       if (c.warpedAt && Date.now() - c.warpedAt < 600 && Math.hypot(msg.x - s.x, msg.y - s.y) > 48) break;
       s.x = msg.x;
@@ -1550,7 +1806,7 @@ function handle(c: Client, msg: ClientMsg) {
       const sab = saboteurs.get(c.room);
       const target = clients.get(msg.target);
       const now = Date.now();
-      if (!sab || isHideSeek(c.room) || sab === s.id || !target || target.room !== c.room || msg.target === sab || target === c) break;
+      if (!sab || isHideSeek(c.room) || sab === s.id || !target || target.room !== c.room || msg.target === sab || target === c || isOut(c.room, msg.target)) break;
       if (phases.get(c.room)?.phase !== 'live' || s.hp <= 0 || target.state.hp > 0 || deckOf(target) !== deckOf(c)) break;
       if (Math.hypot(target.state.x - s.x, target.state.y - s.y) > REVIVE_REACH + 24 || now - (c.lastRevive ?? 0) < REVIVE_MS - 500) break;
       c.lastRevive = now;
@@ -1599,7 +1855,44 @@ function handle(c: Client, msg: ClientMsg) {
       if (isGameMode(msg.mode)) c.modePref = msg.mode;
       break;
     case 'shoot':
-      if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) shoot(c, msg.x, msg.y);
+      if (!Number.isFinite(msg.x) || !Number.isFinite(msg.y)) break;
+      if (insides.has(c.room)) insideShoot(c, msg.x, msg.y);
+      else shoot(c, msg.x, msg.y);
+      break;
+    case 'callMeeting':
+      callMeeting(c);
+      break;
+    case 'meetVote': {
+      const ij = insides.get(c.room);
+      const mt = ij?.meeting;
+      if (!ij || !mt || mt.revealAt !== null || ij.out.has(s.id) || mt.votes.has(s.id)) break;
+      const target = msg.target === null ? null : typeof msg.target === 'string' && matches.get(c.room)?.has(msg.target) && !ij.out.has(msg.target) ? msg.target : undefined;
+      if (target === undefined) break;
+      mt.votes.set(s.id, target);
+      toMatch(c.room, { t: 'meetVoted', id: s.id });
+      break;
+    }
+    case 'meetSay': {
+      // A quick line (about someone) or a short typed one; ghosts stay quiet.
+      const ij = insides.get(c.room);
+      const now = Date.now();
+      if (!ij?.meeting || ij.meeting.revealAt !== null || ij.out.has(s.id) || now - (ij.lastChat.get(s.id) ?? 0) < INSIDE.chatGapMs) break;
+      let text = '';
+      if (Number.isInteger(msg.line) && msg.line! >= 0 && msg.line! < MEETING_LINES.length) {
+        const about = clients.get(typeof msg.about === 'string' ? msg.about : '');
+        const line = MEETING_LINES[msg.line!];
+        if (line.includes('@') && (!about || !matches.get(c.room)?.has(about.state.id))) break;
+        text = line.replace('@', about?.state.name ?? '');
+      } else if (typeof msg.text === 'string') {
+        text = msg.text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, INSIDE.chatMax);
+      }
+      if (!text) break;
+      ij.lastChat.set(s.id, now);
+      toMatch(c.room, { t: 'meetChat', id: s.id, name: s.name, text });
+      break;
+    }
+    case 'stash':
+      if (typeof msg.spot === 'string') stash(c, msg.spot);
       break;
     case 'hideIn': {
       // A Hider (still in play) gets into a free hiding place within reach.
@@ -2552,13 +2845,14 @@ function goLive(matchId: string) {
     if (free) d.place = { at: 'spot', spot: free.id };
   }
   round.phase = 'live';
-  round.endsAt = Date.now() + (isHideSeek(matchId) ? HUNT_TIME : LIVE_TIME);
+  const liveMs = isHideSeek(matchId) ? HUNT_TIME : insides.has(matchId) ? INSIDE_TIME : LIVE_TIME;
+  round.endsAt = Date.now() + liveMs;
   // Placed traps stay secret from the Runners, except Fake Loot chests, which are meant to be seen.
   const decoys = [...(placedTraps.get(matchId)?.values() ?? [])].filter((t) => t.kind === 'fakeLoot');
   for (const id of matches.get(matchId) ?? []) {
     const member = clients.get(id);
     if (!member) continue;
-    send(member, { t: 'phase', phase: 'live', ms: isHideSeek(matchId) ? HUNT_TIME : LIVE_TIME });
+    send(member, { t: 'phase', phase: 'live', ms: liveMs });
     if (id !== saboteurs.get(matchId)) for (const trap of decoys) send(member, { t: 'place', trap });
   }
   sendDiamonds(matchId);
@@ -2582,12 +2876,24 @@ function finish(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
   vault.winner = winner;
   round.phase = 'over';
   round.endsAt = Date.now();
+  const ij = insides.get(matchId);
+  if (ij) ij.meeting = null;
   if (sr) {
-    const sab = saboteurs.get(matchId);
+    const sab = ij?.insider ?? saboteurs.get(matchId);
     const hunt = hunts.get(matchId);
     for (const [id, p] of sr.players) {
       let pts = 0;
-      if (hunt) {
+      const bankedBy = vault.diamonds.filter((d) => d.place.at === 'banked' && d.place.by === id).reduce((n, d) => n + valueOf(d), 0);
+      if (ij) {
+        // Inside Job: the Insider scores thieves taken out, diamonds left in the house and the win;
+        // a thief scores banking, the win, catching the Insider, and loses for shooting a thief.
+        const unbanked = Math.max(0, vault.diamonds.reduce((n, d) => n + valueOf(d), 0) - vault.banked);
+        if (id === ij.insider) pts = ij.kills * INSIDE_SCORE.elimination + (winner === 'saboteur' ? unbanked * INSIDE_SCORE.unbanked + INSIDE_SCORE.insiderWin : 0);
+        else if (matches.get(matchId)?.has(id) && winner !== 'none') {
+          pts = bankedBy * SCORE.bank + (winner === 'runners' ? INSIDE_SCORE.thievesWin : 0) + (ij.wrongShots.get(id) ?? 0) * INSIDE_SCORE.wrongShot;
+          if (ij.caught?.by.includes(id)) pts += ij.caught.how === 'shot' ? INSIDE_SCORE.shotInsider : INSIDE_SCORE.votedInsider;
+        }
+      } else if (hunt) {
         // Hide & Seek: the Seeker scores catches and the win; Hiders score for surviving.
         if (id === sab) pts = hunt.caught.size * HS_SCORE.catch + (winner === 'saboteur' ? HS_SCORE.seekerWin : 0);
         else if (matches.get(matchId)?.has(id) && !hunt.caught.has(id) && winner !== 'none') pts = HS_SCORE.survive + (hunt.escaped.has(id) ? HS_SCORE.escape : 0);
@@ -2629,7 +2935,7 @@ function finish(matchId: string, winner: 'runners' | 'saboteur' | 'none') {
 function resultMsg(matchId: string): ServerMsg {
   const vault = vaults.get(matchId)!;
   const sr = series.get(matchId);
-  const sab = saboteurs.get(matchId);
+  const sab = insides.get(matchId)?.insider ?? saboteurs.get(matchId);
   const r = sr?.round ?? 0;
   return {
     t: 'result',
@@ -2646,7 +2952,14 @@ function resultMsg(matchId: string): ServerMsg {
     nextMs: Math.max(0, (sr?.nextAt ?? Date.now()) - Date.now()),
     last: !sr || r + 1 >= sr.rounds,
     ...(hunts.has(matchId) ? { hunt: huntSummary(matchId) } : {}),
+    ...(insides.has(matchId) ? { inside: insideSummary(matchId) } : {}),
   };
+}
+
+function insideSummary(matchId: string) {
+  const ij = insides.get(matchId)!;
+  const name = (id: string) => series.get(matchId)?.players.get(id)?.name ?? clients.get(id)?.state.name ?? '?';
+  return { insider: ij.insider, name: name(ij.insider), caught: ij.caught?.how ?? null, out: [...ij.out].filter((id) => id !== ij.insider).map(name) };
 }
 
 /** Each Runner hears which hiding spots near them hold a diamond (so only those can glint). */
@@ -2658,7 +2971,8 @@ function sendGlints(matchId: string) {
   for (const id of matches.get(matchId) ?? []) {
     const c = clients.get(id);
     if (!c || id === saboteurs.get(matchId)) continue;
-    const near = spots.filter((sp) => distToSpot(sp, c.state.x, c.state.y) <= GLINT_REACH).map((sp) => sp.id);
+    const reach = insides.get(matchId)?.insider === id ? GLINT_REACH * INSIDE.insiderGlint : GLINT_REACH;
+    const near = spots.filter((sp) => distToSpot(sp, c.state.x, c.state.y) <= reach).map((sp) => sp.id);
     const key = near.join(',');
     if (vault.glints.get(id) === key) continue;
     vault.glints.set(id, key);
@@ -2720,6 +3034,12 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
       if (hunt.hidden.has(known.state.id)) send(known, { t: 'hidden', spot: hunt.hidden.get(known.state.id)!, x: known.state.x, y: known.state.y });
       if (saboteurs.get(known.room) === known.state.id) sendGun(known, hunt);
     }
+    const ij = insides.get(known.room);
+    if (ij) {
+      send(known, insideStatus(known, ij));
+      sendInsideGun(known, ij);
+      if (ij.meeting && ij.meeting.revealAt === null) send(known, meetingMsg(known.room, ij));
+    }
     if (sr?.done) send(known, { t: 'final', standings: standings(known.room), rounds: sr.history, mode: matchModes.get(known.room) });
     vaults.get(known.room)?.glints.delete(known.state.id);
   }
@@ -2763,7 +3083,7 @@ function newCode() {
 function createParty(host: Client, isPrivate: boolean, size: number, mode: GameMode, map: MapId): Party {
   const party: Party = { code: newCode(), host: host.state.id, isPrivate, size: Math.max(ROOM_MIN, Math.min(ROOM_MAX, Math.round(Number(size) || QUICK_PLAY_SIZE))), map, mode, members: [], ready: new Set(), matchId: null, startTimer: null, watchers: new Set() };
   parties.set(party.code, party);
-  console.log(`room ${party.code} created by ${host.state.name} (${isPrivate ? 'private' : 'public'}, ${party.size} players)`);
+  console.log(`room ${party.code} created by ${host.state.name} (${isPrivate ? 'private' : 'public'}, ${party.size} players, ${mode})`);
   return party;
 }
 
@@ -2923,7 +3243,7 @@ function runChaos(party: Party, matchId: string, now: number) {
   const round = phases.get(matchId);
   let st = chaosState.get(matchId);
   const roundNo = series.get(matchId)?.round ?? 0;
-  if (!round || round.phase !== 'live' || isHideSeek(matchId)) {
+  if (!round || round.phase !== 'live' || isHideSeek(matchId) || meetingOn(matchId)) {
     // Between rounds (or not a heist): close any open vote.
     if (st?.vote) {
       st.vote = null;

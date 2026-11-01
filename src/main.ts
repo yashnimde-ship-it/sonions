@@ -1,3 +1,5 @@
+import { INSIDE } from './data/insideJob';
+import { MeetingUI } from './ui/MeetingUI';
 import { CHAOS_CARDS } from './data/chaos';
 import { CrowdUI, showCrowdQr } from './ui/CrowdUI';
 import '@fontsource/press-start-2p';
@@ -238,6 +240,25 @@ async function boot() {
   const seekerId = () => seekerNow;
   /** Hide & Seek: is this round one? (The Saboteur is then the Seeker, with a body and a gun.) */
   const hideSeek = () => modeNow === 'hideSeek';
+  /**
+   * Inside Job: a heist where one of the crew is secretly the Insider. Everyone has a gun (F or
+   * right-click fires at the mouse; on touch, tap to aim then tap again), and one meeting (M).
+   */
+  const insideJob = () => modeNow === 'insideJob';
+  let insiderMe = false;
+  /** Out for the round (shot or voted out), and my meetings left. */
+  const outNow = new Set<string>();
+  let meetingsLeft = 0;
+  /** While a meeting holds the round's clock: what was left on it. */
+  let meetingClock = 0;
+  /** Furniture I saw disturbed (until when), and shots I only heard. */
+  const disturbed = new Map<string, number>();
+  const bangs: { x: number; y: number; at: number; deck?: MapId }[] = [];
+  /** Touch: a first tap aims (until then), a second one fires. */
+  let aimUntil = 0;
+  let aimAt: [number, number] = [0, 0];
+  const meetingUI = new MeetingUI();
+  const amOut = () => outNow.has(myId);
   try {
     const saved = localStorage.getItem('bandit-map');
     if (isMapId(saved)) myMap = saved;
@@ -323,6 +344,21 @@ async function boot() {
     }
     if (button === 0 && spectated()) {
       spectateNext();
+      return;
+    }
+    if (scene === 'match' && insideJob()) {
+      if ((button === 2 || (button === 0 && e.pointerType === 'touch')) && !result) {
+        const [x, y] = toWorld(e);
+        if (e.pointerType === 'touch' && performance.now() > aimUntil) {
+          if (!canShoot()) return;
+          aimUntil = performance.now() + 2000;
+          aimAt = [x, y];
+          toast('Tap again to shoot');
+          return;
+        }
+        aimUntil = 0;
+        fireAt(x, y);
+      }
       return;
     }
     if (scene === 'match' && hideSeek()) {
@@ -897,7 +933,13 @@ async function boot() {
     me.resetPose();
     modeNow = msg.mode ?? 'heist';
     seekerNow = msg.seeker ?? '';
+    insiderMe = !!msg.insider;
+    meetingUI.close();
     if (!msg.resume) {
+      outNow.clear();
+      disturbed.clear();
+      bangs.length = 0;
+      meetingsLeft = 0;
       gun = { ammo: GUN.ammo, reloadEnd: 0, hp: SEEKER_HP };
       Object.assign(hsReady, { flare: 0, scan: 0, boost: 0 });
       flaresLeft = FLARE.uses;
@@ -1012,19 +1054,27 @@ async function boot() {
     document.getElementById('ability')!.style.display = hs ? 'none' : '';
     const help = document.querySelector<HTMLElement>('#hud .help');
     if (help) help.textContent = hs ? (msg.role === 'saboteur' ? 'WASD move · Click shoot · R reload · Q Flare · C Heartbeat · E search · Esc safehouse' : 'WASD move · Shift sprint · E hide · Q Boost · G ping · Esc safehouse') : msg.role === 'saboteur' ? 'WASD move · Shift sprint · E action · Q ability · Esc safehouse' : 'WASD move · Shift sprint · E action · Q ability · G ping · H pass diamond · Esc safehouse';
-    const role = hs
+    const ij = msg.mode === 'insideJob';
+    if (ij && help) help.textContent = 'WASD move · Shift sprint · E action · F / right-click shoot · M meeting · Q ability · H pass · Esc safehouse';
+    const role = ij
+      ? insiderMe ? '<b class="saboteur">THE INSIDER</b>' : '<b class="runner">A THIEF</b>'
+      : hs
       ? msg.role === 'saboteur' ? '<b class="saboteur">THE SEEKER</b>' : '<b class="runner">A HIDER</b>'
       : msg.role === 'saboteur' ? '<b class="saboteur">THE SABOTEUR</b>' : '<b class="runner">A RUNNER</b>';
-    const job = hs
+    const job = ij
+      ? insiderMe
+        ? `Nobody knows. Act like a thief, keep the diamonds in the house: take them and stash them elsewhere (hold E on furniture). You have ${INSIDE.insiderAmmo} bullets, one every ${INSIDE.insiderCooldownMs / 1000}s.`
+        : `One of the crew is the Insider. Bank the diamonds, or find them out: you have 1 bullet (F) and 1 meeting (M). Shoot a fellow thief and it costs you.`
+      : hs
       ? msg.role === 'saboteur'
         ? 'Count to 30 in the Staff Room while they hide. Then hunt them in the dark: aim with the mouse, click to shoot.'
         : 'The lights are out and the owner has a gun. Hide! Survive the hunt; at the end the main entrance opens.'
       : msg.role === 'saboteur'
         ? `Hide the diamonds and place up to ${trapSlots(msg.size)} traps. Confirm when your setup is ready.`
         : 'The Saboteur is rigging the house. Get ready to go in.';
-    banner.innerHTML = `<span class="kicker">ROUND ${msg.round} OF ${msg.rounds} · ${hs ? 'HIDE &amp; SEEK · ' : ''}${MAPS[mapId].name}</span><span class="role-line">You are ${role}</span><span class="crew-list">${job}</span>`;
+    banner.innerHTML = `<span class="kicker">ROUND ${msg.round} OF ${msg.rounds} · ${hs ? 'HIDE &amp; SEEK · ' : ij ? 'INSIDE JOB · ' : ''}${MAPS[mapId].name}</span><span class="role-line">You are ${role}</span><span class="crew-list">${job}</span>`;
     // The role lands hard: the vand slams in, the role word stamps down, a sting plays.
-    const sab = msg.role === 'saboteur';
+    const sab = msg.role === 'saboteur' || insiderMe;
     banner.className = `match-banner reveal ${sab ? 'is-sab' : 'is-runner'}`;
     if (!msg.resume) {
       trapImpact(sab ? '#ff4d6a' : '#2ec4b6', 0, 700);
@@ -1401,8 +1451,9 @@ async function boot() {
         result = msg;
         diamonds = msg.diamonds;
         for (const t of msg.placed) placed.set(t.id, t);
-        resultScreen.show(msg, myId, !!match?.saboteur);
-        if (msg.winner !== 'none') sfx((msg.winner === 'saboteur') === !!match?.saboteur ? 'win' : 'lose');
+        meetingUI.close();
+        resultScreen.show(msg, myId, !!match?.saboteur || insiderMe);
+        if (msg.winner !== 'none') sfx((msg.winner === 'saboteur') === (!!match?.saboteur || insiderMe) ? 'win' : 'lose');
         frameCamera(true);
         break;
       }
@@ -1423,7 +1474,9 @@ async function boot() {
         searching = null;
         if (phase === 'live') {
           banner.className = 'match-banner';
-          banner.innerHTML = hideSeek()
+          banner.innerHTML = insideJob()
+            ? `<span class="kicker">THE DOORS ARE OPEN</span><span>TRUST NOBODY</span><span class="crew-list">${insiderMe ? 'Blend in. Take diamonds and stash them where nobody looked.' : `Bank ${needN || 'the'} diamonds at the GETAWAY. F shoots, M calls a meeting.`}</span>`
+            : hideSeek()
             ? `<span class="kicker">READY OR NOT</span><span>THE HUNT IS ON</span><span class="crew-list">${match?.saboteur ? 'Find them in the dark. Q Flare, C Heartbeat, click to shoot.' : 'Stay hidden, or run. The main entrance opens near the end.'}</span>`
             : `<span class="kicker">SETUP OVER</span><span>THE HEIST IS ON</span><span class="crew-list">${match?.saboteur ? 'Watch them. Right-click an unused trap to move it once.' : `Search the furniture (hold E), find the diamonds, bank ${needN || 'them'} at the GETAWAY.`}</span>`;
           banner.hidden = false;
@@ -1645,6 +1698,78 @@ async function boot() {
       case 'trapFired':
         trapFired(msg);
         break;
+      case 'inside':
+        outNow.clear();
+        for (const id of msg.out) outNow.add(id);
+        meetingsLeft = msg.meetingsLeft;
+        if (amOut() && !knockedOut) {
+          beginKnockout();
+          hp = 0;
+          hud.setHealth(0);
+        }
+        break;
+      case 'meeting':
+        meetingClock = Math.max(0, phaseEndsAt - performance.now());
+        searching = null;
+        reviving = null;
+        closePingWheel();
+        hud.hideMessage();
+        sfx('alert');
+        trapImpact('#ff4d6a', 0, 600);
+        meetingUI.start(msg, myId, amOut());
+        break;
+      case 'meetVoted':
+        meetingUI.markVoted(msg.id);
+        sfx('click');
+        break;
+      case 'meetChat':
+        meetingUI.say(msg.id, msg.name, msg.text);
+        if (msg.id !== myId) sfx('tap');
+        break;
+      case 'meetResult':
+        meetingUI.result(msg);
+        sfx(msg.ejected ? (msg.insider ? 'banked' : 'down') : 'empty');
+        break;
+      case 'meetingEnd':
+        meetingUI.close();
+        phaseEndsAt = performance.now() + msg.ms;
+        toast('Back to it');
+        break;
+      case 'eliminated': {
+        outNow.add(msg.id);
+        const got = msg.id === myId ? me : remotes.get(msg.id)?.bandit;
+        if (got && msg.how === 'shot') {
+          particles.burst(got.x, got.y - 14, '#ff4d6a', 30, 2.2);
+          particles.pop(got.x, got.y - 36, 'DOWN!', '#ff4d6a');
+        }
+        if (msg.id === myId) {
+          if (!knockedOut) beginKnockout();
+          hp = 0;
+          hud.setHealth(0);
+          trapNotice = msg.how === 'shot' ? 'SHOT! You\'re out for the round' : 'VOTED OUT! You\'re out for the round';
+          trapNoticeUntil = performance.now() + 3000;
+        }
+        const who = msg.id === myId ? 'You' : esc(msg.name);
+        const what = msg.how === 'shot' ? 'went down' : 'were voted out';
+        const role = msg.insider === undefined ? 'nobody saw who fired' : msg.insider ? 'THE INSIDER!' : 'not the Insider';
+        hud.alert(`<span class="who">${who}</span> <b>${msg.id === myId || msg.how === 'vote' ? what : 'went down'}</b><span class="where">${role}</span>`, msg.insider ? 'good' : 'danger');
+        if (msg.how === 'shot') sfx('caught');
+        break;
+      }
+      case 'bang':
+        bangs.push({ x: msg.x, y: msg.y, at: performance.now(), deck: msg.deck });
+        sfx('gunshot');
+        hud.alert('<span class="who">BANG!</span> <b>A shot, somewhere close</b><span class="where">who fired?</span>', 'danger');
+        break;
+      case 'disturbed': {
+        disturbed.set(msg.spot, performance.now() + msg.ms);
+        searched.delete(msg.spot);
+        const sp = allSpots.find((x) => x.id === msg.spot);
+        if (!insiderMe) hud.alert(`<span class="who">Hm?</span> <b>The ${esc(sp?.name ?? 'furniture')} was just disturbed</b><span class="where">someone put something in it</span>`, 'danger');
+        else toast(`Stashed in the ${sp?.name ?? 'furniture'}`);
+        sfx('empty');
+        break;
+      }
       case 'gunshot':
         shots.push({ x0: msg.x0, y0: msg.y0, x1: msg.x1, y1: msg.y1, hit: !!msg.hit, at: performance.now() });
         if (here(msg.deck)) particles.burst(msg.x1, msg.y1, msg.hit ? '#ff4d6a' : '#ffe39a', msg.hit ? 16 : 6, msg.hit ? 1.8 : 0.9);
@@ -1903,6 +2028,8 @@ async function boot() {
   lobby.onReady = (ready) => net.send({ t: 'roomReady', ready });
   lobby.onRoomSettings = (settings) => net.send({ t: 'roomSettings', ...settings });
   lobby.onKick = (id) => net.send({ t: 'kick', id });
+  meetingUI.onVote = (target) => net.send({ t: 'meetVote', target });
+  meetingUI.onSay = (m) => net.send({ t: 'meetSay', ...m });
   lobby.onCrowdQr = () => {
     if (myRoom) showCrowdQr(myRoom.code);
   };
@@ -2627,7 +2754,7 @@ async function boot() {
     }
     if (performance.now() > bannerUntil) banner.hidden = true;
     const left = Math.max(0, phaseEndsAt - performance.now());
-    const stage = hideSeek() ? (phase === 'setup' ? 'HIDE' : left <= ESCAPE_MS ? 'ESCAPE' : 'HUNT') : phase === 'setup' ? 'SETUP' : 'HEIST';
+    const stage = hideSeek() ? (phase === 'setup' ? 'HIDE' : left <= ESCAPE_MS ? 'ESCAPE' : 'HUNT') : insideJob() ? (phase === 'setup' ? 'DOORS OPEN' : 'INSIDE JOB') : phase === 'setup' ? 'SETUP' : 'HEIST';
     hud.setTimer(phase === 'over' ? null : `R${roundNo}/${roundsTotal} · ${stage}`, left, phase === 'live');
     // The last 30 seconds of a round: a warning, then a tick every second for the final 10.
     const secsLeft = Math.ceil(left / 1000);
@@ -2663,6 +2790,19 @@ async function boot() {
     lastTickSec = secs;
     resultScreen.tick();
     updateObjective();
+    renderInsideBar();
+    if (meetingUI.open) {
+      meetingUI.tick();
+      phaseEndsAt = performance.now() + meetingClock;
+      me.update({ dx: 0, dy: 0, sprint: false }, estate);
+      hud.setPrompt(null);
+      frameCamera(false);
+      return;
+    }
+    if (insideJob() && phase === 'live' && !result && !hud.messageOpen) {
+      if (keyPressed('KeyF')) fireAt(mouseX, mouseY);
+      if (keyPressed('KeyM')) callMeeting();
+    }
     const sab = !!match?.saboteur;
     const hs = hideSeek();
     if (hs && sab && phase === 'live' && keyPressed('KeyR')) net.send({ t: 'reload' });
@@ -2721,7 +2861,7 @@ async function boot() {
     }
     if (knockedOut) {
       // No word from the server (it shouldn't happen): the longest wait.
-      if (respawnAt === Infinity && performance.now() - koStartedAt > 3000) respawnAt = koStartedAt + KO_RESPAWN.maxMs;
+      if (respawnAt === Infinity && !amOut() && performance.now() - koStartedAt > 3000) respawnAt = koStartedAt + KO_RESPAWN.maxMs;
       if (performance.now() >= respawnAt) respawnRunner();
       else {
         me.update({ dx: 0, dy: 0, sprint: false }, estate);
@@ -2784,14 +2924,16 @@ async function boot() {
       .map((g) => (g.kind ? `${g.state} ${g.kind}` : g.state));
     const sab = !!match?.saboteur;
     const text =
-      phase === 'setup'
+      phase === 'setup' && insideJob()
+        ? 'The doors open in a moment. Trust nobody.'
+        : phase === 'setup'
         ? sab
           ? `Hide all ${totalN}, then guard them with traps`
           : `The Saboteur is hiding ${totalN} diamonds...`
         : sab
           ? `Stop them banking ${needN} pts · ${bankedN}/${needN} banked`
           : `Bank ${needN} pts at the GETAWAY · ${bankedN}/${needN} · red = 3`;
-    hud.setObjective(sab ? 'GUARD THE DIAMONDS' : 'FIND THE DIAMONDS', gems, text, vaultLine(sab));
+    hud.setObjective(insideJob() ? (insiderMe ? 'KEEP THE DIAMONDS' : 'FIND THE DIAMONDS') : sab ? 'GUARD THE DIAMONDS' : 'FIND THE DIAMONDS', gems, text, vaultLine(sab));
   }
 
   /** Footsteps: one every STEP_PX walked, on whatever the floor is in that room. Mine are a
@@ -2938,7 +3080,7 @@ async function boot() {
       return me.x >= x0 - 6 && me.x <= x1 + 6 && me.y >= y0 - 6 && me.y <= y1 + 6;
     });
     // A knocked-out teammate right here: holding E gets them back up (before anything else).
-    const downed = knockedOut || phase !== 'live' ? undefined : [...remotes.values()].find((o) => o.state.hp === 0 && here(o.state.deck) && Math.hypot(o.bandit.x - me.x, o.bandit.y - me.y) <= REVIVE_REACH);
+    const downed = knockedOut || phase !== 'live' ? undefined : [...remotes.values()].find((o) => o.state.hp === 0 && !outNow.has(o.state.id) && here(o.state.deck) && Math.hypot(o.bandit.x - me.x, o.bandit.y - me.y) <= REVIVE_REACH);
     if (downed) {
       prompt = `Hold E  Revive ${downed.state.name}`;
       if (input.actionHeld && !me.stunned) {
@@ -2982,6 +3124,16 @@ async function boot() {
     } else if (dropped) {
       prompt = 'E  Grab the dropped diamond';
       if (input.action) net.send({ t: 'pickup', id: dropped.id });
+    } else if (spot && insiderMe && holding && phase === 'live') {
+      prompt = `Hold E  Stash the diamond in the ${spot.name}`;
+      if (input.actionHeld && !me.stunned) {
+        if (searching?.spot !== spot.id) searching = { spot: spot.id, since: now, ticks: 0 };
+        else if (now - searching.since >= INSIDE.stashMs) {
+          net.send({ t: 'stash', spot: spot.id });
+          searching = null;
+        }
+        prompt = `Stashing in the ${spot.name}...`;
+      }
     } else if (spot) {
       if (handsFull()) prompt = myDiamonds().length > 1 ? 'Hands full: bank your diamonds at the GETAWAY' : 'Hands full: bank your diamond at the GETAWAY';
       else if (searched.has(spot.id)) prompt = `${spot.name}: already searched, empty`;
@@ -3243,12 +3395,13 @@ async function boot() {
     if (hideSeek() && !result && !isGhost(myId)) drawDarkness(camX, camY);
     if (!result) drawNoises(camX, camY);
     if (hideSeek() && !result) drawHideSeekMarks(camX, camY);
+    if (insideJob() && !result) drawInsideMarks(camX, camY);
     if (settings.values.nameTags && !result) drawNameTags(camX, camY);
     if (!result) drawPings(camX, camY);
     drawKnockout();
     drawTrapMinimap();
     drawPingWheel();
-    if (phase === 'setup' && !match?.saboteur && !hideSeek()) drawBlueprint(camX, camY);
+    if (phase === 'setup' && !match?.saboteur && !hideSeek() && !insideJob()) drawBlueprint(camX, camY);
     if (match?.saboteur && !result) drawTrapMarkers(camX, camY);
     if (match?.saboteur && phase === 'setup') drawSpotLabel(camX, camY);
     if (performance.now() < blackoutUntil && !match?.saboteur) drawBlackout(camX, camY);
@@ -3745,6 +3898,70 @@ async function boot() {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.restore();
     }
+  }
+
+  /** Inside Job: rings where a shot was heard, dust over disturbed furniture, tracers, my aim. */
+  function drawInsideMarks(camX: number, camY: number) {
+    const now = performance.now();
+    ctx.save();
+    for (let i = bangs.length - 1; i >= 0; i--) {
+      const b = bangs[i];
+      const t = (now - b.at) / 1400;
+      if (t >= 1) {
+        bangs.splice(i, 1);
+        continue;
+      }
+      if (!here(b.deck)) continue;
+      ctx.globalAlpha = 1 - t;
+      ctx.strokeStyle = '#ff4d6a';
+      ctx.lineWidth = 3 * dpr;
+      ctx.beginPath();
+      ctx.arc((b.x - camX) * scale, (b.y - camY) * scale, (10 + t * 60) * scale, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    for (const [id, until] of disturbed) {
+      if (now > until) {
+        disturbed.delete(id);
+        continue;
+      }
+      const sp = allSpots.find((x) => x.id === id);
+      if (!sp || !here(spotDecks.get(id))) continue;
+      const [x0, y0, x1] = [sp.rect[0] * ART_TILE, sp.rect[1] * ART_TILE, (sp.rect[2] + 1) * ART_TILE];
+      ctx.globalAlpha = Math.min(1, (until - now) / 4000) * 0.85;
+      ctx.fillStyle = '#d8c9a8';
+      for (let k = 0; k < 7; k++) {
+        const px = x0 + ((k * 37 + Math.floor(now / 90) * 13) % Math.max(1, x1 - x0));
+        const py = y0 - 4 - ((now / 30 + k * 11) % 14);
+        ctx.fillRect((px - camX) * scale, (py - camY) * scale, 2 * scale, 2 * scale);
+      }
+    }
+    ctx.restore();
+    drawShots(camX, camY);
+    // My aim: a line to the mouse while I have a bullet (on touch, the spot I tapped).
+    if (!canShoot() || phase !== 'live' || meetingUI.open) return;
+    const touchAim = now < aimUntil;
+    if (touch.enabled && !touchAim) return;
+    const [tx, ty] = touchAim ? aimAt : [mouseX, mouseY];
+    const x0 = me.x;
+    const y0 = me.y - 14;
+    const len = Math.hypot(tx - x0, ty - y0) || 1;
+    const reach = Math.min(len, INSIDE.range);
+    const ex = x0 + ((tx - x0) / len) * reach;
+    const ey = y0 + ((ty - y0) / len) * reach;
+    ctx.save();
+    ctx.globalAlpha = touchAim ? 0.9 : 0.35;
+    ctx.strokeStyle = insiderMe ? '#ff4d6a' : '#ffd25a';
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.beginPath();
+    ctx.moveTo((x0 - camX) * scale, (y0 - camY) * scale);
+    ctx.lineTo((ex - camX) * scale, (ey - camY) * scale);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc((ex - camX) * scale, (ey - camY) * scale, 5 * dpr, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   /** Bullet tracers and the flash at the muzzle. */
@@ -5888,6 +6105,49 @@ async function boot() {
     ctx.fillText(text, sx, sy - size * 0.35);
   }
 
+  /** Inside Job: can I fire right now (a bullet, not reloading, up and about)? */
+  function canShoot() {
+    return insideJob() && phase === 'live' && !result && !knockedOut && !amOut() && gun.ammo > 0 && performance.now() >= gun.reloadEnd;
+  }
+
+  function fireAt(x: number, y: number) {
+    if (!canShoot()) {
+      sfx('click');
+      if (insideJob() && !amOut() && !knockedOut) toast(gun.ammo <= 0 ? 'No bullets left' : `Next bullet in ${Math.ceil((gun.reloadEnd - performance.now()) / 1000)}s`);
+      return;
+    }
+    net.send({ t: 'shoot', x, y });
+  }
+
+  function callMeeting() {
+    if (amOut() || knockedOut) return toast("You're down: you can't call a meeting");
+    if (meetingsLeft <= 0) return toast('You already used your meeting');
+    net.send({ t: 'callMeeting' });
+  }
+
+  /** Inside Job's strip under the timer: my role, my bullets, my meeting. */
+  const insideEl = document.createElement('div');
+  insideEl.id = 'inside-bar';
+  insideEl.hidden = true;
+  document.getElementById('hud')!.append(insideEl);
+  insideEl.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('[data-meeting]')) callMeeting();
+    if ((e.target as HTMLElement).closest('[data-fire]')) toast(touch.enabled ? 'Tap where to shoot, then tap again' : 'Aim with the mouse: F or right-click shoots');
+  });
+  let insideHtml = '';
+  function renderInsideBar() {
+    let html = '';
+    if (scene === 'match' && insideJob() && phase !== 'over' && !result) {
+      const wait = Math.max(0, gun.reloadEnd - performance.now());
+      const bullets = amOut() ? 'OUT' : wait > 0 && gun.ammo > 0 ? `${gun.ammo} · ${Math.ceil(wait / 1000)}s` : `${gun.ammo}`;
+      html = `<span class="role ${insiderMe ? 'insider' : 'thief'}">${insiderMe ? 'INSIDER' : 'THIEF'}</span>`
+        + `<button type="button" data-fire class="${gun.ammo > 0 && !amOut() ? '' : 'spent'}">🔫 ${bullets} <small>${touch.enabled ? 'TAP×2' : 'F'}</small></button>`
+        + `<button type="button" data-meeting class="${meetingsLeft > 0 && !amOut() && phase === 'live' ? '' : 'spent'}">📢 MEETING ${meetingsLeft} <small>${touch.enabled ? '' : 'M'}</small></button>`;
+    }
+    insideEl.hidden = !html;
+    if (html !== insideHtml) insideEl.innerHTML = insideHtml = html;
+  }
+
   /** Teammates I can watch while knocked out: Runners still up, on my deck, in a steady order. */
   function spectateTargets() {
     return [...remotes].filter(([, r]) => !r.state.offline && r.state.hp > 0 && here(r.state.deck)).map(([id]) => id).sort();
@@ -5921,7 +6181,7 @@ async function boot() {
     const total = timed ? Math.max(1, respawnAt - koStartedAt) : 1;
     const watch = spectated();
     const head = watch ? `SPECTATING ${watch.name.toUpperCase()}` : 'KNOCKED OUT';
-    const time = timed ? `RESPAWN IN ${Math.ceil(left / 1000)}` : 'RESPAWN SOON';
+    const time = amOut() ? 'OUT FOR THE ROUND' : timed ? `RESPAWN IN ${Math.ceil(left / 1000)}` : 'RESPAWN SOON';
     const hint = watch ? (watch.count > 1 ? 'LEFT CLICK: NEXT TEAMMATE' : 'THE ONLY TEAMMATE UP') : 'NO TEAMMATE UP TO WATCH';
     const why = koReasons.length ? koReasons.join(' \u00b7 ').toUpperCase() : timed ? 'FIRST KNOCKOUT THIS ROUND' : '';
     const cx = canvas.width / 2;

@@ -180,7 +180,7 @@ export class TitleUI {
             const busy = r.status === 'playing' ? 'PLAYING' : r.count >= r.size ? 'FULL' : '';
             return `<button type="button" class="room-row" data-code="${r.code}"${busy ? ' disabled' : ''}>
               <span class="code">${r.code}</span>
-              <span class="who">${esc(r.hostName)}'s room<br><span class="what">${r.mode === 'hideSeek' ? 'HIDE &amp; SEEK' : esc(this.mapName(r.map))}</span></span>
+              <span class="who">${esc(r.hostName)}'s room<br><span class="what">${r.mode === 'hideSeek' ? 'HIDE &amp; SEEK' : r.mode === 'insideJob' ? `INSIDE JOB · ${esc(this.mapName(r.map))}` : esc(this.mapName(r.map))}</span></span>
               <span class="count">${r.count}/${r.size}</span>
               <span class="state${busy ? ' busy' : ''}">${busy || 'JOIN'}</span>
             </button>`;

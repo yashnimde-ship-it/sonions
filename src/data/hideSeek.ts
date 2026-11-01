@@ -5,8 +5,9 @@
 
 import type { MapId } from './maps.ts'; // .ts: also loaded by the Node server
 
-export type GameMode = 'heist' | 'hideSeek';
-export const isGameMode = (m: unknown): m is GameMode => m === 'heist' || m === 'hideSeek';
+/** Inside Job (src/data/insideJob.ts) is a heist with a secret traitor in the crew. */
+export type GameMode = 'heist' | 'hideSeek' | 'insideJob';
+export const isGameMode = (m: unknown): m is GameMode => m === 'heist' || m === 'hideSeek' || m === 'insideJob';
 
 /** Hide & Seek needs a crowd to be fun: a smaller crew plays a heist instead. */
 export const HIDE_SEEK_MIN_PLAYERS = 3;
