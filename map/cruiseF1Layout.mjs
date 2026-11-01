@@ -18,7 +18,7 @@ export const LABELS = [
   { box: [5.4, 23.7, 12.0, 25.8], from: 'down', span: 1.2 }, // FRONT DECK
   { box: [40.4, 14.9, 43.8, 18.2], from: 'down', span: 1.0 }, // STAIRS TO F2 (left)
   { box: [73.0, 14.9, 76.4, 18.2], from: 'down', span: 1.0 }, // STAIRS TO F2 (right)
-  { box: [54.6, 20.4, 64.0, 22.6], from: 'down', span: 0.8 }, // GRAND BALLROOM
+  { box: [54.6, 20.4, 64.0, 22.6], mirrorY: 18.78 }, // GRAND BALLROOM: on the rug, so mirror its top half (a strip smeared the border)
   { box: [85.6, 19.8, 92.6, 21.7], from: 'down', span: 0.8 }, // LOUNGE & BAR
   { box: [100.2, 21.2, 107.0, 23.4], from: 'down', span: 1.0 }, // SIDE DECK
   { box: [27.4, 36.2, 35.4, 38.1], from: 'up', span: 0.8 }, // PASSENGER CABINS (A)
@@ -53,7 +53,7 @@ export function inside(x, y) {
 export const CLEARED = [
   // Each repeats clean floor from the same plank rows (or columns) nearby, so nothing ghosts.
   { box: [47.5, 18.2, 51.0, 22.3], from: 'left', strip: [51.0, 52.4] }, // ballroom table, west
-  { box: [68.0, 17.0, 72.0, 21.6], from: 'left', strip: [65.0, 67.4] }, // ballroom table, east
+  { box: [67.3, 16.9, 72.0, 21.1], from: 'left', strip: [65.0, 67.3] }, // ballroom table, east (all of its chairs; clear of the table below)
   { box: [89.2, 22.7, 92.4, 26.1], from: 'left', strip: [93.0, 94.8] }, // lounge: a round table and its chairs
   { box: [5.7, 27.6, 7.95, 31.1], from: 'left', strip: [8.0, 9.3] }, // front deck: deck chair
   { box: [9.3, 32.7, 12.1, 36.9], from: 'left', strip: [8.6, 9.2] }, // front deck: deck chair

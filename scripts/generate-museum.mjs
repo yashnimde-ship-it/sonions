@@ -73,9 +73,11 @@ const ref = (() => {
  * Fills a box by repeating (mirrored) the strip of `span` tiles on one side of it. Or, for a
  * prop with clutter right beside it: `strip: [a, b]` repeats a clean strip elsewhere in the same
  * rows (from 'left'/'right', x in tiles) or columns ('up'/'down', y in tiles), so floor planks
- * carry on; `shift: [dx, dy]` copies a clean patch that many tiles away (for tiled floors).
+ * carry on; `shift: [dx, dy]` copies a clean patch that many tiles away (for tiled floors);
+ * `mirrorY: y` copies the reflection across the line y (tiles), for a plaque on a symmetric rug
+ * (repeating a strip there smears the rug's border pattern).
  */
-function repair(img, { box, from, span, strip, shift }) {
+function repair(img, { box, from, span, strip, shift, mirrorY }) {
   const [x0, y0, x1, y1] = box.map(px);
   const s = Math.max(1, px(strip ? strip[1] - strip[0] : span));
   const mirror = (d) => {
@@ -86,7 +88,8 @@ function repair(img, { box, from, span, strip, shift }) {
     for (let x = x0; x < x1; x++) {
       let sx = x;
       let sy = y;
-      if (shift) {
+      if (mirrorY !== undefined) sy = Math.round(2 * mirrorY * TILE) - y - 1;
+      else if (shift) {
         sx = x + px(shift[0]);
         sy = y + px(shift[1]);
       } else if (strip) {
@@ -94,9 +97,10 @@ function repair(img, { box, from, span, strip, shift }) {
         else sy = px(strip[0]) + mirror(y - y0);
       }
       else if (from === 'right') sx = x1 + mirror(x1 - 1 - x);
-      if (!shift && !strip && from === 'left') sx = x0 - 1 - mirror(x - x0);
-      if (!shift && !strip && from === 'down') sy = y1 + mirror(y1 - 1 - y);
-      if (!shift && !strip && from === 'up') sy = y0 - 1 - mirror(y - y0);
+      const plain = !shift && !strip && mirrorY === undefined;
+      if (plain && from === 'left') sx = x0 - 1 - mirror(x - x0);
+      if (plain && from === 'down') sy = y1 + mirror(y1 - 1 - y);
+      if (plain && from === 'up') sy = y0 - 1 - mirror(y - y0);
       const si = (Math.min(img.h - 1, Math.max(0, sy)) * img.w + Math.min(img.w - 1, Math.max(0, sx))) * 3;
       img.rgb.copyWithin((y * img.w + x) * 3, si, si + 3);
     }

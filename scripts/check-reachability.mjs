@@ -14,7 +14,7 @@ const map = JSON.parse(fs.readFileSync(path.resolve(ROOT, process.argv[2] ?? 'pu
 const grid = Buffer.from(map.collision.data, 'base64');
 const { cell, width: CW, height: CH } = map.collision;
 const T = map.tileSize;
-const HIT = { left: -3.5, right: 3.5, top: -3.5, bottom: 0 }; // matches src/config.ts
+const HIT = { left: -4.5, right: 4.5, top: -4.5, bottom: 0 }; // matches src/config.ts
 const STEP = 4;
 
 const solid = (x, y) => {

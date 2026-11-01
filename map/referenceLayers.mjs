@@ -227,25 +227,63 @@ export function doorSprites(ref, floorLayer, slabs = M.DOOR_SLABS) {
   });
 }
 
-/** A closed side door: a wooden leaf filling the gap, seen edge-on, with a brass knob. */
+/**
+ * A closed side door, seen edge-on: a wooden leaf filling the gap, painted to sit with the art
+ * around it: warm wood with grain, light falling across it, two recessed panels with bevels,
+ * brass hinges and a knob.
+ */
 function sideLeaf(w, h) {
-  const WOOD = [124, 76, 42];
-  const LIGHT = [164, 104, 58];
-  const DARK = [62, 36, 20];
-  const KNOB = [232, 184, 70];
+  const DEEP = [40, 22, 12];
+  const DARK = [70, 40, 21];
+  const WOOD = [104, 62, 33];
+  const LIGHT = [142, 90, 50];
+  const HI = [184, 126, 72];
+  const BRASS = [206, 158, 64];
+  const BRASS_HI = [255, 222, 136];
+  const BRASS_LO = [112, 78, 28];
   const out = new Uint8Array(w * h * 4);
   const vertical = h >= w;
-  const len = vertical ? h : w;
-  const thick = vertical ? w : h;
+  const len = vertical ? h : w; // along the wall
+  const thick = vertical ? w : h; // across it
+  const mix = (p, q, t) => p.map((v, k) => v + (q[k] - v) * t);
+  // Steady per-pixel noise (the same every build).
+  const noise = (a, b) => {
+    const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+    return v - Math.floor(v);
+  };
+  const panels = thick >= 7 && len >= 18;
+  const p1 = [Math.round(len * 0.12), Math.round(len * 0.44)];
+  const p2 = [Math.round(len * 0.56), Math.round(len * 0.88)];
+  const pb = [Math.max(2, Math.round(thick * 0.28)), Math.min(thick - 3, Math.round(thick * 0.72))];
+  const inPanel = (a, b) => panels && b >= pb[0] && b <= pb[1] && ((a >= p1[0] && a <= p1[1]) || (a >= p2[0] && a <= p2[1]));
+  const knobA = Math.floor(len / 2);
+  const knobB = thick - 3;
   for (let a = 0; a < len; a++)
     for (let b = 0; b < thick; b++) {
-      let c = WOOD;
-      if (a === 0 || a === len - 1 || b === 0 || b === thick - 1) c = DARK;
-      else if (b === 1) c = LIGHT;
-      else if (a === Math.floor(len / 3) || a === Math.floor((2 * len) / 3)) c = DARK.map((v, k) => Math.round((v + WOOD[k]) / 2));
-      if (b === thick - 2 && Math.abs(a - Math.floor(len / 2)) <= 1 && thick > 3) c = KNOB;
+      // Light from the lit edge (b = 0) across to the shadow edge, plus wood grain along it.
+      const t = thick > 1 ? b / (thick - 1) : 0;
+      let c = mix(LIGHT, DARK, t * 0.85);
+      const grain = (noise(b * 3 + 1, Math.floor(a / 3)) - 0.5) * 16 + Math.sin(a * 0.31 + b * 1.9) * 5;
+      c = c.map((v) => v + grain);
+      if (inPanel(a, b)) {
+        // Recessed panel: darker inside, dark bevel top-left, light bevel bottom-right.
+        const top = a === p1[0] || a === p2[0] || b === pb[0];
+        const bot = a === p1[1] || a === p2[1] || b === pb[1];
+        c = top ? DARK : bot ? HI : mix(c, WOOD, 0.5).map((v) => v - 8);
+      }
+      if (b === 1) c = mix(c, HI, 0.6);
+      if (b === thick - 2) c = mix(c, DEEP, 0.5);
+      if (a === 0 || a === len - 1 || b === 0 || b === thick - 1) c = DEEP;
+      // Brass hinges near both ends on the lit side.
+      if (thick >= 5 && b >= 1 && b <= 2 && (Math.abs(a - Math.round(len * 0.08)) <= 1 || Math.abs(a - Math.round(len * 0.92)) <= 1)) c = b === 1 ? BRASS_HI : BRASS;
+      // The knob: a little brass ball with a highlight and a shadow.
+      if (thick > 4 && Math.abs(a - knobA) <= 1 && Math.abs(b - knobB) <= 1) {
+        c = BRASS;
+        if (a === knobA - 1 && b === knobB - 1) c = BRASS_HI;
+        if (a === knobA + 1 || b === knobB + 1) c = BRASS_LO;
+      }
       const [i, j] = vertical ? [b, a] : [a, b];
-      out.set([...c, 255], (j * w + i) * 4);
+      out.set([...c.map((v) => Math.max(0, Math.min(255, Math.round(v)))), 255], (j * w + i) * 4);
     }
   return out;
 }

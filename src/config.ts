@@ -27,8 +27,9 @@ export const WALK_SPEED = 1.6;
 export const SPRINT_SPEED = 2.6;
 
 // The bandit's feet hitbox, relative to the point between his feet (art pixels).
-// Two-thirds of the old box, matching the smaller characters (more room between furniture).
-export const HITBOX = { left: -3.5, right: 3.5, top: -3.5, bottom: 0 };
+// 9 px wide: just wider than one 8 px collision cell, so a one-cell gap in a wall or between
+// furniture never lets anyone through (a 7 px box slipped into the Estate's vault that way).
+export const HITBOX = { left: -4.5, right: 4.5, top: -4.5, bottom: 0 };
 
 // Camera easing: the fraction of the remaining distance covered each frame.
 export const CAMERA_EASE = 0.18;
