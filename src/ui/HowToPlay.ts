@@ -146,6 +146,8 @@ export class HowToPlay {
     const c = CARDS[this.role];
     const keys = this.touch ? c.touchKeys : c.keys;
     this.root.style.setProperty('--how-color', c.color);
+    // Which side's frame the card wears (teal for the crew, crimson for whoever's against them).
+    this.root.dataset.side = this.role === 'saboteur' || this.role === 'insider' || this.role === 'seeker' ? 'saboteur' : 'runner';
     this.root.innerHTML = `
       <div class="how-card">
         <span class="how-kicker">HOW TO PLAY · YOU ARE</span>
@@ -154,7 +156,7 @@ export class HowToPlay {
         <ol>${c.steps.map(([icon, text], i) => `<li><span class="how-n">${i + 1}</span><span class="how-icon">${icon}</span><span>${text}</span></li>`).join('')}</ol>
         <div class="how-keys">${keys.map(([k, what]) => `<span><kbd>${k}</kbd>${what}</span>`).join('')}</div>
         <button type="button" class="how-go" data-close>GOT IT</button>
-        <span class="how-hint">Press the ? button (top right) to see this again</span>
+        <span class="how-hint">Press the ? button (bottom right) to see this again</span>
       </div>`;
     this.root.hidden = false;
     this.help.classList.add('on');

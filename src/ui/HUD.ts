@@ -14,6 +14,7 @@ export class HUD {
   private objText = document.getElementById('obj-text')!;
   /** A second line under the objective (the vault and its keycard). */
   private objSub = Object.assign(document.createElement('div'), { className: 'obj-sub', hidden: true });
+  private objSteps = Object.assign(document.createElement('ol'), { className: 'obj-steps', hidden: true });
   private lastObjective = '';
   private area = document.getElementById('area')!;
   private prompt = document.getElementById('prompt')!;
@@ -46,16 +47,31 @@ export class HUD {
 
   /** The heist's goal, always on screen: one gem per diamond (banked, carried, dropped, hidden). */
   /** `gems`: each diamond's state class, plus 'red' or 'cursed' when it's special. */
-  setObjective(title: string, gems: string[], text: string, sub = '') {
-    const key = title + gems.join() + text + sub;
+  /** `steps`: the heist mission as a checklist, each with its icon (public/assets/ui/kit/icon-*). */
+  setObjective(title: string, gems: string[], text: string, sub = '', steps: { icon: string; text: string; state: 'done' | 'now' | 'next' }[] = []) {
+    const key = title + gems.join() + text + sub + JSON.stringify(steps);
     if (key === this.lastObjective) return;
     this.lastObjective = key;
     this.objTitle.textContent = title;
     this.objGems.innerHTML = gems.map((g) => `<i class="gem ${g}"></i>`).join('');
     this.objText.textContent = text;
     if (!this.objSub.isConnected) this.objText.after(this.objSub);
+    if (!this.objSteps.isConnected) this.objSub.after(this.objSteps);
     this.objSub.hidden = !sub;
     this.objSub.textContent = sub;
+    this.objSteps.hidden = !steps.length;
+    this.objSteps.replaceChildren(
+      ...steps.map((s) => {
+        const li = document.createElement('li');
+        li.className = `obj-step ${s.state}`;
+        const icon = document.createElement('i');
+        icon.className = `ico ico-${s.icon}`;
+        const label = document.createElement('span');
+        label.textContent = s.text;
+        li.append(icon, label);
+        return li;
+      }),
+    );
   }
 
   /** The Runner's health bar; null hides it (the Saboteur has none). */

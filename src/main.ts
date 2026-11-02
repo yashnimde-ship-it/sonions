@@ -11,11 +11,13 @@ import { CrowdUI, showCrowdQr } from './ui/CrowdUI';
 import '@fontsource/press-start-2p';
 import '@fontsource/cinzel/600.css';
 import '@fontsource/cinzel/700.css';
+import '@fontsource/pixelify-sans/400.css';
+import '@fontsource/pixelify-sans/600.css';
 import { ART_TILE, CHAR_GLOW, CHAR_SCREEN_FRACTION, CHARACTERS, type CharacterId, characterSheet, HITBOX } from './config';
 import { ABILITIES, type AbilityId, ANCHOR_MOVE_HOLD_MS, BURN_ZONE, CHARACTER_INFO, carryCapacity, CLONE, HEAVY_CARRY, MEND, SHOCKWAVE, SIGNAL_DIVIDE, TRACKER_PING } from './data/characters';
 import { WINGMAN_RANGE } from './data/wingman';
 import { abilityArtReady, drawAbilityFrame, preloadAbilityArt } from './systems/AbilityArt';
-import { type CrewVan, crewY, drawDriveIcon, DriveGame, ordinal, preloadDriveArt } from './systems/DriveGame';
+import { type CrewVan, crewY, DriveGame, ordinal, preloadDriveArt } from './systems/DriveGame';
 import { DRIVE, driveLength } from './data/drive';
 import { type Energy, energyAt, VELVET } from './data/velvet';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
@@ -361,6 +363,12 @@ async function boot() {
   const abilities = new AbilitySystem();
   const trapBar = new TrapBar((kind) => selectTrap(selectedTrap?.id === kind.id ? null : kind));
   const setupPanel = new SetupPanel(() => net.send({ t: 'ready' }));
+  // The right-hand column: the secret contract card on top, then (the Saboteur's) setup
+  // checklist and the crew's ETA on the Getaway Drive (renderCrewEta adds it), stacked.
+  const sabColumn = document.createElement('div');
+  sabColumn.id = 'sab-column';
+  document.getElementById('hud')!.append(sabColumn);
+  sabColumn.append(document.getElementById('setup-panel')!);
   /** On-screen controls for phones and tablets. */
   const touch = new TouchControls();
   /** Crowd Chaos: a watch link (?watch=CODE, &screen=1 for the projector) makes this tab a watcher. */
@@ -1686,7 +1694,7 @@ async function boot() {
         setupPanel.show(false);
         searching = null;
         if (phase === 'live') {
-          banner.className = 'match-banner';
+          banner.className = `match-banner ${match?.saboteur ? 'is-sab' : 'is-runner'}`;
           banner.innerHTML = insideJob()
             ? `<span class="kicker">THE DOORS ARE OPEN</span><span>TRUST NOBODY</span><span class="crew-list">${insiderMe ? 'Blend in. Take diamonds and stash them where nobody looked.' : `Bank ${needN || 'the'} diamonds at the GETAWAY. F shoots, M calls a meeting.`}</span>`
             : hideSeek()
@@ -3421,12 +3429,17 @@ async function boot() {
       const crownNote = step === 3 && crown?.place.at === 'floor' ? ' (DROPPED!)' : '';
       const where = [`in the ${mission.terminal.room}`, keycard?.holder ? `keycard: ${keycard.holder === myId ? 'you' : keycard.holderName ?? 'a Runner'}` : keycard?.floor ? 'keycard dropped' : step >= 1 ? 'keycard marked in gold' : '', '', ''];
       const out = cutBox();
-      const lights = out ? `⚡ LIGHTS OUT · fix the fuse box in the ${out.room}\n` : '';
-      const list = lights + MISSION_STEPS.map((m, i) => `${i < step ? '✔' : i === step ? '▶' : '·'} ${i + 1}. ${m.title}${i === step && where[i] ? ` · ${where[i]}` : ''}${i === 2 ? crownNote : ''}`).join('\n');
+      const lights = out ? `⚡ LIGHTS OUT · fix the fuse box in the ${out.room}` : '';
+      const icons = ['terminal', 'keycard', 'crown', 'van'];
+      const steps = MISSION_STEPS.map((m, i) => ({
+        icon: icons[i],
+        text: `${m.title}${i === step && where[i] ? ` · ${where[i]}` : ''}${i === 2 ? crownNote : ''}`,
+        state: i < step ? ('done' as const) : i === step ? ('now' as const) : ('next' as const),
+      }));
       const head = phase === 'setup'
         ? sab ? `Rig the house: the terminal is in the ${mission.terminal.room}` : 'The Saboteur is rigging the house...'
         : sab ? `Stop the mission · step ${Math.min(step + 1, 4)} of 4` : `Mission · step ${Math.min(step + 1, 4)} of 4 · diamonds = points`;
-      hud.setObjective(sab ? 'STOP THE MISSION' : 'THE MISSION', gems, head, list);
+      hud.setObjective(sab ? 'STOP THE MISSION' : 'THE MISSION', gems, head, lights, steps);
       return;
     }
     hud.setObjective(insideJob() ? (insiderMe ? 'KEEP THE DIAMONDS' : 'FIND THE DIAMONDS') : sab ? 'GUARD THE DIAMONDS' : 'FIND THE DIAMONDS', gems, text, vaultLine(sab));
@@ -3944,59 +3957,46 @@ async function boot() {
     if (performance.now() < staticUntil && !match?.saboteur && phase === 'live') drawStatic(camX, camY);
     if (match?.saboteur && !result) drawTrackerArrows(camX, camY);
     if (!result && impactProgress < 1) drawImpactOverlay(impactProgress);
-    if (match?.saboteur && !result) drawCrewEta();
     if (result) drawReveal(camX, camY);
     ctx.restore();
   }
 
-  /** A soft colored vignette fades with the camera shake; the canvas world stays readable. */
   /**
-   * The Saboteur's view of the Getaway Drive (until the whole crew is in): each Runner's van
-   * climbing from the garage to the house up the right of the screen, and about how long it'll be.
+   * The Saboteur's view of the Getaway Drive (until the whole crew is in), in the right-hand
+   * column under the setup checklist: a row per Runner, their van moving along a track from the
+   * garage to the house, and about how long until they're in.
    */
-  function drawCrewEta() {
-    if (!driveInfo || ![...driveCrew.values()].some((v) => !v.arrived)) return;
+  const crewEta = document.createElement('section');
+  crewEta.id = 'crew-eta';
+  crewEta.hidden = true;
+  let crewEtaKey = '';
+  function renderCrewEta() {
+    const show = scene === 'match' && !!match?.saboteur && !result && !!driveInfo && [...driveCrew.values()].some((v) => !v.arrived);
+    crewEta.hidden = !show;
+    if (!show || !driveInfo) return;
+    if (!crewEta.isConnected) sabColumn.append(crewEta);
     const now = performance.now();
     const length = driveLength(driveInfo.setupMs);
-    const u = Math.max(0.6 * dpr, canvas.height / 900);
-    const x = canvas.width - 64 * u;
-    const top = canvas.height * 0.3;
-    const bottom = canvas.height * 0.68;
-    const text = (t: string, tx: number, ty: number, size: number, color: string, align: CanvasTextAlign) => {
-      ctx.font = `${Math.round(size)}px "Press Start 2P", monospace`;
-      ctx.textAlign = align;
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = color;
-      ctx.fillText(t, tx, ty);
-    };
-    ctx.save();
-    ctx.imageSmoothingEnabled = true;
-    ctx.fillStyle = 'rgba(7,8,15,0.8)';
-    ctx.fillRect(x - 210 * u, top - 78 * u, 250 * u, bottom - top + 118 * u);
-    ctx.strokeStyle = 'rgba(46,196,182,0.6)';
-    ctx.lineWidth = 2 * u;
-    ctx.strokeRect(x - 210 * u, top - 78 * u, 250 * u, bottom - top + 118 * u);
-    text('CREW ETA', x - 85 * u, top - 58 * u, 11 * u, '#2ec4b6', 'center');
-    ctx.fillStyle = 'rgba(232,226,255,0.25)';
-    ctx.fillRect(x - 2 * u, top, 4 * u, bottom - top);
-    drawDriveIcon(ctx, 'hud', 1, x, top - 22 * u, 0.15 * u);
-    drawDriveIcon(ctx, 'hud', 7, x, bottom + 18 * u, 0.1 * u);
-    // Labels go from the house down, nudged apart where vans are bunched up.
-    const vans = [...driveCrew.values()].map((v) => ({ v, p: Math.max(0, Math.min(1, crewY(v, length, now) / length)) })).sort((a, b) => b.p - a.p);
-    let lastY = -Infinity;
-    for (const { v, p } of vans) {
-      const vy = bottom - (bottom - top) * p;
-      drawDriveIcon(ctx, 'vans', v.color, x, vy, 0.1 * u);
-      // Each label is two lines (name, ETA): keep them that far apart.
-      const ly = Math.max(vy, lastY + 32 * u);
-      lastY = ly;
-      const eta = v.arrived ? (v.place ? ordinal(v.place) : 'IN') : performance.now() < driveGreenAt ? 'START' : `~${Math.max(1, Math.ceil((length - crewY(v, length, now)) / DRIVE.topSpeed))}s`;
-      text(v.name.slice(0, 9).toUpperCase(), x - 22 * u, ly - 6 * u, 8 * u, '#e8e2ff', 'right');
-      text(eta, x - 22 * u, ly + 8 * u, 9 * u, v.arrived ? '#9be86a' : '#ffd84a', 'right');
+    // The rows are rebuilt only when the crew changes; positions and ETAs update every frame.
+    const key = [...driveCrew.keys()].join();
+    if (key !== crewEtaKey) {
+      crewEtaKey = key;
+      crewEta.innerHTML = `<h3>CREW ETA</h3>${[...driveCrew.values()]
+        .map((v) => `<div class="eta-row"><span class="eta-name">${esc(v.name)}</span><span class="eta-track"><i class="eta-van" style="--van:${v.color}"></i><i class="eta-house"></i></span><span class="eta-time"></span></div>`)
+        .join('')}`;
     }
-    ctx.restore();
+    [...driveCrew.values()].forEach((v, i) => {
+      const row = crewEta.querySelectorAll<HTMLElement>('.eta-row')[i];
+      if (!row) return;
+      const p = Math.max(0, Math.min(1, crewY(v, length, now) / length));
+      row.querySelector<HTMLElement>('.eta-van')!.style.left = `${(p * 100).toFixed(1)}%`;
+      const time = row.querySelector<HTMLElement>('.eta-time')!;
+      time.textContent = v.arrived ? (v.place ? ordinal(v.place) : 'IN') : now < driveGreenAt ? 'START' : `~${Math.max(1, Math.ceil((length - crewY(v, length, now)) / DRIVE.topSpeed))}s`;
+      row.classList.toggle('in', v.arrived);
+    });
   }
 
+  /** A soft colored vignette fades with the camera shake; the canvas world stays readable. */
   function drawImpactOverlay(progress: number) {
     const rgb = impactColor.match(/[\da-f]{2}/gi)?.slice(0, 3).map((part) => parseInt(part, 16)) ?? [255, 69, 87];
     const alpha = Math.sin(Math.max(0, Math.min(1, progress)) * Math.PI) * 0.2;
@@ -5954,7 +5954,7 @@ async function boot() {
       if (!sh.up) continue;
       const r = id === myId ? null : remotes.get(id);
       const b = id === myId ? me : r?.bandit;
-      if (!b || (r && (!here(r.state.deck) || r.state.hp <= 0)) || (id === myId && knockedOut)) continue;
+      if (!b || (r && (!here(r.state.deck) || r.state.hp <= 0)) || (id === myId && knockedOut) || onRoad.has(id)) continue;
       const x = b.x - camX;
       const y = b.y - DRAW_H / 2 - 2 - camY - b.hop;
       // The painted shield: its four pulsing frames on a loop, round her body.
@@ -7444,12 +7444,13 @@ async function boot() {
   const secretEl = document.createElement('div');
   secretEl.id = 'secret-card';
   secretEl.hidden = true;
-  document.getElementById('hud')!.append(secretEl);
+  // Top of the right-hand column (the Saboteur's setup checklist and crew ETA stack under it).
+  sabColumn.prepend(secretEl);
   let secretHtml = '';
   function renderSecretCard() {
     let html = '';
     if (scene === 'match' && !result && match) {
-      if (contract) html += `<div class="contract${contract.done ? ' done' : ''}"><span class="tag">📜 SECRET CONTRACT</span><span class="what">${esc(contract.text)}</span><span class="prog">${contract.done ? '✔ DONE' : `${contract.got}/${contract.need}`} · +${contract.points}</span></div>`;
+      if (contract) html += `<div class="contract${contract.done ? ' done' : ''}"><span class="tag"><i class="ico ico-contract"></i>SECRET CONTRACT</span><span class="what">${esc(contract.text)}</span><span class="prog">${contract.done ? '✔ DONE' : `${contract.got}/${contract.need}`} · +${contract.points}</span></div>`;
       if (grudge?.id) html += `<div class="grudge"><span class="tag">☠ GRUDGE</span><span class="what">${esc(grudge.name)} ${esc(grudge.reason)}${grudge.count > 1 ? ` (×${grudge.count})` : ''}</span><span class="prog">get them back · +200</span></div>`;
     }
     secretEl.hidden = !html;
@@ -7746,8 +7747,9 @@ async function boot() {
       ctx.lineTo(sx, sy + 4 * dpr);
       ctx.fill();
     };
+    // (A Runner still driving over isn't in the house yet: no tag either.)
     const hidden = (id: string) =>
-      inMatch && (hideSeek() ? !!match?.saboteur || id === seekerId() : match?.saboteur ? id === myId : false);
+      inMatch && ((hideSeek() ? !!match?.saboteur || id === seekerId() : match?.saboteur ? id === myId : false) || (phase === 'live' && onRoad.has(id)));
     for (const [id, r] of remotes) if (!hidden(id)) tag(r.bandit, id, r.state.offline ? `${r.state.name} (reconnecting)` : r.state.name, r.state.character, inMatch && r.state.carrying, inMatch ? r.state.hp : MAX_HP);
     if (!hidden(myId)) tag(me, myId, myName, myCharacter, inMatch && !!myDiamond(), inMatch ? hp : MAX_HP);
   }
@@ -7778,6 +7780,7 @@ async function boot() {
     shownHp = hp;
     setHeistMusic(musicIntensity());
     draw();
+    renderCrewEta();
     renderCrowdTicker();
     const [show, buttons, stick] = touchLayout();
     touch.set(show, buttons, stick);

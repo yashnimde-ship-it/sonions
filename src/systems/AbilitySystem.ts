@@ -93,6 +93,8 @@ export class AbilitySystem {
     this.overclock = null;
     this.shiftFrom = null;
     this.root.dataset.role = role;
+    // The ability's painted medallion in the socket (public/assets/ui/kit/, by its id).
+    this.root.style.setProperty('--ability-icon', `url('/assets/ui/kit/icon-${this.ability.id}.png')`);
     this.roleEl.textContent = role === 'runner' ? 'RUNNER' : 'SABOTEUR';
     this.nameEl.textContent = this.ability.name;
   }

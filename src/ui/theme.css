@@ -1,0 +1,1122 @@
+/*
+ * The "Art Deco heist" look (docs/ui-redesign-brief.md): polished brass frames on midnight
+ * lacquer, taken from the maps and the title art. Loaded after style.css, so it restyles what's
+ * there screen by screen. The art is in public/assets/ui/kit/ (scripts/build-ui-art.py).
+ */
+
+:root {
+  --vb-ink: #0b0d16;
+  --vb-lacquer: rgba(20, 26, 46, 0.9);
+  --vb-lacquer-hi: #1f2742;
+  --vb-brass: #c9a253;
+  --vb-brass-hi: #f3d27a;
+  --vb-brass-lo: #7a5a26;
+  --vb-cream: #f2ead8;
+  --vb-muted: #9a9fb8;
+  --vb-runner: #2ec4b6;
+  --vb-saboteur: #e2445c;
+  --vb-loot: #ffd84a;
+  --vb-good: #5fd17a;
+  --vb-danger: #ff4d5e;
+  --vb-head: 'Cinzel', Georgia, serif;
+  --vb-body: 'Pixelify Sans', 'Press Start 2P', monospace;
+  --vb-tag: 'Press Start 2P', monospace;
+  --vb-kit: '/assets/ui/kit';
+}
+
+/* ---------- Shared pieces ---------- */
+
+/*
+ * A brass-framed panel (9-slice: the frame's 64 px corners drawn 24 px wide); the lacquer is a
+ * layer just inside the brass, so the frame's transparent margin doesn't show through.
+ */
+#hud .panel.objective,
+#hud .health,
+#hud .ability-slot,
+#secret-card > div {
+  position: absolute;
+  isolation: isolate;
+  border: 24px solid transparent;
+  border-image: url('/assets/ui/kit/frame.png') 64 / 24px stretch;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.55));
+}
+#hud .panel.objective::before,
+#hud .health::before,
+#hud .ability-slot::before,
+#secret-card > div::before {
+  content: '';
+  position: absolute;
+  inset: -15px;
+  z-index: -1;
+  background: var(--vb-lacquer);
+  border-radius: 3px;
+}
+#secret-card > div {
+  position: relative;
+}
+#hud .ability-slot[data-role='runner'] {
+  border-image-source: url('/assets/ui/kit/frame-runner.png');
+}
+#hud .ability-slot[data-role='saboteur'] {
+  border-image-source: url('/assets/ui/kit/frame-saboteur.png');
+}
+
+/* Icons: <i class="ico ico-heart"></i> and friends. */
+.ico {
+  display: inline-block;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  background: center / contain no-repeat;
+  vertical-align: middle;
+}
+.ico-heart { background-image: url('/assets/ui/kit/icon-heart.png'); }
+.ico-energy { background-image: url('/assets/ui/kit/icon-energy.png'); }
+.ico-timer { background-image: url('/assets/ui/kit/icon-timer.png'); }
+.ico-contract { background-image: url('/assets/ui/kit/icon-contract.png'); }
+.ico-terminal { background-image: url('/assets/ui/kit/icon-terminal.png'); }
+.ico-keycard { background-image: url('/assets/ui/kit/icon-keycard.png'); }
+.ico-vault { background-image: url('/assets/ui/kit/icon-vault.png'); }
+.ico-crown { background-image: url('/assets/ui/kit/icon-crown.png'); }
+.ico-van { background-image: url('/assets/ui/kit/icon-van.png'); }
+.ico-diamond { background-image: url('/assets/ui/kit/icon-diamond.png'); }
+.ico-lock { background-image: url('/assets/ui/kit/icon-lock.png'); }
+
+/* ---------- Heist HUD ---------- */
+
+/* The round's clock: the brass plaque at the top middle. */
+#hud .timer {
+  top: 10px;
+  width: 330px;
+  height: 62px;
+  box-sizing: border-box;
+  padding: 7px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: url('/assets/ui/kit/timer-plaque.png') center / 100% 100% no-repeat;
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.6));
+  font-family: var(--vb-tag);
+  font-size: 13px;
+  color: var(--vb-brass-hi);
+  text-shadow: 0 2px 0 var(--vb-ink);
+}
+#hud .timer[hidden] {
+  display: none;
+}
+#hud .timer.urgent {
+  color: var(--vb-danger);
+}
+
+/* Where I am: a small brass tag under the clock. */
+#hud .area {
+  top: 74px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 30px;
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-radius: 0;
+  border-image: url('/assets/ui/kit/tag.png') 25 40 fill / 15px 24px stretch;
+  background: linear-gradient(var(--vb-lacquer), var(--vb-lacquer)) center / calc(100% - 36px) 60% no-repeat;
+  box-shadow: none;
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--vb-brass-hi);
+  text-shadow: 0 2px 0 var(--vb-ink);
+  white-space: nowrap;
+}
+
+/* The keys: out of the way at the bottom right, readable. */
+#hud .help {
+  top: auto;
+  bottom: 8px;
+  right: 14px;
+  font-family: var(--vb-body);
+  font-size: 13px;
+  color: var(--vb-muted);
+  text-shadow: 0 2px 0 var(--vb-ink);
+}
+
+/* The mission: a title, the diamonds as little gems, a line of status, and the checklist. */
+#hud .panel.objective {
+  top: 10px;
+  left: 10px;
+  min-width: 0;
+  width: min(330px, 34vw);
+  padding: 0 4px 2px;
+  gap: 6px;
+  font-family: var(--vb-body);
+}
+#hud .objective .label {
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  color: var(--vb-brass-hi);
+  text-shadow: 0 2px 0 var(--vb-ink);
+}
+#hud .obj-text {
+  font-family: var(--vb-body);
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--vb-cream);
+}
+#hud .obj-sub {
+  font-family: var(--vb-body);
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--vb-loot);
+  white-space: pre-line;
+}
+#hud .obj-steps {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 6px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: url('/assets/ui/kit/divider.png') top center / 100% 10px no-repeat;
+}
+#hud .obj-steps[hidden] {
+  display: none;
+}
+#hud .obj-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--vb-body);
+  font-size: 14px;
+  line-height: 1.2;
+  color: var(--vb-muted);
+}
+#hud .obj-step .ico {
+  width: 24px;
+  height: 24px;
+  opacity: 0.55;
+  filter: grayscale(0.7);
+}
+#hud .obj-step.now {
+  color: var(--vb-cream);
+  text-shadow: 0 0 8px rgba(243, 210, 122, 0.35);
+}
+#hud .obj-step.now .ico {
+  opacity: 1;
+  filter: drop-shadow(0 0 4px rgba(243, 210, 122, 0.8));
+  animation: vb-step-pulse 1.4s ease-in-out infinite;
+}
+#hud .obj-step.done {
+  color: var(--vb-good);
+  text-decoration: line-through;
+  text-decoration-color: rgba(95, 209, 122, 0.6);
+}
+#hud .obj-step.done .ico {
+  opacity: 0.9;
+  filter: none;
+}
+@keyframes vb-step-pulse {
+  50% { transform: scale(1.15); }
+}
+
+/* The diamonds: painted gems, lit by where each one is. */
+#hud .obj-gems {
+  gap: 2px;
+}
+#hud .obj-gems .gem {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  transform: none;
+  border: 0;
+  box-shadow: none;
+  background: url('/assets/ui/kit/icon-diamond.png') center / contain no-repeat;
+  filter: grayscale(1) brightness(0.45);
+  opacity: 0.8;
+}
+#hud .obj-gems .gem.red {
+  background-image: url('/assets/ui/kit/icon-red-diamond.png');
+}
+#hud .obj-gems .gem.banked { filter: drop-shadow(0 0 3px var(--vb-good)); opacity: 1; }
+#hud .obj-gems .gem.carried,
+#hud .obj-gems .gem.mine { filter: drop-shadow(0 0 4px var(--vb-loot)); opacity: 1; }
+#hud .obj-gems .gem.mine { animation: vb-gem-pulse 0.8s ease-in-out infinite; }
+#hud .obj-gems .gem.floor { filter: drop-shadow(0 0 3px #ffb02e); opacity: 1; }
+#hud .obj-gems .gem.hidden-in { filter: drop-shadow(0 0 3px #7ceaff); opacity: 1; }
+#hud .obj-gems .gem.cursed { filter: hue-rotate(220deg) saturate(1.4); opacity: 0.8; }
+@keyframes vb-gem-pulse {
+  50% { transform: scale(1.25); }
+}
+
+/* Health: a heart and a brass gauge of green glass. */
+#hud .health {
+  left: 10px;
+  bottom: 112px;
+  gap: 10px;
+  padding: 0 4px;
+  font-family: var(--vb-tag);
+  font-size: 12px;
+}
+#hud .health .label {
+  width: 26px;
+  height: 26px;
+  font-size: 0;
+  background: url('/assets/ui/kit/icon-heart.png') center / contain no-repeat;
+}
+#hud .health .bar {
+  width: 170px;
+  height: 14px;
+  border: 2px solid var(--vb-brass);
+  border-radius: 8px;
+  background: var(--vb-ink);
+  box-shadow: inset 0 3px 0 rgba(0, 0, 0, 0.6), 0 0 0 1px var(--vb-brass-lo);
+  overflow: hidden;
+}
+#hud #health-fill.ok { background: linear-gradient(#9cf5b0, #3dbb68 45%, #1f7a43); }
+#hud #health-fill.low { background: linear-gradient(#ffe7a0, #f0b43c 45%, #a8701c); }
+#hud #health-fill.critical { background: linear-gradient(#ffb0b8, #ff4d5e 45%, #a8202f); }
+#hud #health-text {
+  min-width: 34px;
+  color: var(--vb-cream);
+  text-shadow: 0 2px 0 var(--vb-ink);
+}
+
+/* The ability: its medallion set in the brass socket, the Q key on a tab, name beside it. */
+#hud .ability-slot {
+  left: 10px;
+  bottom: 10px;
+  gap: 16px;
+  padding: 2px 10px 2px 6px;
+}
+#hud .ability-icon {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--ability-icon, none) center / 108% no-repeat, radial-gradient(var(--vb-lacquer-hi), var(--vb-ink));
+}
+#hud .ability-cd {
+  background: rgba(8, 10, 20, 0.72);
+}
+/* The socket ring over the medallion (its round hole is the icon's size). */
+#hud .ability-slot::after {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: calc(50% - 41px);
+  width: 82px;
+  height: 82px;
+  background: url('/assets/ui/kit/socket.png') center / contain no-repeat;
+  pointer-events: none;
+}
+#hud .ability-key {
+  position: absolute;
+  left: -14px;
+  bottom: -14px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: linear-gradient(var(--vb-brass-hi), var(--vb-brass) 55%, var(--vb-brass-lo));
+  box-shadow: 0 0 0 2px var(--vb-ink);
+  font-family: var(--vb-tag);
+  font-size: 11px;
+  color: var(--vb-ink);
+}
+#hud .ability-slot.ready .ability-icon {
+  box-shadow: none;
+  animation: none;
+}
+#hud .ability-slot.ready::after {
+  filter: drop-shadow(0 0 6px var(--c));
+  animation: vb-socket-ready 1.2s ease-in-out infinite;
+}
+@keyframes vb-socket-ready {
+  50% { filter: drop-shadow(0 0 12px var(--c)); }
+}
+#hud .ability-slot[data-role='runner'] { --c: var(--vb-runner); }
+#hud .ability-slot[data-role='saboteur'] { --c: var(--vb-saboteur); }
+#hud .ability-role {
+  font-family: var(--vb-tag);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+#hud .ability-name {
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--vb-brass-hi);
+  text-shadow: 0 2px 0 var(--vb-ink);
+}
+#hud .ability-state {
+  font-family: var(--vb-body);
+  font-size: 13px;
+  color: var(--vb-cream);
+}
+/* The Saboteur's trap bar sits along the bottom: their ability goes up out of its way. */
+body:has(#trapbar:not([hidden])) #hud .ability-slot {
+  bottom: 168px;
+}
+body:has(#trapbar:not([hidden])) #hud .help {
+  display: none;
+}
+
+/* "Hold E Search the fountain": a brass tag over the middle of the screen. */
+#hud .prompt {
+  padding: 6px 30px;
+  border: 0;
+  border-radius: 0;
+  border-image: url('/assets/ui/kit/tag.png') 25 40 fill / 18px 28px stretch;
+  background: linear-gradient(var(--vb-lacquer), var(--vb-lacquer)) center / calc(100% - 40px) 64% no-repeat;
+  font-family: var(--vb-body);
+  font-size: 16px;
+  color: var(--vb-cream);
+  text-shadow: 0 2px 0 var(--vb-ink);
+  /* Long hints wrap instead of running off the screen. */
+  white-space: normal;
+  width: max-content;
+  max-width: min(640px, 70vw);
+  text-align: center;
+  line-height: 1.25;
+}
+
+/* The secret contract: a framed card with its scroll. */
+#secret-card {
+  top: 10px;
+  right: 10px;
+  width: min(300px, 36vw);
+}
+#secret-card > div {
+  padding: 0 4px;
+  gap: 3px;
+  font-family: var(--vb-body);
+  font-size: 15px;
+}
+#secret-card .tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--vb-head);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--vb-brass-hi);
+}
+#secret-card .tag .ico {
+  width: 24px;
+  height: 24px;
+}
+#secret-card .what {
+  color: var(--vb-cream);
+}
+#secret-card .prog {
+  font-family: var(--vb-tag);
+  font-size: 10px;
+  color: var(--vb-loot);
+}
+
+/* The "how to play" button: the brass question mark, bottom right above the keys line (the
+   top of the screen is the clock's and the cards'). */
+#how-to-btn {
+  top: auto;
+  bottom: 32px;
+  right: 14px;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: url('/assets/ui/kit/icon-help.png') center / contain no-repeat;
+  color: transparent;
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.6));
+}
+#how-to-btn.on {
+  background: url('/assets/ui/kit/icon-help.png') center / contain no-repeat;
+  filter: drop-shadow(0 0 8px var(--vb-brass-hi));
+}
+
+/* Small screens: everything a notch smaller. */
+@media (max-width: 1140px), (max-height: 600px) {
+  #hud .timer { width: 230px; height: 44px; padding-top: 5px; font-size: 10px; }
+  #hud .area { top: 56px; height: 26px; font-size: 11px; }
+  #hud .panel.objective { width: min(220px, 26vw); }
+  #hud .objective .label { font-size: 13px; }
+  #hud .obj-text, #hud .obj-step { font-size: 12px; }
+  #hud .obj-step .ico { width: 20px; height: 20px; }
+  #secret-card { width: min(250px, 38vw); }
+  #hud .help { font-size: 11px; }
+}
+
+/* ---------- The right-hand column: contract card, then the Saboteur's setup and crew ETA ---------- */
+
+#sab-column {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 6;
+  width: min(330px, 34vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+#sab-column > #setup-panel {
+  pointer-events: auto;
+}
+#sab-column #secret-card {
+  position: relative;
+  top: auto;
+  right: auto;
+  width: auto;
+}
+
+/* The setup checklist: a Saboteur-framed card with the two steps and the gold START button. */
+#sab-column #setup-panel,
+#crew-eta {
+  position: relative;
+  isolation: isolate;
+  top: auto;
+  left: auto;
+  transform: none;
+  width: auto;
+  border: 24px solid transparent;
+  border-image: url('/assets/ui/kit/frame-saboteur.png') 64 / 24px stretch;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.55));
+  padding: 0 2px;
+}
+#crew-eta {
+  border-image-source: url('/assets/ui/kit/frame.png');
+}
+#sab-column #setup-panel::before,
+#crew-eta::before {
+  content: '';
+  position: absolute;
+  inset: -15px;
+  z-index: -1;
+  background: var(--vb-lacquer);
+  border-radius: 3px;
+}
+#sab-column #setup-panel {
+  gap: 4px;
+}
+#setup-panel .setup-step {
+  border: 0;
+  border-radius: 0;
+  padding: 4px 0;
+  gap: 4px 10px;
+  grid-template-columns: 26px 1fr auto;
+  background: none;
+  opacity: 0.5;
+}
+#setup-panel .setup-step + .setup-step {
+  padding-top: 12px;
+  background: url('/assets/ui/kit/divider.png') top center / 100% 8px no-repeat;
+}
+#setup-panel .setup-step.active,
+#setup-panel .setup-step.done {
+  opacity: 1;
+}
+#setup-panel .setup-step .num {
+  width: 24px;
+  height: 24px;
+  background: linear-gradient(var(--vb-brass-hi), var(--vb-brass) 55%, var(--vb-brass-lo));
+  box-shadow: 0 0 0 2px var(--vb-ink);
+  font-family: var(--vb-tag);
+  font-size: 10px;
+  color: var(--vb-ink);
+}
+#setup-panel .setup-step.done .num {
+  background: linear-gradient(#9cf5b0, var(--vb-good) 55%, #1f7a43);
+}
+#setup-panel .setup-step .what {
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.05em;
+  color: var(--vb-brass-hi);
+  text-shadow: 0 2px 0 var(--vb-ink);
+}
+/* The trap step's counter is long ("0/10 · GUARDED 0/7"): it goes under the title. */
+#setup-panel .setup-step + .setup-step b {
+  grid-column: 2 / 4;
+  justify-self: start;
+}
+#setup-panel .setup-step b {
+  font-family: var(--vb-tag);
+  font-size: 10px;
+  color: var(--vb-loot);
+}
+#setup-panel .setup-hint {
+  font-family: var(--vb-body);
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--vb-cream);
+}
+#setup-panel .setup-gems {
+  gap: 2px;
+}
+#setup-panel .setup-gems .gem {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  transform: none;
+  border: 0;
+  box-shadow: none;
+  background: url('/assets/ui/kit/icon-diamond.png') center / contain no-repeat;
+  filter: grayscale(1) brightness(0.45);
+}
+#setup-panel .setup-gems .gem.hidden-in {
+  filter: drop-shadow(0 0 3px #7ceaff);
+}
+/* START HEIST: the gold button (its stepped ends stay put, the middle stretches). */
+#setup-panel .setup-ready {
+  height: 46px;
+  margin-top: 4px;
+  padding: 0 34px;
+  border: 0;
+  border-radius: 0;
+  border-image: url('/assets/ui/kit/btn-gold.png') 0 50 fill / 0 34px stretch;
+  background: none;
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  color: var(--vb-ink);
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.6);
+}
+#setup-panel .setup-ready:hover:not(:disabled) {
+  border-image-source: url('/assets/ui/kit/btn-gold-hover.png');
+}
+#setup-panel .setup-ready:active:not(:disabled) {
+  border-image-source: url('/assets/ui/kit/btn-gold-down.png');
+}
+#setup-panel .setup-ready:disabled {
+  border-image-source: url('/assets/ui/kit/btn-gold-off.png');
+  background: none;
+  color: #d9d2c2;
+  text-shadow: 0 1px 0 var(--vb-ink);
+  font-size: 12px;
+}
+
+/* The crew on their way: a row each, their van moving along a track to the house. */
+#crew-eta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+#crew-eta[hidden] {
+  display: none;
+}
+#crew-eta h3 {
+  margin: 0;
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: var(--vb-brass-hi);
+  text-shadow: 0 2px 0 var(--vb-ink);
+}
+#crew-eta .eta-row {
+  display: grid;
+  grid-template-columns: 68px 1fr 46px;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--vb-body);
+  font-size: 13px;
+  color: var(--vb-cream);
+}
+#crew-eta .eta-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#crew-eta .eta-track {
+  position: relative;
+  height: 8px;
+  margin-right: 12px;
+  border-radius: 4px;
+  background: var(--vb-ink);
+  box-shadow: 0 0 0 1px var(--vb-brass-lo), inset 0 2px 0 rgba(0, 0, 0, 0.6);
+}
+/* The van (from the drive's paint sheet) on its side, heading for the house. */
+#crew-eta .eta-van {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 20px;
+  transform: translate(-50%, -50%) rotate(90deg);
+  background: url('/assets/drive/vans.png') calc(var(--van) * 100% / 7) 0 / 800% 100% no-repeat;
+  transition: left 0.2s linear;
+}
+#crew-eta .eta-house {
+  position: absolute;
+  right: -14px;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  transform: translateY(-50%);
+  background: url('/assets/drive/hud.png') calc(1 * 100% / 7) 0 / 800% 100% no-repeat;
+}
+#crew-eta .eta-time {
+  font-family: var(--vb-tag);
+  font-size: 10px;
+  text-align: right;
+  color: var(--vb-loot);
+}
+#crew-eta .eta-row.in .eta-time {
+  color: var(--vb-good);
+}
+
+/* ---------- The Saboteur's trap bar ---------- */
+
+#trapbar {
+  bottom: 6px;
+  gap: 6px;
+  padding: 0 2px;
+  border: 24px solid transparent;
+  border-image: url('/assets/ui/kit/frame-saboteur.png') 64 / 24px stretch;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.55));
+}
+/* (Its old light line along the top becomes the lacquer behind the cards.) */
+#trapbar::before {
+  top: -15px;
+  left: -15px;
+  right: -15px;
+  bottom: -15px;
+  height: auto;
+  z-index: -1;
+  border-radius: 3px;
+  background: var(--vb-lacquer);
+  animation: none;
+  opacity: 1;
+}
+#trapbar .trap-slots {
+  gap: 4px;
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--vb-brass-hi);
+}
+#trapbar .trap-slots b {
+  font-family: var(--vb-tag);
+  font-size: 13px;
+  color: var(--vb-cream);
+}
+#trapbar .trap-energy {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--vb-body);
+  font-size: 12px;
+  color: #75e6a2;
+}
+#trapbar .trap-energy::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  background: url('/assets/ui/kit/icon-energy.png') center / contain no-repeat;
+}
+#trapbar .trap-card {
+  border-color: color-mix(in srgb, var(--c) 30%, var(--vb-brass-lo));
+  border-radius: 4px;
+  background: radial-gradient(ellipse 70% 42% at 50% 34%, color-mix(in srgb, var(--c) 14%, transparent), transparent 75%), linear-gradient(#1c2340, #121729);
+}
+#trapbar .trap-card .trap-key {
+  background: linear-gradient(var(--vb-brass-hi), var(--vb-brass) 55%, var(--vb-brass-lo));
+  box-shadow: 0 0 0 2px var(--vb-ink);
+  font-family: var(--vb-tag);
+  color: var(--vb-ink);
+}
+#trapbar .trap-name {
+  height: 24px;
+  font-family: var(--vb-body);
+  font-size: 11px;
+  line-height: 1.05;
+}
+#trapbar .trap-cost {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--vb-tag);
+  font-size: 9px;
+  color: var(--vb-loot);
+}
+#trapbar .trap-cost::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  background: url('/assets/ui/kit/icon-energy.png') center / contain no-repeat;
+}
+#trapbar .trap-count {
+  font-family: var(--vb-body);
+  font-size: 11px;
+  color: var(--vb-muted);
+}
+
+@media (max-width: 1140px), (max-height: 600px) {
+  #sab-column { width: min(250px, 31vw); gap: 6px; }
+  #setup-panel .setup-step .what { font-size: 12px; }
+  #setup-panel .setup-hint { font-size: 12px; }
+  #crew-eta .eta-row { grid-template-columns: 56px 1fr 40px; font-size: 12px; }
+}
+
+/* Short screens: the trap bar and the right-hand column both get a little more compact. */
+@media (max-height: 700px) {
+  #trapbar { border-width: 18px; border-image-width: 18px; }
+  #trapbar .trap-name { height: 20px; font-size: 10px; }
+  #setup-panel .setup-hint { font-size: 12px; line-height: 1.2; }
+  #setup-panel .setup-ready { height: 40px; }
+  #crew-eta { gap: 3px; }
+  body:has(#trapbar:not([hidden])) #hud .ability-slot { bottom: 150px; }
+}
+/* Very short screens: the setup steps lose their how-to line (the ? card has it) to fit. */
+@media (max-height: 640px) {
+  #setup-panel .setup-hint { display: none; }
+}
+
+/* The clock's last 30 seconds (amber, breathing) and last 10 (a red knock each second): glows
+   that follow the plaque's shape, not a box round it. */
+#hud .timer.pressure {
+  color: #ffb347;
+  box-shadow: none;
+  animation: vb-timer-breathe 1s ease-in-out infinite;
+}
+#hud .timer.urgent {
+  color: var(--vb-danger);
+  box-shadow: none;
+}
+#hud .timer.urgent.tick {
+  animation: vb-timer-tick 0.45s cubic-bezier(0.2, 1.8, 0.4, 1);
+}
+@keyframes vb-timer-breathe {
+  50% { filter: drop-shadow(0 0 10px rgba(255, 179, 71, 0.75)); }
+}
+@keyframes vb-timer-tick {
+  0% { transform: translateX(-50%) scale(1.2); filter: drop-shadow(0 0 14px rgba(255, 90, 90, 0.9)); }
+  100% { transform: translateX(-50%) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #hud .timer.pressure,
+  #hud .timer.urgent.tick { animation: none; }
+}
+
+/* ---------- The round banner: "You are A RUNNER", and SETUP OVER · THE HEIST IS ON ---------- */
+
+/* Each side's Art Deco plaque; the words sit in its dark middle (the padding is measured from
+   the art: a share of the width, so it holds at any size). */
+.match-banner,
+.match-banner.reveal.is-runner,
+.match-banner.reveal.is-sab {
+  width: min(820px, 94vw);
+  box-sizing: border-box;
+  aspect-ratio: 1592 / 400;
+  padding: 6.4% 13% 5.4%;
+  justify-content: center;
+  gap: 0.5%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: url('/assets/ui/kit/banner-runner.webp') center / 100% 100% no-repeat;
+  filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.6));
+  text-align: center;
+}
+.match-banner.is-sab,
+.match-banner.reveal.is-sab {
+  aspect-ratio: 1596 / 356;
+  padding: 6.4% 13% 3.4%;
+  background-image: url('/assets/ui/kit/banner-saboteur.webp');
+}
+/* The light sweep stays inside the plaque's middle. */
+.match-banner.reveal::after {
+  inset: 22% 11%;
+}
+.match-banner .kicker {
+  font-family: var(--vb-tag);
+  font-size: clamp(8px, 1.1vw, 10px);
+  letter-spacing: 0.08em;
+  color: var(--vb-brass-hi);
+}
+.match-banner .role-line,
+.match-banner > span:nth-child(2) {
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: clamp(20px, 3.4vw, 32px);
+  line-height: 1.1;
+  color: var(--vb-cream);
+  text-shadow: 0 3px 0 var(--vb-ink);
+}
+.match-banner .role-line b {
+  font-weight: 700;
+}
+.match-banner .runner {
+  color: var(--vb-runner);
+}
+.match-banner .saboteur {
+  color: var(--vb-saboteur);
+}
+.match-banner .crew-list {
+  font-family: var(--vb-body);
+  font-size: clamp(11px, 1.6vw, 15px);
+  line-height: 1.25;
+  color: var(--vb-cream);
+  opacity: 0.9;
+}
+
+/* ---------- How to play: the card each round starts with ---------- */
+
+#how-to .how-card {
+  position: relative;
+  isolation: isolate;
+  border: 24px solid transparent;
+  border-image: url('/assets/ui/kit/frame-runner.png') 64 / 24px stretch;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  padding: 0 6px 2px;
+  gap: 10px;
+  filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.6));
+  font-family: var(--vb-body);
+  color: var(--vb-cream);
+}
+#how-to[data-side='saboteur'] .how-card {
+  border-image-source: url('/assets/ui/kit/frame-saboteur.png');
+}
+#how-to .how-card::before {
+  content: '';
+  position: absolute;
+  inset: -15px;
+  z-index: -1;
+  background: rgba(20, 26, 46, 0.96);
+  border-radius: 3px;
+}
+#how-to .how-kicker {
+  font-family: var(--vb-tag);
+  font-size: 9px;
+  color: var(--vb-brass-hi);
+  opacity: 1;
+}
+#how-to h2 {
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 32px;
+  text-shadow: 0 3px 0 var(--vb-ink);
+}
+#how-to .how-goal {
+  font-size: 16px;
+}
+#how-to ol {
+  padding: 10px 0 0;
+  background: url('/assets/ui/kit/divider.png') top center / 100% 9px no-repeat;
+}
+#how-to li {
+  font-size: 15px;
+  border-radius: 3px;
+  background: var(--vb-lacquer-hi);
+  box-shadow: inset 0 0 0 1px rgba(201, 162, 83, 0.25);
+}
+#how-to .how-n {
+  background: linear-gradient(var(--vb-brass-hi), var(--vb-brass) 55%, var(--vb-brass-lo));
+  box-shadow: 0 0 0 2px var(--vb-ink);
+  font-family: var(--vb-tag);
+  font-size: 10px;
+}
+#how-to .how-keys {
+  font-size: 14px;
+  opacity: 1;
+  color: var(--vb-muted);
+}
+#how-to kbd {
+  border: 0;
+  border-radius: 3px;
+  background: linear-gradient(var(--vb-brass-hi), var(--vb-brass) 55%, var(--vb-brass-lo));
+  box-shadow: 0 0 0 2px var(--vb-ink);
+  font-family: var(--vb-tag);
+  font-size: 9px;
+  color: var(--vb-ink);
+}
+#how-to .how-go {
+  height: 46px;
+  padding: 0 44px;
+  border: 0;
+  border-radius: 0;
+  border-image: url('/assets/ui/kit/btn-gold.png') 0 50 fill / 0 34px stretch;
+  background: none;
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--vb-ink);
+}
+#how-to .how-go:hover {
+  border-image-source: url('/assets/ui/kit/btn-gold-hover.png');
+}
+#how-to .how-go:active {
+  border-image-source: url('/assets/ui/kit/btn-gold-down.png');
+}
+#how-to .how-hint {
+  font-size: 12px;
+  color: var(--vb-muted);
+  opacity: 1;
+}
+
+/* ---------- The end of a round ---------- */
+
+#result .result-card {
+  position: relative;
+  isolation: isolate;
+  width: min(760px, calc(100vw - 32px));
+  border: 24px solid transparent;
+  border-image: url('/assets/ui/kit/frame.png') 64 / 24px stretch;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  padding: 0 8px 4px;
+  gap: 10px;
+  filter: drop-shadow(0 12px 22px rgba(0, 0, 0, 0.65));
+  font-family: var(--vb-body);
+}
+#result .result-card::before {
+  content: '';
+  position: absolute;
+  inset: -15px;
+  z-index: -1;
+  background: rgba(20, 26, 46, 0.96);
+  border-radius: 3px;
+}
+#result .result-card .kicker {
+  font-family: var(--vb-tag);
+  font-size: 10px;
+  color: var(--vb-brass-hi);
+}
+/* YOU WIN / YOU LOSE on the plaque: gold with tumbling loot, or tarnished and cracked. */
+#result .result-card h1 {
+  width: 100%;
+  box-sizing: border-box;
+  aspect-ratio: 1590 / 360;
+  display: grid;
+  place-items: center;
+  padding: 8.6% 16% 1.6%;
+  background: url('/assets/ui/kit/banner-win.webp') center / 100% 100% no-repeat;
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: clamp(26px, 5vw, 46px);
+  letter-spacing: 0.06em;
+  color: var(--vb-brass-hi);
+  text-shadow: 0 4px 0 var(--vb-ink);
+}
+#result.lose .result-card h1 {
+  aspect-ratio: 1589 / 362;
+  padding: 8.8% 17% 1%;
+  background-image: url('/assets/ui/kit/banner-lose.webp');
+  color: var(--vb-saboteur);
+}
+#result.off .result-card h1 {
+  aspect-ratio: auto;
+  padding: 0;
+  background: none;
+  color: var(--vb-muted);
+}
+#result .result-card .reason {
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--vb-cream);
+}
+#result .result-card h2 {
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--vb-brass-hi);
+}
+/* Each player's line: name and points on top, the side notes ("First to the house") under. */
+#result .result-card .points li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  background: var(--vb-lacquer-hi);
+  font-size: 15px;
+  color: var(--vb-cream);
+}
+#result .result-card .points li .who { grid-row: 1; grid-column: 1; }
+#result .result-card .points li b { grid-row: 1; grid-column: 2; font-family: var(--vb-tag); font-size: 11px; color: var(--vb-loot); }
+#result .result-card .points li .notes {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  font-family: var(--vb-body);
+  font-size: 13px;
+  color: var(--vb-brass-hi);
+}
+#result .result-card .points li.me {
+  box-shadow: inset 0 0 0 1px var(--vb-brass);
+}
+#result .result-card .points em {
+  font-family: var(--vb-tag);
+  font-size: 8px;
+  color: var(--vb-saboteur);
+}
+#result .scores {
+  font-family: var(--vb-body);
+  font-size: 15px;
+  color: var(--vb-cream);
+}
+#result .scores th {
+  font-family: var(--vb-tag);
+  font-size: 9px;
+  color: var(--vb-muted);
+}
+#result .scores td {
+  border-top-color: rgba(201, 162, 83, 0.3);
+}
+#result .scores td.total {
+  font-family: var(--vb-tag);
+  font-size: 11px;
+  color: var(--vb-loot);
+}
+#result .scores tr.me td {
+  color: var(--vb-brass-hi);
+}
+#result .result-card .legend {
+  font-size: 13px;
+  color: var(--vb-muted);
+}
+#result .result-card .next {
+  font-family: var(--vb-tag);
+  font-size: 10px;
+  color: var(--vb-loot);
+}
+#result .result-back {
+  height: 44px;
+  padding: 0 40px;
+  border: 0;
+  border-radius: 0;
+  border-image: url('/assets/ui/kit/btn-dark.png') 0 50 fill / 0 34px stretch;
+  background: none;
+  font-family: var(--vb-head);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--vb-cream);
+}
+#result .result-back:hover {
+  border-image-source: url('/assets/ui/kit/btn-dark-hover.png');
+}
+#result .result-back:active {
+  border-image-source: url('/assets/ui/kit/btn-dark-down.png');
+}

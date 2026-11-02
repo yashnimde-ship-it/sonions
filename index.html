@@ -6,6 +6,7 @@
     <title>Vault Breakers</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="./src/style.css" />
+    <link rel="stylesheet" href="./src/ui/theme.css" />
   </head>
   <body>
     <canvas id="game"></canvas>
@@ -135,7 +136,8 @@
     <div id="hud" hidden>
       <div id="health" class="health" hidden><span class="label">HP</span><div class="bar"><div id="health-fill"></div></div><span id="health-text">100</span></div>
       <div id="ability" class="ability-slot">
-        <div class="ability-icon"><span class="ability-key">Q</span><div id="ability-cd" class="ability-cd"></div></div>
+        <div class="ability-icon"><div id="ability-cd" class="ability-cd"></div></div>
+        <span class="ability-key">Q</span>
         <div class="ability-body">
           <span id="ability-role" class="ability-role"></span>
           <span id="ability-name" class="ability-name"></span>
