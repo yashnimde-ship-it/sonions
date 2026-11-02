@@ -598,6 +598,8 @@ async function boot() {
   let titleNote = '';
   /** Resolves when the server welcomes us (after a hello). */
   let onWelcome: (() => void) | null = null;
+  /** Which run of the game server answered our last hello (it changes when the server restarts). */
+  let serverBoot = '';
   let viewX = 0;
   let viewY = 0;
   /** The heist you're in; `saboteur` is whether *you* are it (nobody is told who else is). */
@@ -1305,6 +1307,9 @@ async function boot() {
         onWelcome?.();
         onWelcome = null;
         if (crowd && watchCode) net.send({ t: 'watchRoom', code: watchCode, screen: watchScreen });
+        // Only the answer to our hello says whether the server still held this tab's seat (the
+        // welcome on connecting comes before it, for every connection).
+        if (!msg.hello) break;
         // Back after a reload, but the seat wasn't held (gone too long): the server sees a new
         // player, so join the room in the address bar the way a fresh visit would.
         if (!msg.resumed && session.get('playing')) {
@@ -1312,15 +1317,22 @@ async function boot() {
           const invite = new URLSearchParams(location.search).get('room');
           if (invite && title.hasSavedName && scene === 'title') title.onJoin(invite);
         }
-        // Reconnected mid-game, but the server doesn't know us: it restarted (a new version
-        // went live), and the game went with it. Say so, rather than sit in a round (or the
-        // Getaway Drive, which runs on here by itself) that nothing will ever move on.
+        // Reconnected mid-game, but the server doesn't know us: either it restarted (a new
+        // version went live) and the game went with it, or we were gone longer than it holds a
+        // seat. Say which, rather than sit in a round (or the Getaway Drive, which runs on here
+        // by itself) that nothing will ever move on.
         if (!msg.resumed && (scene === 'match' || scene === 'lobby')) {
+          const restarted = !!serverBoot && !!msg.boot && msg.boot !== serverBoot;
           endDrive();
           howTo.hide();
           session.set('playing', null);
-          lobby.showDisconnected('The game server restarted (a new version went live), so that game ended. Reconnect to start a new one.');
+          lobby.showDisconnected(
+            restarted
+              ? 'The game server restarted (a new version went live), so that game ended. Reconnect to start a new one.'
+              : 'You were disconnected for too long, so you lost your seat in that game. Reconnect to start a new one.',
+          );
         }
+        if (msg.boot) serverBoot = msg.boot;
         break;
       case 'room': {
         // Who just came in, readied up or left (the same room as before, not a fresh one).

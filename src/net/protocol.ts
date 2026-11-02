@@ -181,7 +181,10 @@ export type ClientMsg =
 /** Server -> game */
 export type ServerMsg =
   /** Your player id. `resumed`: the server knew your key and put you back where you were. */
-  | { t: 'welcome'; id: string; resumed?: boolean }
+  /** On connecting, and again in answer to 'hello' (`hello`), saying whether this tab's seat was
+   *  still held (`resumed`). `boot` names this run of the server: it changes when the server
+   *  restarts (a new version went live). */
+  | { t: 'welcome'; id: string; resumed?: boolean; boot?: string; hello?: boolean }
   /** This player key was picked up by another tab: this one is no longer playing. */
   | { t: 'replaced' }
   /** Catch-up after a reconnect: what changed in the heist while you were away. */

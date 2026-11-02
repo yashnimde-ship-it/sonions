@@ -3947,6 +3947,8 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
   if (!known) {
     fresh.key = key;
     if (key) byKey.set(key, fresh);
+    // A new player (or one whose seat wasn't held): say so, and which run of the server this is.
+    send(fresh, { t: 'welcome', id: fresh.state.id, resumed: false, boot: BOOT, hello: true });
     handle(fresh, msg);
     return fresh;
   }
@@ -3960,7 +3962,7 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
   }
   known.ws = fresh.ws;
   known.state.offline = false;
-  send(known, { t: 'welcome', id: known.state.id, resumed: true });
+  send(known, { t: 'welcome', id: known.state.id, resumed: true, boot: BOOT, hello: true });
   if (known.room === 'menu' || !known.party) {
     known.room = 'menu';
     known.party = null;
@@ -4356,6 +4358,8 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server, path: '/ws' });
+/** This run of the server: games tell a restart (a new deploy) from a seat that was let go. */
+const BOOT = Date.now().toString(36);
 // Heartbeat, every 25 s. A tiny 'hb' message goes all the way to the player, so a quiet
 // connection (the menu, a crowd watcher waiting) isn't cut as idle on the way (the host's proxy
 // answers WebSocket pings itself, so those alone don't reach the player). The ping still finds
@@ -4394,7 +4398,7 @@ wss.on('connection', (ws) => {
     state: { id, name: '', character: 'maya', x: LOBBY_SPAWN.x, y: LOBBY_SPAWN.y, facing: 'down', moving: false, sprint: false, carrying: false, hp: MAX_HP, stunned: false },
   };
   clients.set(id, c);
-  send(c, { t: 'welcome', id });
+  send(c, { t: 'welcome', id, boot: BOOT });
   // Which player this connection is: a new one, until a hello brings back a known key.
   let player = c;
   ws.on('message', (raw) => {
