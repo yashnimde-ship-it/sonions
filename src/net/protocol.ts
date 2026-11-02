@@ -439,6 +439,8 @@ export type ServerMsg =
   | { t: 'grudge'; id: string | null; name: string; reason: string; count: number }
   /** Someone got their revenge (sent to the two of them during a round). */
   | { t: 'revenge'; by: string; byName: string; on: string; onName: string; points: number }
+  /** A heartbeat every 25 s, so a quiet connection still carries something end to end. */
+  | { t: 'hb' }
   /** Someone in your match left. */
   | { t: 'left'; id: string };
 
