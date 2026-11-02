@@ -90,11 +90,14 @@ export class LeaderboardUI {
     region.textContent = `${msg.region.toUpperCase()} · TOP ${msg.rows.length || 100}`;
     const row = (r: BoardRow, pinned = false) => {
       const wanted = r.place <= msg.mostWanted;
-      return `<li class="${r.you ? 'you' : ''}${wanted ? ' wanted' : ''}${pinned ? ' pinned' : ''}"><span class="lb-place">${r.place}</span><span class="lb-name">${esc(r.name)}${r.you ? ' <small>(you)</small>' : ''}</span>${rankBadge(r.rep, wanted)}<span class="lb-rep">${r.rep} <small>REP</small></span><span class="lb-wins">${r.wins} <small>W</small> · ${r.matches} <small>M</small></span></li>`;
+      return `<li class="${r.you ? 'you' : ''}${wanted ? ' wanted' : ''}${pinned ? ' pinned' : ''}"><span class="lb-place">${r.place}</span><span class="lb-name">${esc(r.name)}${r.you ? ' <small>(you)</small>' : ''}</span>${rankBadge(r.rep, wanted)}<span class="lb-rep">${r.rep} <small>REP</small></span></li>`;
     };
     const mine = msg.me && !msg.rows.some((r) => r.you) ? `<ol class="lb-me">${row(msg.me, true)}</ol>` : '';
+    const note = msg.mostWanted
+      ? `★ The top ${msg.mostWanted} are MOST WANTED · finish matches of 3+ players to rank up`
+      : 'Practice roster · ranks range from Pickpocket I to Safecracker III';
     this.body.innerHTML = msg.rows.length
-      ? `<p class="lb-note">★ The top ${msg.mostWanted} are MOST WANTED · finish matches of 3+ players to rank up</p><ol class="lb-list">${msg.rows.map((r) => row(r)).join('')}</ol>${mine}`
+      ? `<p class="lb-note">${note}</p><ol class="lb-list">${msg.rows.map((r) => row(r)).join('')}</ol>${mine}`
       : `<p class="lb-empty">Nobody has ranked yet. Finish a match of 3 or more players to be first!</p>`;
   }
 

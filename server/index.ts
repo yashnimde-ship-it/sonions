@@ -17,6 +17,7 @@ import { INSIDE, INSIDE_JOB_MIN_PLAYERS, INSIDE_SCORE, MEETING_LINES } from '../
 import { HACK_MS, MISSION_POINTS, MISSION_STEPS } from '../src/data/mission.ts';
 import { BREAKER } from '../src/data/breakers.ts';
 import { newProfile, openStore, profileId, type SavedProfile } from './store.ts';
+import { demoLeaderboardRows } from './demoLeaderboard.ts';
 import { applyRep, type BoardRow, LEADERBOARD_REGION, LEADERBOARD_SIZE, MIN_RANKED_CREW, MOST_WANTED, placeRep, REP_RULES } from '../src/data/ranks.ts';
 import { CONTRACT_POINTS, type ContractDef, type ContractId, drawContract, REVENGE_POINTS } from '../src/data/contracts.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
@@ -1226,16 +1227,24 @@ const profileMsg = (p: SavedProfile, saved: boolean): ServerMsg => ({ t: 'profil
 /** The top of the board, kept for a little while so opening it doesn't hit the database each time. */
 let boardCache: { at: number; rows: BoardRow[]; ids: string[] } | null = null;
 const BOARD_CACHE_MS = 30_000;
+/** Local UI seed data; set LEADERBOARD_DEMO=0 (or NODE_ENV=production) for real profiles only. */
+const leaderboardDemo = process.env.LEADERBOARD_DEMO !== '0' && process.env.NODE_ENV !== 'production';
 async function sendLeaderboard(c: Client) {
   try {
     if (!boardCache || Date.now() - boardCache.at > BOARD_CACHE_MS) {
-      const top = await store.top(LEADERBOARD_SIZE);
-      boardCache = { at: Date.now(), rows: top.map((p, i) => ({ place: i + 1, name: p.name, rep: p.rep, wins: p.wins, matches: p.matches })), ids: top.map((p) => p._id) };
+      if (leaderboardDemo) {
+        const rows = demoLeaderboardRows();
+        boardCache = { at: Date.now(), rows, ids: rows.map((_, i) => `demo-${i}`) };
+      } else {
+        const top = await store.top(LEADERBOARD_SIZE);
+        boardCache = { at: Date.now(), rows: top.map((p, i) => ({ place: i + 1, name: p.name, rep: p.rep, wins: p.wins, matches: p.matches })), ids: top.map((p) => p._id) };
+      }
     }
     const p = c.profile;
     const i = p ? boardCache.ids.indexOf(p._id) : -1;
-    const me: BoardRow | null = !p || p.matches === 0 ? null : i >= 0 ? { ...boardCache.rows[i], you: true } : { place: await store.placeOf(p.rep, p.wins), name: p.name, rep: p.rep, wins: p.wins, matches: p.matches, you: true };
-    send(c, { t: 'leaderboard', region: LEADERBOARD_REGION, rows: boardCache.rows.map((r, j) => (j === i ? { ...r, you: true } : r)), me, mostWanted: MOST_WANTED });
+    const me: BoardRow | null = leaderboardDemo || !p || p.matches === 0 ? null : i >= 0 ? { ...boardCache.rows[i], you: true } : { place: await store.placeOf(p.rep, p.wins), name: p.name, rep: p.rep, wins: p.wins, matches: p.matches, you: true };
+    // Demo rows are a rank-range showcase, not real regional contenders; do not award Most Wanted.
+    send(c, { t: 'leaderboard', region: LEADERBOARD_REGION, rows: boardCache.rows.map((r, j) => (j === i ? { ...r, you: true } : r)), me, mostWanted: leaderboardDemo ? 0 : MOST_WANTED });
   } catch (err) {
     console.error(`leaderboard: ${(err as Error).message}`);
   }
