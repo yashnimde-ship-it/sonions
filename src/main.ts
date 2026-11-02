@@ -13,6 +13,8 @@ import { ART_TILE, CHAR_GLOW, CHAR_SCREEN_FRACTION, CHARACTERS, type CharacterId
 import { ABILITIES, type AbilityId, ANCHOR_MOVE_HOLD_MS, BURN_ZONE, CHARACTER_INFO, carryCapacity, CLONE, HEAVY_CARRY, MEND, SHOCKWAVE, SIGNAL_DIVIDE, TRACKER_PING } from './data/characters';
 import { WINGMAN_RANGE } from './data/wingman';
 import { abilityArtReady, drawAbilityFrame, preloadAbilityArt } from './systems/AbilityArt';
+import { type CrewVan, crewY, drawDriveIcon, DriveGame, ordinal, preloadDriveArt } from './systems/DriveGame';
+import { DRIVE, driveLength } from './data/drive';
 import { type Energy, energyAt, VELVET } from './data/velvet';
 import { decksOf, isMapId, MAP_IDS, type MapId, MAPS } from './data/maps';
 import { inTrapArea, JAM_REACH, MAX_HP, TRAP_RADIUS, trapIsReady, trapPosition, trapRules, type TrapSpot } from './data/traps';
@@ -29,7 +31,7 @@ import { type TouchButton, TouchControls } from './input/Touch';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
 import { type EstateJson, TileMap, type Stairwell } from './map/TileMap';
 import { NetClient } from './net/NetClient';
-import { type ClientMsg, NET_HZ, type PlayerState, type ServerMsg } from './net/protocol';
+import { type ClientMsg, type DriveInfo, NET_HZ, type PlayerState, type ServerMsg } from './net/protocol';
 import { normalizeCode, ROOM_ERRORS, type RoomInfo, WAVE_LINES } from './data/rooms';
 import { CameraSystem } from './systems/CameraSystem';
 import { InteractionSystem } from './systems/InteractionSystem';
@@ -228,6 +230,7 @@ async function boot() {
   const sheets = Object.fromEntries(CHARACTERS.map((id, i) => [id, sheetList[i]])) as Record<CharacterId, HTMLImageElement>;
   // The painted ability effects are small; start them loading now (they draw once they're in).
   preloadAbilityArt();
+  preloadDriveArt();
 
   const lobbyMap = new LobbyMap(lobbyData, lobbyImage);
   const worlds = Object.fromEntries(MAP_IDS.map((id, i) => [id, { data: dataList[i], tiles: blank, doors: blank, ready: false }])) as Record<MapId, { data: EstateJson; tiles: HTMLImageElement; doors: HTMLImageElement; ready: boolean }>;
@@ -808,6 +811,40 @@ async function boot() {
   /** Where the round is (server's clock), and when this phase ends (performance.now ms). */
   let phase: Phase = 'setup';
   let phaseEndsAt = 0;
+  /**
+   * The Getaway Drive a Runner plays through a heist's setup (null the rest of the time), how
+   * long that setup is (the drive is sized to it), and my van's paint.
+   */
+  let drive: DriveGame | null = null;
+  let driveInfo: DriveInfo | null = null;
+  /** When this round's light goes green (performance.now ms). */
+  let driveGreenAt = 0;
+  let driveColor = 0;
+  /** Did I tell the server my van got there? */
+  let driveSent = false;
+  /** The Runners whose vans haven't reached the house yet (the server says when each does). */
+  const onRoad = new Set<string>();
+  /** The whole crew on the drive (me too): names, paint, where each van was last heard of. */
+  const driveCrew = new Map<string, CrewVan>();
+  /** How many vans are in so far (each arrival's place), and my updates' frame count. */
+  let driveArrivals = 0;
+  let driveTicks = 0;
+  /** A van that gets there after the heist started holds its "made it" a moment, until then. */
+  let arrivalShownUntil = 0;
+  /**
+   * Is this the drive's time: a Runner's screen in a heist's setup, and after that until their
+   * van reaches the house?
+   */
+  const drivingNow = () =>
+    scene === 'match' && !!driveInfo && !!match && !match.saboteur && !hideSeek() && !insideJob() && !result &&
+    (phase === 'setup' || (phase === 'live' && (onRoad.has(myId) || performance.now() < arrivalShownUntil)));
+  function endDrive() {
+    if (!drive) return;
+    drive.stop();
+    drive = null;
+    // Late in: swoop down onto the house like everyone did at GO.
+    if (phase === 'live' && match && !match.saboteur) zoomInFrom = performance.now();
+  }
   /** The Saboteur's free camera: where it looks (art px) and its zoom (0 = whole house). */
   let freeX = 0;
   let freeY = 0;
@@ -1144,6 +1181,23 @@ async function boot() {
     selectTrap(null);
     phase = msg.phase;
     phaseEndsAt = performance.now() + msg.ms;
+    // A new round: a new drive (on the road the whole crew shares), in my own colour.
+    endDrive();
+    driveInfo = msg.drive ?? null;
+    driveGreenAt = performance.now() + (msg.drive?.greenIn ?? 0);
+    // The crew in the server's order (without the Saboteur), so everyone agrees on the paint jobs.
+    const crewIds = msg.players.map((p) => p.id).filter((id) => !(msg.role === 'saboteur' && id === myId));
+    driveColor = Math.max(0, crewIds.indexOf(myId)) % 8;
+    driveCrew.clear();
+    driveArrivals = msg.drive?.arrived.length ?? 0;
+    crewIds.forEach((id, i) => {
+      const arrived = !!msg.drive?.arrived.includes(id);
+      driveCrew.set(id, { name: msg.players.find((p) => p.id === id)?.name ?? '?', color: i % 8, x: DRIVE.lanes[1], y: -160, vy: 0, at: performance.now(), arrived, place: arrived ? 1 : 0 });
+    });
+    driveSent = false;
+    arrivalShownUntil = 0;
+    onRoad.clear();
+    if (msg.drive) for (const p of msg.players) if (!(msg.role === 'saboteur' && p.id === myId) && !msg.drive.arrived.includes(p.id)) onRoad.add(p.id);
     trapBar.show(msg.role === 'saboteur' && phase === 'setup' && !hideSeek());
     setupPanel.show(msg.role === 'saboteur' && phase === 'setup' && !hideSeek());
     trapBar.setEnergy(trapEnergy, maxTrapEnergy);
@@ -1192,7 +1246,7 @@ async function boot() {
         : 'The lights are out and the owner has a gun. Hide! Survive the hunt; at the end the main entrance opens.'
       : msg.role === 'saboteur'
         ? `Hide the diamonds and place up to ${trapSlots(msg.size)} traps. Confirm when your setup is ready.`
-        : 'The Saboteur is rigging the house. Get ready to go in.';
+        : 'The Saboteur is rigging the house. Race your van there: crashes make you late.';
     banner.innerHTML = `<span class="kicker">ROUND ${msg.round} OF ${msg.rounds} · ${hs ? 'HIDE &amp; SEEK · ' : ij ? 'INSIDE JOB · ' : ''}${MAPS[mapId].name}</span><span class="role-line">You are ${role}</span><span class="crew-list">${job}</span>`;
     // The role lands hard: the vand slams in, the role word stamps down, a sting plays.
     const sab = msg.role === 'saboteur' || insiderMe;
@@ -1206,7 +1260,8 @@ async function boot() {
     setScene('match');
     // After the role banner: what to do and which keys (not again on a reconnect).
     const howRole = howToRole(msg.mode ?? 'heist', msg.role === 'saboteur', insiderMe);
-    howTo.start(howRole, touch.enabled, msg.resume ? 1e9 : BANNER_MS - 600);
+    // A heist Runner drives first: their card waits until the van's at the house (see update).
+    howTo.start(howRole, touch.enabled, msg.resume || (msg.drive && msg.role === 'runner') ? 1e9 : BANNER_MS - 600);
   }
 
   function onServerMessage(msg: ServerMsg) {
@@ -1596,6 +1651,7 @@ async function boot() {
       case 'phase':
         phase = msg.phase;
         phaseEndsAt = performance.now() + msg.ms;
+        if (phase === 'over') endDrive();
         selectTrap(null);
         // The round is over: the Saboteur's effects go with it.
         if (phase === 'over') {
@@ -2102,6 +2158,37 @@ async function boot() {
         if (msg.ok) sfx('click');
         break;
       }
+      case 'driveAt': {
+        // A crewmate's van: its new spot, and its speed from the last one (for smooth ghosts).
+        const van = driveCrew.get(msg.id);
+        if (!van) break;
+        const now = performance.now();
+        const dt = (now - van.at) / 1000;
+        if (dt > 0.05) van.vy = Math.max(0, Math.min(DRIVE.nitroSpeed, (msg.y - van.y) / dt));
+        van.x = msg.x;
+        van.y = msg.y;
+        van.at = now;
+        break;
+      }
+      case 'arrived': {
+        // The Getaway Drive: a van got to the house (or was dropped there, too late).
+        onRoad.delete(msg.id);
+        const van = driveCrew.get(msg.id);
+        if (van && !van.arrived) {
+          van.arrived = true;
+          van.place = ++driveArrivals;
+          if (msg.id === myId && drive) drive.place = van.place;
+        }
+        const name = msg.id === myId ? 'You' : (remotes.get(msg.id)?.state.name ?? 'A Runner');
+        if (msg.id === myId) {
+          // Made it after GO: the "made it" shows a moment before the house; dropped: straight in.
+          if (phase === 'live') arrivalShownUntil = msg.forced ? 0 : performance.now() + 1600;
+          if (msg.forced) toast('Too late! The crew dropped you at the house');
+          if (msg.points) drive?.cheer(msg.first ? `FIRST IN! +${msg.points}` : `+${msg.points}`, '#ffd84a', performance.now());
+          if (msg.first) sfx('combo');
+        } else if (!msg.forced) toast(`${name} reached the house${msg.first ? ' first!' : ''}`);
+        break;
+      }
       case 'sabNote':
         toast(msg.text);
         break;
@@ -2365,7 +2452,7 @@ async function boot() {
   resize();
 
   if (import.meta.env.DEV)
-    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, hud, serverMsg: (m: ServerMsg) => onServerMessage(m), get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get room() { return myRoom; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get pings() { return pings; }, lobbyMusicInfo, audioState: () => audioOutState(), get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; } } }); // for playtests
+    Object.assign(window, { game: { me, remotes, net, lobbyMap, abilities, particles, hud, serverMsg: (m: ServerMsg) => onServerMessage(m), get spots() { return spots; }, replayZoom: () => (zoomInFrom = performance.now()), get estate() { return estate; }, get scene() { return scene; }, get room() { return myRoom; }, get view() { return { x: viewX, y: viewY, scale, dpr }; }, lobby, settings, profile, placed, get phase() { return phase; }, get mapId() { return mapId; }, get hp() { return hp; }, get diamonds() { return diamonds; }, get result() { return result; }, get spottedUntil() { return spottedUntil; }, interactionsRef: () => interactions, get deckId() { return deckId; }, deckMaps: () => deckMaps, hurt, noises, get keycard() { return keycard; }, get myIdForTest() { return myId; }, musicLevel: heistMusicLevel, get stepLog() { return stepLog; }, get spectating() { return spectated()?.name ?? null; }, get pings() { return pings; }, lobbyMusicInfo, audioState: () => audioOutState(), get bankedN() { return bankedN; }, get respawnIn() { return knockedOut ? respawnAt - performance.now() : 0; }, get drive() { return drive; } } }); // for playtests
 
   // ---------- Update ----------
 
@@ -2571,6 +2658,8 @@ async function boot() {
   /** Damage and a stun; at 0 HP you're knocked out (and the server takes your diamond). */
   /** Damage and stun from a hit; false if Rattle's Shield took it instead. */
   function hurt(damage: number, stunMs: number) {
+    // Still in the van on the way over: nothing in the house can touch me.
+    if (drive) return false;
     if (shieldTakes(damage)) return false;
     hp = Math.max(0, hp - damage);
     if (stunMs > 0) me.stun(Math.round((stunMs / 1000) * 60));
@@ -2952,6 +3041,8 @@ async function boot() {
     pollInput();
     const input = readControls();
     lastSprint = input.sprint;
+    // Left the match, or the heist's on: the drive's over.
+    if (drive && !drivingNow()) endDrive();
 
     if (scene === 'title') {
       if (keyPressed('Escape')) title.showHowTo(false);
@@ -3118,6 +3209,29 @@ async function boot() {
     if (insideJob() && phase === 'live' && !result && !hud.messageOpen) {
       if (keyPressed('KeyF')) fireAt(mouseX, mouseY);
       if (keyPressed('KeyM')) callMeeting();
+    }
+    // A heist's setup: the Runner races their van to the house instead of waiting (and if they're
+    // slow, on into the heist until they get there). The keys drive the van, nothing else.
+    if (drivingNow() && driveInfo) {
+      if (!drive) {
+        drive = new DriveGame(driveInfo.seed, driveInfo.setupMs, driveColor, driveGreenAt);
+        drive.crew = driveCrew;
+        drive.me = myId;
+      }
+      drive.update(hud.messageOpen ? { dx: 0, dy: 0, sprint: false } : input, performance.now());
+      // Where my van is, five times a second, for the crew's ghosts and the Saboteur's ETA.
+      if (drive.started(performance.now()) && drive.finishMs === null && ++driveTicks % 12 === 0) net.send({ t: 'driveAt', x: Math.round(drive.x), y: Math.round(drive.y) });
+      if (drive.finishMs !== null && !driveSent) {
+        driveSent = true;
+        net.send({ t: 'arrived', cash: drive.cash });
+        // In with time to spare: read up on the heist while the Saboteur finishes.
+        if (phase === 'setup') setTimeout(() => phase === 'setup' && howTo.open(), 1800);
+      }
+      me.update({ dx: 0, dy: 0, sprint: false }, estate);
+      hud.setPrompt(null);
+      sendPosition();
+      frameCamera(false);
+      return;
     }
     const sab = !!match?.saboteur;
     const hs = hideSeek();
@@ -3605,6 +3719,11 @@ async function boot() {
   function draw() {
     if (scene === 'watch') return;
     frame++;
+    // The Getaway Drive has the whole screen to itself.
+    if (drive && drivingNow()) {
+      drive.draw(ctx, canvas.width, canvas.height, dpr, performance.now(), phaseEndsAt - performance.now());
+      return;
+    }
     // Snap the camera to whole screen pixels so the art stays crisp.
     const camX = Math.round(camera.x * scale) / scale;
     const camY = Math.round(camera.y * scale) / scale;
@@ -3628,7 +3747,8 @@ async function boot() {
 
     // Characters are drawn back to front so nearer ones overlap farther ones.
     // In a heist the Saboteur isn't in the house, so they're not drawn.
-    const inHouse = (id: string) => scene !== 'match' || hideSeek() || (match?.saboteur ? id !== myId : true);
+    // Runners whose van is still on the road after the heist started aren't in the house yet.
+    const inHouse = (id: string) => scene !== 'match' || hideSeek() || ((match?.saboteur ? id !== myId : true) && !(phase === 'live' && onRoad.has(id)));
     const actors =
       scene === 'title'
         ? []
@@ -3775,11 +3895,59 @@ async function boot() {
     if (performance.now() < staticUntil && !match?.saboteur && phase === 'live') drawStatic(camX, camY);
     if (match?.saboteur && !result) drawTrackerArrows(camX, camY);
     if (!result && impactProgress < 1) drawImpactOverlay(impactProgress);
+    if (match?.saboteur && !result) drawCrewEta();
     if (result) drawReveal(camX, camY);
     ctx.restore();
   }
 
   /** A soft colored vignette fades with the camera shake; the canvas world stays readable. */
+  /**
+   * The Saboteur's view of the Getaway Drive (until the whole crew is in): each Runner's van
+   * climbing from the garage to the house up the right of the screen, and about how long it'll be.
+   */
+  function drawCrewEta() {
+    if (!driveInfo || ![...driveCrew.values()].some((v) => !v.arrived)) return;
+    const now = performance.now();
+    const length = driveLength(driveInfo.setupMs);
+    const u = Math.max(0.6 * dpr, canvas.height / 900);
+    const x = canvas.width - 64 * u;
+    const top = canvas.height * 0.3;
+    const bottom = canvas.height * 0.68;
+    const text = (t: string, tx: number, ty: number, size: number, color: string, align: CanvasTextAlign) => {
+      ctx.font = `${Math.round(size)}px "Press Start 2P", monospace`;
+      ctx.textAlign = align;
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = color;
+      ctx.fillText(t, tx, ty);
+    };
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.fillStyle = 'rgba(7,8,15,0.8)';
+    ctx.fillRect(x - 210 * u, top - 78 * u, 250 * u, bottom - top + 118 * u);
+    ctx.strokeStyle = 'rgba(46,196,182,0.6)';
+    ctx.lineWidth = 2 * u;
+    ctx.strokeRect(x - 210 * u, top - 78 * u, 250 * u, bottom - top + 118 * u);
+    text('CREW ETA', x - 85 * u, top - 58 * u, 11 * u, '#2ec4b6', 'center');
+    ctx.fillStyle = 'rgba(232,226,255,0.25)';
+    ctx.fillRect(x - 2 * u, top, 4 * u, bottom - top);
+    drawDriveIcon(ctx, 'hud', 1, x, top - 22 * u, 0.15 * u);
+    drawDriveIcon(ctx, 'hud', 7, x, bottom + 18 * u, 0.1 * u);
+    // Labels go from the house down, nudged apart where vans are bunched up.
+    const vans = [...driveCrew.values()].map((v) => ({ v, p: Math.max(0, Math.min(1, crewY(v, length, now) / length)) })).sort((a, b) => b.p - a.p);
+    let lastY = -Infinity;
+    for (const { v, p } of vans) {
+      const vy = bottom - (bottom - top) * p;
+      drawDriveIcon(ctx, 'vans', v.color, x, vy, 0.1 * u);
+      // Each label is two lines (name, ETA): keep them that far apart.
+      const ly = Math.max(vy, lastY + 32 * u);
+      lastY = ly;
+      const eta = v.arrived ? (v.place ? ordinal(v.place) : 'IN') : performance.now() < driveGreenAt ? 'START' : `~${Math.max(1, Math.ceil((length - crewY(v, length, now)) / DRIVE.topSpeed))}s`;
+      text(v.name.slice(0, 9).toUpperCase(), x - 22 * u, ly - 6 * u, 8 * u, '#e8e2ff', 'right');
+      text(eta, x - 22 * u, ly + 8 * u, 9 * u, v.arrived ? '#9be86a' : '#ffd84a', 'right');
+    }
+    ctx.restore();
+  }
+
   function drawImpactOverlay(progress: number) {
     const rgb = impactColor.match(/[\da-f]{2}/gi)?.slice(0, 3).map((part) => parseInt(part, 16)) ?? [255, 69, 87];
     const alpha = Math.sin(Math.max(0, Math.min(1, progress)) * Math.PI) * 0.2;

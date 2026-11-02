@@ -27,6 +27,7 @@ import { DEPART_MS, normalizeCode, QUICK_PLAY_SIZE, ROOM_CODE_CHARS, ROOM_CODE_L
 import { JAM_MS, JAM_REACH, MAX_HP, OVERCLOCK_COOLDOWN_MS, OVERCLOCK_MS, TRAP_RADIUS, TRIPWIRE_COOLDOWN_MS, trapIsReady, trapRules, type TrapSpot } from '../src/data/traps.ts';
 import { WINGMAN_MAX_PATH, WINGMAN_RANGE, WINGMAN_SPEED, type WingmanResult } from '../src/data/wingman.ts';
 import { type Energy, energyAt, VELVET } from '../src/data/velvet.ts';
+import { buildTrack, DRIVE, DRIVE_RULES, driveSeed } from '../src/data/drive.ts';
 import { type Facing, NET_HZ, type ClientMsg, type PlayerState, type ServerMsg, type WatchInfo, type WatchPlayer, type Standing, type Taken, type Award } from '../src/net/protocol.ts';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -1048,6 +1049,7 @@ function endMatch(matchId: string) {
   bonuses.delete(matchId);
   missions.delete(matchId);
   breakerState.delete(matchId);
+  drives.delete(matchId);
   pendingWrongs.delete(matchId);
 }
 
@@ -1151,6 +1153,7 @@ function startRound(matchId: string) {
   if (!hs) setupVault(matchId, map, vaults.get(matchId)!);
   setupMission(matchId, map);
   setupBreakers(matchId);
+  setupDrive(matchId, hs || inside);
   phases.set(matchId, { phase: 'setup', endsAt: Date.now() + (hs ? HIDE_TIME : inside ? INSIDE.briefMs : SETUP_TIME) });
   trapState.set(matchId, new Map(MAPS[map].traps.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
@@ -1305,6 +1308,7 @@ function matchMsg(c: Client, matchId: string, resume = false): ServerMsg {
     // Hide & Seek's Seeker is no secret: everyone knows the owner has the gun.
     ...(isHideSeek(matchId) && saboteur ? { seeker: saboteur } : {}),
     ...(insides.get(matchId)?.insider === c.state.id ? { insider: true } : {}),
+    ...(drives.has(matchId) ? { drive: driveInfo(drives.get(matchId)!) } : {}),
   };
 }
 
@@ -1419,10 +1423,13 @@ function tick() {
 setInterval(tick, 1000 / NET_HZ);
 
 const MEETING_MSGS = new Set<ClientMsg['t']>(['meetVote', 'meetSay', 'leave', 'leaveRoom', 'browse', 'roomReady']);
+/** All a Runner whose van is still on the road once the heist has started can do. */
+const ROAD_MSGS = new Set<ClientMsg['t']>(['arrived', 'driveAt', 'move', 'emote', 'leave', 'leaveRoom', 'browse', 'roomReady']);
 
 function handle(c: Client, msg: ClientMsg) {
   const s = c.state;
   if (meetingOn(c.room) && !MEETING_MSGS.has(msg.t)) return;
+  if (stillDriving(c) && !ROAD_MSGS.has(msg.t)) return;
   switch (msg.t) {
     case 'hello': {
       if (s.name) break;
@@ -1689,7 +1696,32 @@ function handle(c: Client, msg: ClientMsg) {
     case 'ready': {
       const matchId = c.room;
       if (saboteurs.get(matchId) !== s.id || phases.get(matchId)?.phase !== 'setup' || isHideSeek(matchId)) break;
+      // Ready early can't make the crew late: the heist waits for the last van to get there.
+      const driving = onTheRoad(matchId).length;
+      const d = drives.get(matchId);
+      if (d && driving) {
+        d.sabReady = true;
+        send(c, { t: 'sabNote', text: `Ready! The heist starts when the crew gets here (${driving} still driving)` });
+        break;
+      }
       goLive(matchId);
+      break;
+    }
+    case 'arrived':
+      if (matches.get(c.room)?.has(s.id)) arrive(c.room, c, msg.cash);
+      break;
+    case 'driveAt': {
+      // Passed on to the rest of the match as it is (it only draws ghosts and the ETA; the
+      // arrival is what's checked), while this Runner is still on the road.
+      const d = drives.get(c.room);
+      const p = phases.get(c.room)?.phase;
+      if (!d || (p !== 'setup' && p !== 'live') || saboteurs.get(c.room) === s.id || d.arrived.has(s.id) || !matches.get(c.room)?.has(s.id)) break;
+      const x = Math.round(Number(msg.x) || 0);
+      const y = Math.round(Number(msg.y) || 0);
+      for (const id of matches.get(c.room) ?? []) {
+        const member = clients.get(id);
+        if (member && id !== s.id) send(member, { t: 'driveAt', id: s.id, x, y });
+      }
       break;
     }
     case 'hideDiamond': {
@@ -2454,6 +2486,94 @@ function missionStep(matchId: string, m: Mission, c: Client, step: number) {
   // The hack shows the Runners which furniture hides the keycard.
   if (step === 1) sendKeycard(matchId);
   console.log(`${matchId}: mission step ${step} (${MISSION_STEPS[step - 1].short}) by ${c.state.name}`);
+}
+
+// ---------- Getaway Drive (src/data/drive.ts) ----------
+
+/**
+ * A heist round's drive: the road (its seed, and the setup it's sized for), when its light went
+ * green, the quickest arrival anyone could really make, how many cash bundles lie on it, who has
+ * got to the house (and when), who got there first, and whether the Saboteur pressed ready and
+ * is only waiting for the crew.
+ */
+interface Drive {
+  seed: number;
+  setupMs: number;
+  green: number;
+  minMs: number;
+  cash: number;
+  arrived: Map<string, number>;
+  first: string | null;
+  sabReady: boolean;
+}
+const drives = new Map<string, Drive>();
+
+/** A new round's drive (heists only: Hide & Seek and Inside Job have none). */
+function setupDrive(matchId: string, none: boolean) {
+  if (none) {
+    drives.delete(matchId);
+    return;
+  }
+  const seed = driveSeed(`${matchId}:${(series.get(matchId)?.round ?? 0) + 1}`);
+  const track = buildTrack(seed, SETUP_TIME);
+  drives.set(matchId, {
+    seed,
+    setupMs: SETUP_TIME,
+    green: Date.now() + DRIVE.countdownMs,
+    minMs: (track.length / DRIVE.topSpeed) * 1000 * DRIVE_RULES.minShare,
+    cash: track.items.filter((it) => it.kind === 'cash').length,
+    arrived: new Map(),
+    first: null,
+    sabReady: false,
+  });
+}
+
+const driveInfo = (d: Drive) => ({ seed: d.seed, setupMs: d.setupMs, greenIn: d.green - Date.now(), arrived: [...d.arrived.keys()] });
+
+/** The Runners of a heist still driving over (everyone in the match but the Saboteur). */
+function onTheRoad(matchId: string) {
+  const d = drives.get(matchId);
+  if (!d) return [];
+  return [...(matches.get(matchId) ?? [])].filter((id) => id !== saboteurs.get(matchId) && !d.arrived.has(id));
+}
+
+/** A Runner whose van is still on the road after the heist started (they can't play yet). */
+function stillDriving(c: Client) {
+  const d = drives.get(c.room);
+  return !!d && phases.get(c.room)?.phase === 'live' && saboteurs.get(c.room) !== c.state.id && !!matches.get(c.room)?.has(c.state.id) && !d.arrived.has(c.state.id);
+}
+
+/**
+ * A Runner's van reached the house (or, `forced`, was dropped there for being too late). An
+ * arrival quicker than anyone could drive is refused. The first in and the cash they picked up
+ * score on the side; if the Saboteur is only waiting for the crew, the last one in starts it.
+ */
+function arrive(matchId: string, c: Client, cash: number, forced = false) {
+  const d = drives.get(matchId);
+  const p = phases.get(matchId);
+  const id = c.state.id;
+  if (!d || !p || p.phase === 'over' || d.arrived.has(id) || saboteurs.get(matchId) === id) return;
+  const now = Date.now();
+  const ms = now - d.green;
+  if (!forced && ms < d.minMs) {
+    console.log(`${matchId}: ${c.state.name}'s arrival refused (${Math.round(ms / 1000)}s is too quick)`);
+    return;
+  }
+  d.arrived.set(id, now);
+  let points = 0;
+  const first = !forced && !d.first;
+  if (first) {
+    d.first = id;
+    points += DRIVE_RULES.firstIn;
+    addBonus(matchId, id, DRIVE_RULES.firstIn, 'First to the house');
+  }
+  const bundles = forced ? 0 : Math.max(0, Math.min(d.cash, Math.floor(Number(cash) || 0)));
+  if (bundles) {
+    points += bundles * DRIVE_RULES.cash;
+    addBonus(matchId, id, bundles * DRIVE_RULES.cash, `${bundles} cash on the drive`);
+  }
+  toMatch(matchId, { t: 'arrived', id, ms, ...(first ? { first } : {}), ...(forced ? { forced } : {}), ...(points ? { points } : {}) });
+  if (d.sabReady && p.phase === 'setup' && !onTheRoad(matchId).length) goLive(matchId);
 }
 
 // ---------- Fuse boxes (src/data/breakers.ts) ----------
@@ -3615,6 +3735,16 @@ function goLive(matchId: string) {
     if (id !== saboteurs.get(matchId)) for (const trap of decoys) send(member, { t: 'place', trap });
   }
   sendDiamonds(matchId);
+  // Vans still on the road: they get there when they get there, but no later than this.
+  if (drives.has(matchId)) {
+    later(matchId, DRIVE_RULES.lateCapMs, () => {
+      if (phases.get(matchId)?.phase !== 'live') return;
+      for (const id of onTheRoad(matchId)) {
+        const member = clients.get(id);
+        if (member) arrive(matchId, member, 0, true);
+      }
+    });
+  }
 }
 
 /** Hide & Seek's round: who was caught, who escaped, and who simply stayed hidden. */

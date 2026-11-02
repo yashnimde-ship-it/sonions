@@ -14,6 +14,18 @@ import type { PlacedTrap, TrapKindId } from '../data/trapKinds.ts';
 export type Facing = 'up' | 'down' | 'left' | 'right';
 export type RoomKind = 'lobby' | 'match';
 
+/**
+ * A heist round's Getaway Drive (src/data/drive.ts): the road everyone drives (its seed, and
+ * the setup it's sized for), when the light goes green (ms from now: below 0 once it has),
+ * and who's already at the house.
+ */
+export interface DriveInfo {
+  seed: number;
+  setupMs: number;
+  greenIn: number;
+  arrived: string[];
+}
+
 export interface PlayerState {
   id: string;
   name: string;
@@ -77,8 +89,12 @@ export type ClientMsg =
   | { t: 'vote'; card: ChaosId }
   /** A wave in the safehouse: `line` picks what it says (WAVE_LINES). */
   | { t: 'emote'; kind: 'wave'; line: number }
-  /** Saboteur confirms setup early. */
+  /** Saboteur confirms setup early (the heist waits for any Runner still on the road). */
   | { t: 'ready' }
+  /** A Runner's van reached the house in the Getaway Drive, with the cash bundles they picked up. */
+  | { t: 'arrived'; cash: number }
+  /** Where my van is on the Getaway Drive (road px: across, and up the road), a few times a second. */
+  | { t: 'driveAt'; x: number; y: number }
   /** Setup: the Saboteur hides a diamond in a piece of furniture (null takes it back out). */
   | { t: 'hideDiamond'; id: string; spot: string | null }
   /** A Runner finished searching a piece of furniture (held E). */
@@ -195,7 +211,14 @@ export type ServerMsg =
    * A portal filled up: you are in a new match with these players. `role` is only your own:
    * nobody is told who the Saboteur is (except the Saboteur).
    */
-  | { t: 'match'; matchId: string; size: number; map: MapId; deck?: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean; round: number; rounds: number; mode: GameMode; seeker?: string; insider?: boolean }
+  | { t: 'match'; matchId: string; size: number; map: MapId; deck?: MapId; players: PlayerState[]; role: 'runner' | 'saboteur'; phase: Phase; ms: number; energy?: number; maxEnergy?: number; resume?: boolean; round: number; rounds: number; mode: GameMode; seeker?: string; insider?: boolean; drive?: DriveInfo }
+  /**
+   * The Getaway Drive: someone's van reached the house (`ms` after the green light), or was
+   * dropped there (`forced`: too late); `points` for being first in and the cash picked up.
+   */
+  | { t: 'arrived'; id: string; ms: number; first?: boolean; forced?: boolean; points?: number }
+  /** Where another Runner's van is on the Getaway Drive (ghost vans; the Saboteur's crew ETA). */
+  | { t: 'driveAt'; id: string; x: number; y: number }
   /** The server rejected an optimistic trap placement. */
   | { t: 'placementRejected'; id: string; reason: string }
   /** Current Saboteur trap energy after a placement or pickup. */

@@ -445,6 +445,68 @@ export function engineStart(ms = 3000): () => void {
 }
 
 /**
+ * The Getaway Drive's engine: a rumble whose pitch follows the van's speed (0-1, past 1 on
+ * nitro), with a hiss on top while the nitro burns. `set` every frame; `stop` fades it out.
+ */
+export function driveEngine(): { set: (speed: number, nitro: boolean) => void; stop: () => void } {
+  const a = enabled ? audio() : null;
+  if (!a) return { set: () => {}, stop: () => {} };
+  const bus = a.createGain();
+  bus.gain.value = 0.0001;
+  bus.gain.setTargetAtTime(1, a.currentTime, 0.3);
+  bus.connect(master!);
+  const o = a.createOscillator();
+  const sub = a.createOscillator();
+  const f = a.createBiquadFilter();
+  const g = a.createGain();
+  o.type = 'sawtooth';
+  sub.type = 'square';
+  f.type = 'lowpass';
+  g.gain.value = 0.16;
+  o.connect(f);
+  sub.connect(f);
+  f.connect(g).connect(bus);
+  // The nitro hiss: looping noise through a band-pass, faded in and out.
+  const buf = a.createBuffer(1, a.sampleRate, a.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  const hiss = a.createBufferSource();
+  hiss.buffer = buf;
+  hiss.loop = true;
+  const hf = a.createBiquadFilter();
+  hf.type = 'bandpass';
+  hf.frequency.value = 2400;
+  const hg = a.createGain();
+  hg.gain.value = 0;
+  hiss.connect(hf).connect(hg).connect(bus);
+  o.start();
+  sub.start();
+  hiss.start();
+  let stopped = false;
+  return {
+    set(speed, nitro) {
+      if (stopped) return;
+      const t = a.currentTime;
+      o.frequency.setTargetAtTime(42 + 70 * speed, t, 0.08);
+      sub.frequency.setTargetAtTime(21 + 35 * speed, t, 0.08);
+      f.frequency.setTargetAtTime(260 + 700 * speed, t, 0.08);
+      hg.gain.setTargetAtTime(nitro ? 0.07 : 0, t, 0.06);
+    },
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      bus.gain.setTargetAtTime(0.0001, a.currentTime, 0.12);
+      setTimeout(() => {
+        o.stop();
+        sub.stop();
+        hiss.stop();
+        bus.disconnect();
+      }, 800);
+    },
+  };
+}
+
+/**
  * A note that climbs with `step`: the search ticks (rising while E is held), the streak chimes
  * (higher with every link of a chain) and the score count-up ticks.
  */
