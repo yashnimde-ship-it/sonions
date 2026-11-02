@@ -28,7 +28,7 @@ import { BOOST, FLARE, HIDE_SEEK_MAP, HS_SCORE, type HsAbility, distToHideSpot, 
 import { CUSTOM_MIN, CUSTOM_PAD, HANDOFF_REACH, type PingLabel, KO_HP, KO_RESPAWN, type Phase, placementRefusal, REVIVE_HP, SCORE, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, trapSlots } from './data/round';
 import { type PlacedTrap, TRAP_KINDS, type TrapKind, trapKind } from './data/trapKinds';
 import { Bandit, DRAW_H, DRAW_W, type Facing } from './entities/Bandit';
-import { keyHeld, keyPressed, pollInput, readControls } from './input/Controls';
+import { gamepadAim, keyHeld, keyPressed, pollInput, readControls } from './input/Controls';
 import { type TouchButton, TouchControls } from './input/Touch';
 import { type LobbyJson, LobbyMap } from './map/LobbyMap';
 import { type EstateJson, TileMap, type Stairwell } from './map/TileMap';
@@ -373,6 +373,7 @@ async function boot() {
 
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   const ctx = canvas.getContext('2d')!;
+  window.addEventListener('gamepadconnected', (event) => toast(`${event.gamepad.id || 'Controller'} connected · left stick move · right stick aim`));
   const hudEl = document.getElementById('hud')!;
   // The Saboteur clicks to place the selected trap (right-click picks one up), or, with none
   // selected, to fire a trap plate.
@@ -3238,6 +3239,13 @@ async function boot() {
     updateObjective();
     renderInsideBar();
     renderSecretCard();
+    // A controller's right stick becomes the same world aim point used by mouse, touch, and F.
+    const padAim = gamepadAim();
+    if (padAim && scene === 'match') {
+      const [ax, ay] = padAim;
+      mouseX = me.x + ax * 180;
+      mouseY = me.y - 14 + ay * 180;
+    }
     if (meetingUI.open) {
       meetingUI.tick();
       phaseEndsAt = performance.now() + meetingClock;

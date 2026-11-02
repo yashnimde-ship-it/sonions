@@ -31,6 +31,7 @@ const OTHER = new Set(['Escape', ABILITY, 'KeyR', 'KeyF', 'KeyC', 'KeyG', 'KeyH'
 const held = new Set<string>();
 let pressed = new Set<string>();
 let pressedNext = new Set<string>();
+let padKeys = new Set<string>();
 let padActionWasDown = false;
 let padAction = false;
 let padAbilityWasDown = false;
@@ -53,19 +54,42 @@ const pad = () => [...(navigator.getGamepads?.() ?? [])].find((p): p is Gamepad 
 
 /** Call once at the start of every fixed update. */
 export function pollInput() {
-  pressed = pressedNext;
+  const gp = pad();
+  // Xbox/XInput layout (including the Kreo Surge XB): expose the useful buttons as the same
+  // virtual keys the game already understands, so every existing mechanic works on a pad.
+  const nextPadKeys = new Set<string>();
+  const pressedButton = (n: number) => !!gp?.buttons[n]?.pressed;
+  if (pressedButton(0)) nextPadKeys.add('KeyE'); // A: interact / confirm
+  if (pressedButton(1) || pressedButton(7)) nextPadKeys.add('KeyF'); // B or RT: fire
+  if (pressedButton(2)) nextPadKeys.add('KeyQ'); // X: ability / flare / boost
+  if (pressedButton(3)) nextPadKeys.add('KeyM'); // Y: Inside Job meeting
+  if (pressedButton(4)) nextPadKeys.add('KeyR'); // LB: reload
+  if (pressedButton(5) || pressedButton(10)) nextPadKeys.add('ShiftRight'); // RB or LS: sprint
+  if (pressedButton(8) || pressedButton(9)) nextPadKeys.add('Escape'); // View / Menu: back
+  pressed = new Set([...pressedNext, ...[...nextPadKeys].filter((key) => !padKeys.has(key))]);
   pressedNext = new Set();
-  const down = !!pad()?.buttons[0]?.pressed;
+  padKeys = nextPadKeys;
+  const down = pressedButton(0);
   padAction = down && !padActionWasDown;
   padActionWasDown = down;
-  const abilityDown = !!pad()?.buttons[2]?.pressed;
+  const abilityDown = pressedButton(2);
   padAbility = abilityDown && !padAbilityWasDown;
   padAbilityWasDown = abilityDown;
 }
 
 /** Was this key pressed this frame? */
 /** Is this key down right now? */
-export const keyHeld = (code: string) => held.has(code);
+export const keyHeld = (code: string) => held.has(code) || padKeys.has(code);
+
+/** Right-stick aim, normalized to -1..1. Null means the player is using mouse/touch aim. */
+export function gamepadAim(): [number, number] | null {
+  const gp = pad();
+  if (!gp) return null;
+  const dead = (v: number) => (Math.abs(v) < 0.22 ? 0 : v);
+  const x = dead(gp.axes[2] ?? 0);
+  const y = dead(gp.axes[3] ?? 0);
+  return x || y ? [x, y] : null;
+}
 
 /** The on-screen thumbstick (see Touch.ts): -1..1 each way. */
 let touchMove: [number, number] = [0, 0];
@@ -97,7 +121,7 @@ export function readControls(): ControlState {
   }
   dx = Math.sign(dx);
   dy = Math.sign(dy);
-  let sprint = [...held].some((c) => SPRINT.has(c));
+  let sprint = [...held, ...padKeys].some((c) => SPRINT.has(c));
   const gp = pad();
   if (gp && !dx && !dy) {
     const dead = (v: number) => (Math.abs(v) < 0.3 ? 0 : v);

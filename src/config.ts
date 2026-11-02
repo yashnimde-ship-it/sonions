@@ -14,9 +14,10 @@ export const CHAR_FRAME_W = 48;
 /** Frames per sheet: 3 standing, then a 4-frame walk for down, up and left. */
 export const CHAR_FRAMES = 15;
 export const CHAR_FRAME_H = 72;
-// Sheets are drawn at 0.4 size in art pixels, so a character stands about 29 art pixels
-// (1.8 tiles) tall: crewmate-sized next to the furniture, like Among Us, so rooms feel open.
-export const CHAR_DRAW_SCALE = 0.4;
+// Sheets are drawn at 0.60 size in art pixels, so a character stands about 43 art pixels
+// (nearly 3 tiles) tall. This keeps them clearly readable against the detailed map furniture.
+// Collision remains deliberately smaller at the feet (HITBOX below), so movement is unchanged.
+export const CHAR_DRAW_SCALE = 0.6;
 /** The play camera keeps a character about this fraction of the screen height (Among Us). */
 export const CHAR_SCREEN_FRACTION = 1 / 10;
 // After the dusk lighting, characters are drawn again at this opacity so they stay readable.
