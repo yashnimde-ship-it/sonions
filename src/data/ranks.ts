@@ -20,7 +20,8 @@ export const DIVISIONS = 3;
 /** The leaderboard: how many it lists, its region (one for now), and how many are MOST WANTED. */
 export const LEADERBOARD_SIZE = 100;
 export const LEADERBOARD_REGION = 'Mumbai';
-export const MOST_WANTED = 10;
+/** A special title for the top 100 players on the regional leaderboard. */
+export const MOST_WANTED = 100;
 
 /** REP for a finished match, by place on the final scoreboard (crews of MIN_RANKED_CREW or more). */
 export const REP_RULES = {

@@ -3,7 +3,7 @@
 // The badge artwork lives in public/assets/ranks. Keeping this renderer shared makes the
 // profile, results, and leaderboard always show the same insignia.
 
-import { RANKS, rankOf, type BoardRow } from '../data/ranks';
+import { MOST_WANTED, RANKS, rankOf, type BoardRow } from '../data/ranks';
 import type { ServerMsg } from '../net/protocol';
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
@@ -13,7 +13,7 @@ export function rankBadge(rep: number, mostWanted = false) {
   const r = rankOf(rep);
   const file = r.id.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
   const src = mostWanted ? '/assets/ranks/most-wanted.png' : `/assets/ranks/${file}-${r.division}.png`;
-  const label = mostWanted ? `${r.label} · MOST WANTED` : r.label;
+  const label = mostWanted ? 'MOST WANTED' : r.label;
   return `<span class="rank-badge${mostWanted ? ' wanted' : ''}" style="--rank:${r.color}" title="${label}"><span class="rank-badge-art"><img src="${src}" alt="" aria-hidden="true"></span><span class="rank-badge-label">${label}</span></span>`;
 }
 
@@ -103,6 +103,6 @@ export class LeaderboardUI {
       const divisions = [1, 2, 3].map((division) => rankBadge((index * 3 + division - 1) * 100)).join('');
       return `<article class="rank-guide-row"><h3 style="--rank:${rank.color}">${rank.name}</h3><div>${divisions}</div></article>`;
     }).join('');
-    return `<section class="rank-guide"><p>Earn REP by finishing ranked matches with 3 or more players. Every division takes 100 REP.</p><div class="rank-guide-list">${ranks}</div><article class="rank-guide-wanted">${rankBadge(0, true)}<p>The top ${this.data?.mostWanted ?? 10} players on the leaderboard are <b>MOST WANTED</b>.</p></article></section>`;
+    return `<section class="rank-guide"><p>Earn REP by finishing ranked matches with 3 or more players. Every division takes 100 REP.</p><div class="rank-guide-list">${ranks}</div><article class="rank-guide-wanted">${rankBadge(0, true)}<p>The top ${this.data?.mostWanted ?? MOST_WANTED} players on the leaderboard are <b>MOST WANTED</b>.</p></article></section>`;
   }
 }

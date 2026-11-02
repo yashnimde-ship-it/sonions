@@ -88,11 +88,11 @@ const CARDS: Record<HowToRole, Card> = {
     steps: [
       ['⏳', 'Count in the Staff Room while they hide'],
       ['🔦', 'Hunt with your flashlight; E searches a hiding place'],
-      ['🔫', 'Click to shoot (two hits catch); a miss costs you'],
+      ['🔫', 'Right-click or F to shoot (two hits catch); a miss costs you'],
       ['✨', 'Q fires a flare, C a heartbeat scan'],
     ],
-    keys: [['WASD', 'move'], ['Click', 'shoot'], ['E', 'search'], ['Q / C', 'flare / scan'], ['R', 'reload']],
-    touchKeys: [['Stick', 'move'], ['Tap', 'shoot'], ['E', 'search']],
+    keys: [['WASD', 'move'], ['Right-click / F', 'shoot'], ['E', 'search'], ['Q / C', 'flare / scan'], ['R', 'reload']],
+    touchKeys: [['Stick', 'move'], ['Tap ×2', 'shoot'], ['E', 'search']],
   },
 };
 

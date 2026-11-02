@@ -414,7 +414,7 @@ async function boot() {
       return;
     }
     if (scene === 'match' && insideJob()) {
-      if ((button === 2 || (button === 0 && e.pointerType === 'touch')) && !result) {
+      if ((button === 2 || (button === 0 && (e.pointerType === 'touch' || e.detail >= 2))) && !result) {
         const [x, y] = toWorld(e);
         if (e.pointerType === 'touch' && performance.now() > aimUntil) {
           if (!canShoot()) return;
@@ -429,11 +429,18 @@ async function boot() {
       return;
     }
     if (scene === 'match' && hideSeek()) {
-      // The Seeker's gun: click where to shoot.
-      if (match?.saboteur && phase === 'live' && button === 0 && !result) {
+      // The Seeker's gun: right-click, F, or a double-tap/double-click fires.
+      if (match?.saboteur && phase === 'live' && (button === 2 || (button === 0 && (e.pointerType === 'touch' || e.detail >= 2))) && !result) {
         const [x, y] = toWorld(e);
-        if (performance.now() < gun.reloadEnd || gun.ammo <= 0) sfx('click');
-        else net.send({ t: 'shoot', x, y });
+        if (e.pointerType === 'touch' && performance.now() > aimUntil) {
+          if (!canFireSeekerGun()) return;
+          aimUntil = performance.now() + 2000;
+          aimAt = [x, y];
+          toast('Tap again to shoot');
+          return;
+        }
+        aimUntil = 0;
+        fireSeekerGun(x, y);
       }
       return;
     }
@@ -1232,7 +1239,7 @@ async function boot() {
     // Abilities are heist tools (traps, diamonds): Hide & Seek plays without them.
     document.getElementById('ability')!.style.display = hs ? 'none' : '';
     const help = document.querySelector<HTMLElement>('#hud .help');
-    if (help) help.textContent = hs ? (msg.role === 'saboteur' ? 'WASD move · Click shoot · R reload · Q Flare · C Heartbeat · E search · Esc safehouse' : 'WASD move · Shift sprint · E hide · Q Boost · G ping · Esc safehouse') : msg.role === 'saboteur' ? 'WASD move · Shift sprint · E action · Q ability · Esc safehouse' : 'WASD move · Shift sprint · E action · Q ability · G ping · H pass diamond · Esc safehouse';
+    if (help) help.textContent = hs ? (msg.role === 'saboteur' ? 'WASD move · F / right-click shoot · R reload · Q Flare · C Heartbeat · E search · Esc safehouse' : 'WASD move · Shift sprint · E hide · Q Boost · G ping · Esc safehouse') : msg.role === 'saboteur' ? 'WASD move · Shift sprint · E action · Q ability · Esc safehouse' : 'WASD move · Shift sprint · E action · Q ability · G ping · H pass diamond · Esc safehouse';
     const ij = msg.mode === 'insideJob';
     if (ij && help) help.textContent = 'WASD move · Shift sprint · E action · F / right-click shoot · M meeting · Q ability · H pass · Esc safehouse';
     const role = ij
@@ -1246,7 +1253,7 @@ async function boot() {
         : `One of the crew is the Insider. Bank the diamonds, or find them out: you have 1 bullet (F) and 1 meeting (M). Shoot a fellow thief and it costs you.`
       : hs
       ? msg.role === 'saboteur'
-        ? 'Count to 30 in the Staff Room while they hide. Then hunt them in the dark: aim with the mouse, click to shoot.'
+        ? 'Count to 30 in the Staff Room while they hide. Then hunt them in the dark: aim with the mouse, right-click or press F to shoot.'
         : 'The lights are out and the owner has a gun. Hide! Survive the hunt; at the end the main entrance opens.'
       : msg.role === 'saboteur'
         ? `Hide the diamonds and place up to ${trapSlots(msg.size)} traps. Confirm when your setup is ready.`
@@ -3259,6 +3266,7 @@ async function boot() {
     }
     const sab = !!match?.saboteur;
     const hs = hideSeek();
+    if (hs && sab && phase === 'live' && !result && !hud.messageOpen && keyPressed('KeyF')) fireSeekerGun(mouseX, mouseY);
     if (hs && sab && phase === 'live' && keyPressed('KeyR')) net.send({ t: 'reload' });
     // A finished reload: the gun is full again (the server agrees on its next shot).
     if (hs && sab && gun.ammo === 0 && gun.reloadEnd && performance.now() >= gun.reloadEnd) gun = { ...gun, ammo: GUN.ammo, reloadEnd: 0 };
@@ -3368,7 +3376,7 @@ async function boot() {
       );
       if (sab && phase === 'live') {
         const reloading = performance.now() < gun.reloadEnd;
-        hud.setObjective('FIND THEM', [], reloading ? 'RELOADING...' : `AMMO ${'|'.repeat(gun.ammo)}${'.'.repeat(GUN.ammo - gun.ammo)}  ·  click shoot · R reload · Q Flare · C Heartbeat · a miss costs ${GUN.missPenalty} HP`);
+        hud.setObjective('FIND THEM', [], reloading ? 'RELOADING...' : `AMMO ${'|'.repeat(gun.ammo)}${'.'.repeat(GUN.ammo - gun.ammo)}  ·  F / right-click shoot · R reload · Q Flare · C Heartbeat · a miss costs ${GUN.missPenalty} HP`);
       }
       return;
     }
@@ -7436,12 +7444,50 @@ async function boot() {
     return insideJob() && phase === 'live' && !result && !knockedOut && !amOut() && gun.ammo > 0 && performance.now() >= gun.reloadEnd;
   }
 
+  /** A small, fair aim magnet: it only settles on an opponent already close to the aim line. */
+  function assistedAim(x: number, y: number, range: number, sightRange = range): [number, number] {
+    const x0 = me.x;
+    const y0 = me.y - 14;
+    const len = Math.hypot(x - x0, y - y0);
+    if (len < 1) return [x, y];
+    const dx = (x - x0) / len;
+    const dy = (y - y0) / len;
+    let target: Bandit | null = null;
+    let best = Infinity;
+    for (const remote of remotes.values()) {
+      if (remote.state.offline || !here(remote.state.deck) || remote.state.hp <= 0) continue;
+      const tx = remote.bandit.x;
+      const ty = remote.bandit.y - 12;
+      const vx = tx - x0;
+      const vy = ty - y0;
+      const along = vx * dx + vy * dy;
+      if (along < 0 || along > Math.min(range, sightRange)) continue;
+      const across = Math.abs(vx * dy - vy * dx);
+      // This leaves control with the player while making near-misses forgiving.
+      if (across > Math.max(16, Math.min(34, along * 0.12)) || across >= best) continue;
+      target = remote.bandit;
+      best = across;
+    }
+    return target ? [target.x, target.y - 12] : [x, y];
+  }
+
   function fireAt(x: number, y: number) {
     if (!canShoot()) {
       sfx('click');
       if (insideJob() && !amOut() && !knockedOut) toast(gun.ammo <= 0 ? 'No bullets left' : `Next bullet in ${Math.ceil((gun.reloadEnd - performance.now()) / 1000)}s`);
       return;
     }
+    [x, y] = assistedAim(x, y, INSIDE.range);
+    net.send({ t: 'shoot', x, y });
+  }
+
+  function canFireSeekerGun() {
+    return hideSeek() && !!match?.saboteur && phase === 'live' && !result && gun.ammo > 0 && performance.now() >= gun.reloadEnd;
+  }
+
+  function fireSeekerGun(x: number, y: number) {
+    if (!canFireSeekerGun()) return sfx('click');
+    [x, y] = assistedAim(x, y, GUN.range, FLASHLIGHT_RANGE + 12);
     net.send({ t: 'shoot', x, y });
   }
 
