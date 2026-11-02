@@ -1303,6 +1303,15 @@ async function boot() {
           const invite = new URLSearchParams(location.search).get('room');
           if (invite && title.hasSavedName && scene === 'title') title.onJoin(invite);
         }
+        // Reconnected mid-game, but the server doesn't know us: it restarted (a new version
+        // went live), and the game went with it. Say so, rather than sit in a round (or the
+        // Getaway Drive, which runs on here by itself) that nothing will ever move on.
+        if (!msg.resumed && (scene === 'match' || scene === 'lobby')) {
+          endDrive();
+          howTo.hide();
+          session.set('playing', null);
+          lobby.showDisconnected('The game server restarted (a new version went live), so that game ended. Reconnect to start a new one.');
+        }
         break;
       case 'room': {
         // Who just came in, readied up or left (the same room as before, not a fresh one).
