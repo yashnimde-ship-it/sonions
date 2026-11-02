@@ -15,6 +15,9 @@ export interface SavedProfile {
   matches: number;
   wins: number;
   points: number;
+  /** Ranked REP (src/data/ranks.ts), and whether the demotion shield has been used. */
+  rep: number;
+  shield: boolean;
   stats: { banked: number; contracts: number; revenges: number };
   createdAt: number;
   seenAt: number;
@@ -24,6 +27,9 @@ export interface Store {
   kind: 'mongo' | 'file';
   get(id: string): Promise<SavedProfile | null>;
   put(profile: SavedProfile): Promise<void>;
+  /** The top `n` by REP (more wins first on a tie), and the place this REP/wins would have. */
+  top(n: number): Promise<SavedProfile[]>;
+  placeOf(rep: number, wins: number): Promise<number>;
 }
 
 /** The profile's id: a hash of its secret key (so a leaked database can't be used to log in). */
@@ -31,7 +37,7 @@ export const profileId = (key: string) => createHash('sha256').update(`vault-bre
 
 export function newProfile(id: string, name: string): SavedProfile {
   const now = Date.now();
-  return { _id: id, name, matches: 0, wins: 0, points: 0, stats: { banked: 0, contracts: 0, revenges: 0 }, createdAt: now, seenAt: now };
+  return { _id: id, name, matches: 0, wins: 0, points: 0, rep: 0, shield: false, stats: { banked: 0, contracts: 0, revenges: 0 }, createdAt: now, seenAt: now };
 }
 
 /** Old saves get any field added since. */
@@ -56,6 +62,7 @@ async function mongoStore(uri: string): Promise<Store> {
   const client = new MongoClient(uri, { serverSelectionTimeoutMS: 10_000 });
   await client.connect();
   const profiles = client.db('vault-breakers').collection<SavedProfile>('profiles');
+  await profiles.createIndex({ rep: -1, wins: -1 }).catch(() => {});
   return {
     kind: 'mongo',
     async get(id) {
@@ -64,6 +71,13 @@ async function mongoStore(uri: string): Promise<Store> {
     },
     async put(profile) {
       await profiles.replaceOne({ _id: profile._id }, profile, { upsert: true });
+    },
+    async top(n) {
+      // Only players who have finished a match.
+      return (await profiles.find({ matches: { $gt: 0 } }).sort({ rep: -1, wins: -1, _id: 1 }).limit(n).toArray()).map(upgrade);
+    },
+    async placeOf(rep, wins) {
+      return 1 + (await profiles.countDocuments({ matches: { $gt: 0 }, $or: [{ rep: { $gt: rep } }, { rep, wins: { $gt: wins } }] }));
     },
   };
 }
@@ -89,6 +103,12 @@ function fileStore(file: string): Store {
     async put(profile) {
       all[profile._id] = profile;
       timer ??= setTimeout(flush, 500);
+    },
+    async top(n) {
+      return Object.values(all).map(upgrade).filter((p) => p.matches > 0).sort((a, b) => b.rep - a.rep || b.wins - a.wins || a._id.localeCompare(b._id)).slice(0, n);
+    },
+    async placeOf(rep, wins) {
+      return 1 + Object.values(all).map(upgrade).filter((p) => p.matches > 0 && (p.rep > rep || (p.rep === rep && p.wins > wins))).length;
     },
   };
 }

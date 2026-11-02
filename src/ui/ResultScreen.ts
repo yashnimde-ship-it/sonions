@@ -1,3 +1,4 @@
+import { rankBadge } from './LeaderboardUI';
 import type { ServerMsg, Standing } from '../net/protocol';
 import { blip } from '../systems/Sound';
 
@@ -85,6 +86,21 @@ export class ResultScreen {
     this.insideJob = !!ij;
     this.root.hidden = false;
     this.tick();
+  }
+
+  /** My REP after the match (it arrives just after the final results). */
+  setRep(msg: { before: number; after: number; reasons: string[]; shielded: boolean }) {
+    let el = this.root.querySelector<HTMLElement>('.rep-change');
+    const card = this.root.querySelector('.result-card');
+    if (!card) return;
+    if (!el) {
+      el = document.createElement('p');
+      el.className = 'rep-change';
+      card.querySelector('.next')?.before(el) ?? card.append(el);
+    }
+    const d = msg.after - msg.before;
+    el.className = `rep-change ${d >= 0 ? 'up' : 'down'}`;
+    el.innerHTML = `<b>${d >= 0 ? '+' : ''}${d} REP</b> → ${rankBadge(msg.after)} <small>${msg.shielded ? 'demotion shield used' : msg.reasons.map(esc).join(' · ')}</small>`;
   }
 
   /** The match is over: podium, totals, and what happened each round. */

@@ -1,6 +1,7 @@
 // Messages between the game and the server (server/index.ts), sent as JSON over one WebSocket.
 
 import type { ChaosId } from '../data/chaos';
+import type { BoardRow } from '../data/ranks.ts';
 import type { RoomError, RoomInfo, RoomSummary } from '../data/rooms';
 import type { CharacterId } from '../config.ts'; // .ts: also loaded by the Node server
 import type { AbilityId } from '../data/characters.ts';
@@ -113,6 +114,8 @@ export type ClientMsg =
   | { t: 'reload' }
   /** Inside Job: call my meeting; vote (null: skip); say a quick line (about a player) or type one. */
   | { t: 'callMeeting' }
+  /** Open the leaderboard (the server answers with 'leaderboard'). */
+  | { t: 'leaderboard' }
   /** Heist mission: I started holding E at the security terminal; I finished (HACK_MS later). */
   | { t: 'hackStart' }
   | { t: 'hack' }
@@ -425,7 +428,11 @@ export type ServerMsg =
   /** A mission step was just completed, and by whom. */
   | { t: 'missionStep'; step: number; id: string; name: string }
   /** My saved profile (from the database): what the server has on record for me. */
-  | { t: 'profile'; matches: number; wins: number; points: number; saved: boolean }
+  | { t: 'profile'; matches: number; wins: number; points: number; saved: boolean; rep: number }
+  /** My REP after a match: before, after, why; `shielded`: the demotion shield caught a drop. */
+  | { t: 'repChange'; before: number; after: number; reasons: string[]; shielded: boolean }
+  /** The leaderboard: the top players in the region, and my own place (if I've finished a match). */
+  | { t: 'leaderboard'; region: string; rows: BoardRow[]; me: BoardRow | null; mostWanted: number }
   /** My secret contract this round (only I get it), and how far along it is. */
   | { t: 'contract'; text: string; need: number; got: number; done: boolean; points: number }
   /** My Grudge in this game: who wronged me (null: none here, or I got my revenge). */

@@ -17,6 +17,7 @@ import { INSIDE, INSIDE_JOB_MIN_PLAYERS, INSIDE_SCORE, MEETING_LINES } from '../
 import { HACK_MS, MISSION_POINTS, MISSION_STEPS } from '../src/data/mission.ts';
 import { BREAKER } from '../src/data/breakers.ts';
 import { newProfile, openStore, profileId, type SavedProfile } from './store.ts';
+import { applyRep, type BoardRow, LEADERBOARD_REGION, LEADERBOARD_SIZE, MIN_RANKED_CREW, MOST_WANTED, placeRep, REP_RULES } from '../src/data/ranks.ts';
 import { CONTRACT_POINTS, type ContractDef, type ContractId, drawContract, REVENGE_POINTS } from '../src/data/contracts.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
 import { CUSTOM_MIN, CUSTOM_PAD, FINAL_DELAY_MS, INTERMISSION_MS, LIVE_MS, roundsFor, SCORE, type Phase, placementRefusal, HANDOFF_REACH, KO_HP, PING_LABELS, respawnWait, REVIVE_HP, REVIVE_MS, REVIVE_REACH, saboteurMaxEnergy, SETUP_MS } from '../src/data/round.ts';
@@ -983,6 +984,8 @@ function leaveMatch(c: Client) {
   const match = matches.get(c.room);
   if (!match) return;
   const matchId = c.room;
+  const running = series.get(matchId);
+  if (running && !running.done) void quitPenalty(c, running.players.size);
   dropDiamond(matchId, c.state.id, c.state.x, c.state.y, true);
   dropKeycard(matchId, c);
   match.delete(c.state.id);
@@ -1218,7 +1221,42 @@ function standings(matchId: string): Standing[] {
 
 // ---------- Saved profiles ----------
 
-const profileMsg = (p: SavedProfile, saved: boolean): ServerMsg => ({ t: 'profile', matches: p.matches, wins: p.wins, points: p.points, saved });
+const profileMsg = (p: SavedProfile, saved: boolean): ServerMsg => ({ t: 'profile', matches: p.matches, wins: p.wins, points: p.points, saved, rep: p.rep });
+
+/** The top of the board, kept for a little while so opening it doesn't hit the database each time. */
+let boardCache: { at: number; rows: BoardRow[]; ids: string[] } | null = null;
+const BOARD_CACHE_MS = 30_000;
+async function sendLeaderboard(c: Client) {
+  try {
+    if (!boardCache || Date.now() - boardCache.at > BOARD_CACHE_MS) {
+      const top = await store.top(LEADERBOARD_SIZE);
+      boardCache = { at: Date.now(), rows: top.map((p, i) => ({ place: i + 1, name: p.name, rep: p.rep, wins: p.wins, matches: p.matches })), ids: top.map((p) => p._id) };
+    }
+    const p = c.profile;
+    const i = p ? boardCache.ids.indexOf(p._id) : -1;
+    const me: BoardRow | null = !p || p.matches === 0 ? null : i >= 0 ? { ...boardCache.rows[i], you: true } : { place: await store.placeOf(p.rep, p.wins), name: p.name, rep: p.rep, wins: p.wins, matches: p.matches, you: true };
+    send(c, { t: 'leaderboard', region: LEADERBOARD_REGION, rows: boardCache.rows.map((r, j) => (j === i ? { ...r, you: true } : r)), me, mostWanted: MOST_WANTED });
+  } catch (err) {
+    console.error(`leaderboard: ${(err as Error).message}`);
+  }
+}
+
+/** REP for leaving a ranked match before it's over. */
+async function quitPenalty(c: Client, crew: number) {
+  const p = c.profile;
+  if (!p || crew < MIN_RANKED_CREW) return;
+  const before = p.rep;
+  const r = applyRep(p.rep, REP_RULES.quit, p.shield);
+  [p.rep, p.shield] = [r.rep, r.shield];
+  boardCache = null;
+  try {
+    await store.put(p);
+  } catch (err) {
+    console.error(`profiles: couldn't save ${p.name}'s (${(err as Error).message})`);
+  }
+  send(c, { t: 'repChange', before, after: p.rep, reasons: [`${REP_RULES.quit} left the match early`], shielded: r.shielded });
+  send(c, profileMsg(p, true));
+}
 
 /** After hello: this player's saved profile (a new one the first time), sent to them. */
 async function loadProfile(c: Client, key: string) {
@@ -1239,11 +1277,25 @@ async function loadProfile(c: Client, key: string) {
 /** A match finished: every player still in it gets it on their record. */
 async function saveResults(matchId: string, sr: Series, final: Standing[]) {
   const top = final[0];
+  // Ranked: the players who finished it, in scoreboard order (leavers already paid for leaving).
+  const finishers = final.filter((f) => f.here);
+  const ranked = sr.players.size >= MIN_RANKED_CREW;
+  boardCache = null;
   for (const [id, entry] of sr.players) {
     const c = clients.get(id);
     const p = c?.profile;
     if (!c || !p || c.room !== matchId) continue;
     const mine = final.find((f) => f.id === id);
+    if (ranked) {
+      const place = finishers.findIndex((f) => f.id === id);
+      const base = placeRep(place, finishers.length);
+      const extras = Math.min(REP_RULES.extrasCap, (entry.stats.contracts + entry.stats.revenges) * REP_RULES.perExtra);
+      const before = p.rep;
+      const r = applyRep(p.rep, base + extras, p.shield);
+      [p.rep, p.shield] = [r.rep, r.shield];
+      const reasons = [`${base >= 0 ? '+' : ''}${base} finished #${place + 1} of ${finishers.length}`, ...(extras ? [`+${extras} contracts & revenge`] : [])];
+      send(c, { t: 'repChange', before, after: p.rep, reasons, shielded: r.shielded });
+    }
     p.matches++;
     if (top && top.id === id && top.total > 0) p.wins++;
     p.points += Math.max(0, mine?.total ?? 0);
@@ -2193,6 +2245,9 @@ function handle(c: Client, msg: ClientMsg) {
       break;
     case 'callMeeting':
       callMeeting(c);
+      break;
+    case 'leaderboard':
+      void sendLeaderboard(c);
       break;
     case 'meetVote': {
       const ij = insides.get(c.room);

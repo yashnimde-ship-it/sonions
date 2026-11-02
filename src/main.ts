@@ -1,3 +1,5 @@
+import { LeaderboardUI } from './ui/LeaderboardUI';
+import { rankOf } from './data/ranks';
 import { HowToPlay, howToRole } from './ui/HowToPlay';
 import { HACK_MS, MISSION_STEPS } from './data/mission';
 import { BREAKER } from './data/breakers';
@@ -318,6 +320,8 @@ async function boot() {
   const fusePanel = new FusePanel();
   /** The "how to play" card for my role, shown as each round starts. */
   const howTo = new HowToPlay();
+  /** The leaderboard (it asks the server each time it opens). */
+  const board = new LeaderboardUI();
   const cutBox = () => (breakers?.cut ? breakers.list.find((b) => b.id === breakers!.cut) ?? null : null);
   /** My secret contract this round, and my Grudge in this game (from the server; only mine). */
   let contract: Extract<ServerMsg, { t: 'contract' }> | null = null;
@@ -1944,8 +1948,25 @@ async function boot() {
         if (msg.step === 1 && !sab) toast('The keycard\'s hiding place is marked in gold');
         break;
       }
+      case 'leaderboard':
+        board.set(msg);
+        break;
+      case 'repChange': {
+        const up = rankOf(msg.after).label !== rankOf(msg.before).label && msg.after > msg.before;
+        const down = rankOf(msg.after).label !== rankOf(msg.before).label && msg.after < msg.before;
+        const d = msg.after - msg.before;
+        setTimeout(() => {
+          hud.alert(`<span class="who">${up ? '⬆ RANK UP!' : down ? '⬇ Rank down' : 'REP'}</span> <b>${d >= 0 ? '+' : ''}${d} REP · ${rankOf(msg.after).label}</b><span class="where">${msg.shielded ? 'the demotion shield saved you' : msg.reasons.join(' · ')}</span>`, d >= 0 ? 'good' : 'danger');
+          if (up) {
+            sfx('award');
+            showCount(`RANK UP! ${rankOf(msg.after).label.toUpperCase()}`, 'go');
+          }
+          resultScreen.setRep(msg);
+        }, 1200);
+        break;
+      }
       case 'profile':
-        profile.fromServer(msg.matches);
+        profile.fromServer(msg.matches, msg.rep);
         lobby.setMe(myName, myCharacter, profile);
         break;
       case 'contract': {
@@ -2424,6 +2445,9 @@ async function boot() {
   lobby.onReady = (ready) => net.send({ t: 'roomReady', ready });
   lobby.onRoomSettings = (settings) => net.send({ t: 'roomSettings', ...settings });
   lobby.onKick = (id) => net.send({ t: 'kick', id });
+  lobby.onLeaderboard = () => board.show();
+  board.onOpen = () => void ensureOnline().then((ok) => ok && net.send({ t: 'leaderboard' }));
+  document.getElementById('board-btn')?.addEventListener('click', () => board.show());
   meetingUI.onVote = (target) => net.send({ t: 'meetVote', target });
   fusePanel.onFlip = () => sfx('tap');
   fusePanel.onDone = (box) => net.send({ t: 'breaker', id: box, act: 'fix' });

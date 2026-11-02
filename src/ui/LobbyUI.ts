@@ -5,6 +5,8 @@ import type { GameMode } from '../data/hideSeek';
 import type { MapId } from '../data/maps';
 import { HIDE_SEEK_MIN_PLAYERS } from '../data/hideSeek';
 import { INSIDE_JOB_BEST, INSIDE_JOB_MIN_PLAYERS } from '../data/insideJob';
+import { rankOf, REP_PER_DIVISION } from '../data/ranks';
+import { rankBadge } from './LeaderboardUI';
 
 const MODE_NAMES: Record<GameMode, string> = { heist: 'HEIST', hideSeek: 'HIDE & SEEK', insideJob: 'INSIDE JOB' };
 import { ROOM_MAX, ROOM_MIN, type RoomInfo } from '../data/rooms';
@@ -111,6 +113,8 @@ export class LobbyUI {
   onKick: (id: string) => void = () => {};
   /** CROWD QR was pressed: show the room's Crowd Chaos QR. */
   onCrowdQr: () => void = () => {};
+  /** LEADERBOARD was pressed. */
+  onLeaderboard: () => void = () => {};
   /** Exit was confirmed. */
   onExit: () => void = () => {};
   /** A map was picked in the map picker. */
@@ -154,7 +158,8 @@ export class LobbyUI {
     this.roomBar.addEventListener('click', (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
       if (!b || !this.room) return;
-      if (b.dataset.crowd) this.onCrowdQr();
+      if (b.dataset.board) this.onLeaderboard();
+      else if (b.dataset.crowd) this.onCrowdQr();
       else if (b.dataset.copy) this.copyRoom(b.dataset.copy === 'link' ? 'link' : 'code');
       else if (b.dataset.privacy && this.isHost) this.onRoomSettings({ private: !this.room.private });
       b.blur();
@@ -396,7 +401,7 @@ export class LobbyUI {
     this.lastRoom = key;
     const host = this.isHost;
     this.partyTitle.innerHTML = `<span class="label">ROOM CODE</span><span class="room-code">${room.code}</span>`;
-    this.roomBar.innerHTML = `<button type="button" data-copy="code">COPY CODE</button><button type="button" data-copy="link">COPY LINK</button><button type="button" class="crowd-btn" data-crowd="1" title="A QR for the audience: they vote on what the house does next">CROWD QR</button><button type="button" class="privacy${host ? ' host' : ''}" data-privacy="1" title="${host ? 'Click to change who can join' : 'The host decides who can join'}">${room.private ? 'PRIVATE' : 'PUBLIC'}</button>`;
+    this.roomBar.innerHTML = `<button type="button" data-copy="code">COPY CODE</button><button type="button" data-copy="link">COPY LINK</button><button type="button" class="crowd-btn" data-crowd="1" title="A QR for the audience: they vote on what the house does next">CROWD QR</button><button type="button" class="board-btn" data-board="1" title="The top players and your rank">🏆 RANKS</button><button type="button" class="privacy${host ? ' host' : ''}" data-privacy="1" title="${host ? 'Click to change who can join' : 'The host decides who can join'}">${room.private ? 'PRIVATE' : 'PUBLIC'}</button>`;
     this.sizeRow.innerHTML = `<span class="label">PLAYERS</span>${host ? '<button type="button" data-step="-1" aria-label="Fewer players">-</button>' : ''}<b>${room.members.length}/${room.size}</b>${host ? '<button type="button" data-step="1" aria-label="More players">+</button>' : ''}`;
     for (const b of this.modeRow.querySelectorAll<HTMLButtonElement>('[data-mode]')) b.classList.toggle('locked', !host);
     this.portalList.innerHTML = room.members
@@ -514,18 +519,20 @@ export class LobbyUI {
 
   setMe(name: string, character: CharacterId, profile: Profile) {
     const info = CHARACTER_INFO[character];
-    const key = [name, character, profile.level, profile.tag].join('|');
+    const key = [name, character, profile.level, profile.tag, profile.rep].join('|');
     if (key === this.lastCard) return;
     this.lastCard = key;
-    const rank = profile.rank;
+    // Until the profile arrives from the server, everyone starts at the real first REP rank.
+    const rep = profile.rep ?? 0;
+    const ranked = rankOf(rep);
     this.profileCard.style.setProperty('--accent', info.color);
     this.profileCard.innerHTML = `
       <div class="avatar"><img src="/assets/characters/${character}-portrait.png" alt=""><span class="level">Lv. ${profile.level}</span></div>
       <div class="who">
         <span class="name">${esc(name)}<span class="tag">#${profile.tag}</span></span>
-        <span class="title">${rank.title}</span>
+        <span class="title">${rankBadge(rep)}</span><span class="rep-bar" title="${rep} REP"><i style="width:${(ranked.progress / REP_PER_DIVISION) * 100}%;background:${ranked.color}"></i><b>${ranked.progress}/${REP_PER_DIVISION} REP</b></span>
         <span class="crewline">${info.nick} · ${abilityFor(character, 'runner').name} / ${abilityFor(character, 'saboteur').name}</span>
-        <span class="quote">"${rank.quote}"</span>
+        <span class="quote">"Earn REP in ranked matches to climb the underworld."</span>
       </div>`;
   }
 
