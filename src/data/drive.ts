@@ -28,10 +28,10 @@ export const DRIVE = {
   nitroRegen: 3,
   nitroCan: 35,
   /**
-   * A clean drive at top speed reaches the gates this long before setup ends, so a couple of
-   * bumps still makes it on time; nitro wins back a few seconds, crashes make you late.
+   * A clean drive at top speed reaches the gates this long before setup ends, leaving more room
+   * for crashes and recovery on the shorter one-minute setup.
    */
-  slackMs: 4000,
+  slackMs: 25_000,
   /**
    * Road between rows of hazards: wide at the start of town, tighter near the house; at nitro
    * speed the tightest still leaves time to change one lane.
