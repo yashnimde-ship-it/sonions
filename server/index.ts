@@ -4356,7 +4356,28 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server, path: '/ws' });
+// Heartbeat: a ping to every connection every 25 s. It keeps quiet connections (a player on the
+// menu, a crowd watcher waiting) from being cut by the host's proxy as idle, and a connection
+// that hasn't answered the last ping is dead, so it's closed and its seat held for a reconnect.
+const HEARTBEAT_MS = 25_000;
+const alive = new WeakMap<WebSocket, boolean>();
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (alive.get(ws) === false) {
+      ws.terminate();
+      continue;
+    }
+    alive.set(ws, false);
+    try {
+      ws.ping();
+    } catch {
+      // Closing anyway.
+    }
+  }
+}, HEARTBEAT_MS);
 wss.on('connection', (ws) => {
+  alive.set(ws, true);
+  ws.on('pong', () => alive.set(ws, true));
   const id = String(nextId++);
   const c: Client = {
     ws,
