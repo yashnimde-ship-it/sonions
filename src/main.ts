@@ -1,3 +1,4 @@
+import { HowToPlay, howToRole } from './ui/HowToPlay';
 import { HACK_MS, MISSION_STEPS } from './data/mission';
 import { BREAKER } from './data/breakers';
 import { FusePanel } from './ui/FusePanel';
@@ -312,6 +313,8 @@ async function boot() {
   /** The fuse boxes (src/data/breakers.ts): where, which one is cut, and the repair panel. */
   let breakers: Extract<ServerMsg, { t: 'breakers' }> & { readyAt: number } | null = null;
   const fusePanel = new FusePanel();
+  /** The "how to play" card for my role, shown as each round starts. */
+  const howTo = new HowToPlay();
   const cutBox = () => (breakers?.cut ? breakers.list.find((b) => b.id === breakers!.cut) ?? null : null);
   /** My secret contract this round, and my Grudge in this game (from the server; only mine). */
   let contract: Extract<ServerMsg, { t: 'contract' }> | null = null;
@@ -914,6 +917,7 @@ async function boot() {
     // Between the title, the safehouse and a heist's end: a fade up from dark.
     if (next !== scene && next !== 'match' && next !== 'watch') playSceneFade();
     scene = next;
+    if (next !== 'match') howTo.hide();
     document.body.dataset.scene = next;
     if (next === 'watch') {
       // The crowd page covers everything; no menus or HUD under it.
@@ -1200,6 +1204,9 @@ async function boot() {
     banner.hidden = false;
     bannerUntil = performance.now() + BANNER_MS;
     setScene('match');
+    // After the role banner: what to do and which keys (not again on a reconnect).
+    const howRole = howToRole(msg.mode ?? 'heist', msg.role === 'saboteur', insiderMe);
+    howTo.start(howRole, touch.enabled, msg.resume ? 1e9 : BANNER_MS - 600);
   }
 
   function onServerMessage(msg: ServerMsg) {
@@ -1568,6 +1575,7 @@ async function boot() {
         break;
       }
       case 'result': {
+        howTo.close();
         result = msg;
         diamonds = msg.diamonds;
         for (const t of msg.placed) placed.set(t.id, t);
