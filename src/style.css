@@ -4457,3 +4457,66 @@ body.touch .gadget-card .gc-key kbd { display: none; }
   #secret-card { top: 36px; right: 8px; width: min(220px, 46vw); font-size: 11px; }
   #secret-card > div { padding: 4px 7px; }
 }
+
+/* The fuse box's repair panel: flip every switch to ON. */
+#fuse-panel {
+  position: fixed;
+  left: 50%;
+  bottom: 22%;
+  transform: translateX(-50%);
+  z-index: 80;
+  pointer-events: auto;
+}
+#fuse-panel[hidden] { display: none; }
+#fuse-panel .fuse-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border: 3px solid #ffd84a;
+  border-radius: 8px;
+  background: #1b1726;
+  box-shadow: 0 0 30px rgba(255, 216, 74, 0.3);
+  color: var(--paper);
+  animation: meet-in 0.2s ease-out;
+}
+#fuse-panel.fixed .fuse-card { border-color: #6fe07a; box-shadow: 0 0 40px rgba(111, 224, 122, 0.6); }
+#fuse-panel .fuse-title { font-weight: 800; letter-spacing: 1px; color: #ffd84a; }
+#fuse-panel .fuse-row { display: flex; gap: 10px; }
+#fuse-panel .fuse-hint { font-size: 10px; opacity: 0.7; }
+#fuse-panel .fuse-switch {
+  position: relative;
+  width: 46px;
+  height: 84px;
+  padding: 0;
+  border: 2px solid #0e0a1a;
+  border-radius: 6px;
+  background: #3a3550;
+  cursor: pointer;
+}
+#fuse-panel .fuse-switch .lamp {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: #5a1a22;
+}
+#fuse-panel .fuse-switch.on .lamp { background: #6fe07a; box-shadow: 0 0 10px #6fe07a; }
+#fuse-panel .fuse-switch .lever {
+  position: absolute;
+  left: 50%;
+  width: 22px;
+  height: 22px;
+  margin-left: -11px;
+  border-radius: 4px;
+  background: #c9c4d8;
+  border: 2px solid #0e0a1a;
+  top: 50px;
+  transition: top 0.12s ease-out;
+}
+#fuse-panel .fuse-switch.on .lever { top: 24px; background: #ffd84a; }
+#fuse-panel .fuse-switch .n { position: absolute; bottom: 2px; left: 0; right: 0; font-size: 9px; color: #cbbde6; }

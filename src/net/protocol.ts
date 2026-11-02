@@ -100,6 +100,8 @@ export type ClientMsg =
   /** Heist mission: I started holding E at the security terminal; I finished (HACK_MS later). */
   | { t: 'hackStart' }
   | { t: 'hack' }
+  /** Fuse boxes: the Saboteur cuts one; a Runner fixes the cut one (after the switch panel). */
+  | { t: 'breaker'; id: string; act: 'cut' | 'fix' }
   | { t: 'meetVote'; target: string | null }
   | { t: 'meetSay'; line?: number; about?: string; text?: string }
   /** Inside Job: the Insider puts the diamond they carry back in this furniture (held E). */
@@ -393,6 +395,10 @@ export type ServerMsg =
   | { t: 'disturbed'; spot: string; ms: number }
   /** Heist mission: how many steps are done (0-4), and where the security terminal is. */
   | { t: 'mission'; step: number; terminal: { spot: string; deck: MapId; room: string } }
+  /** The fuse boxes: where they are, which one is cut (lights out), and the Saboteur's wait. */
+  | { t: 'breakers'; list: { id: string; spot: string; deck: MapId; room: string }[]; cut: string | null; readyMs: number }
+  /** A fuse box was cut (lights out) or fixed, and by whom (a cut doesn't say). */
+  | { t: 'breakerEvent'; kind: 'cut' | 'fixed'; id: string; room: string; name?: string }
   /** A mission step was just completed, and by whom. */
   | { t: 'missionStep'; step: number; id: string; name: string }
   /** My saved profile (from the database): what the server has on record for me. */

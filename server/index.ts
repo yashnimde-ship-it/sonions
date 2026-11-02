@@ -15,6 +15,7 @@ import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsTo
 import { cleanName } from '../src/data/names.ts';
 import { INSIDE, INSIDE_JOB_MIN_PLAYERS, INSIDE_SCORE, MEETING_LINES } from '../src/data/insideJob.ts';
 import { HACK_MS, MISSION_POINTS, MISSION_STEPS } from '../src/data/mission.ts';
+import { BREAKER } from '../src/data/breakers.ts';
 import { newProfile, openStore, profileId, type SavedProfile } from './store.ts';
 import { CONTRACT_POINTS, type ContractDef, type ContractId, drawContract, REVENGE_POINTS } from '../src/data/contracts.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
@@ -1046,6 +1047,7 @@ function endMatch(matchId: string) {
   contracts.delete(matchId);
   bonuses.delete(matchId);
   missions.delete(matchId);
+  breakerState.delete(matchId);
   pendingWrongs.delete(matchId);
 }
 
@@ -1148,6 +1150,7 @@ function startRound(matchId: string) {
   keycards.delete(matchId);
   if (!hs) setupVault(matchId, map, vaults.get(matchId)!);
   setupMission(matchId, map);
+  setupBreakers(matchId);
   phases.set(matchId, { phase: 'setup', endsAt: Date.now() + (hs ? HIDE_TIME : inside ? INSIDE.briefMs : SETUP_TIME) });
   trapState.set(matchId, new Map(MAPS[map].traps.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
@@ -1195,6 +1198,8 @@ function startRound(matchId: string) {
   dealSecrets(matchId, crew, saboteur, insider);
   const mission = missionOf(matchId);
   if (mission) toMatch(matchId, missionMsg(mission));
+  const fuses = breakerState.get(matchId);
+  if (fuses) toMatch(matchId, breakersMsg(fuses));
   console.log(`${matchId}: round ${sr.round + 1}/${sr.rounds} on ${MAPS[map].name}, ${inside ? 'Insider' : 'Saboteur'} ${clients.get(inside ? insider : saboteur)?.state.name}`);
 }
 
@@ -1753,6 +1758,9 @@ function handle(c: Client, msg: ClientMsg) {
       sendDiamonds(c.room);
       break;
     }
+    case 'breaker':
+      breakerAction(c, msg.id, msg.act);
+      break;
     case 'hackStart':
     case 'hack': {
       // The security terminal: held E at it (the game times the hold; we check reach and time).
@@ -2445,6 +2453,77 @@ function missionStep(matchId: string, m: Mission, c: Client, step: number) {
   // The hack shows the Runners which furniture hides the keycard.
   if (step === 1) sendKeycard(matchId);
   console.log(`${matchId}: mission step ${step} (${MISSION_STEPS[step - 1].short}) by ${c.state.name}`);
+}
+
+// ---------- Fuse boxes (src/data/breakers.ts) ----------
+
+interface Breakers {
+  list: { id: string; spot: string; deck: MapId; room: string }[];
+  /** The box that's cut (lights out), when, and when the Saboteur may cut again. */
+  cut: string | null;
+  cutAt: number;
+  readyAt: number;
+}
+const breakerState = new Map<string, Breakers>();
+
+/** Heists: fuse boxes on smaller furniture, far apart (one per deck on the ship). */
+function setupBreakers(matchId: string) {
+  breakerState.delete(matchId);
+  if (matchModes.get(matchId) !== 'heist') return;
+  const key = keycards.get(matchId);
+  const taken = new Set([missions.get(matchId)?.terminal.spot, key?.spot]);
+  const centre = (sp: HidingSpot) => ({ x: (sp.rect[0] + sp.rect[2] + 1) / 2, y: (sp.rect[1] + sp.rect[3] + 1) / 2 });
+  const size = (sp: HidingSpot) => (sp.rect[2] - sp.rect[0] + 1) * (sp.rect[3] - sp.rect[1] + 1);
+  const decks = decksIn(matchId);
+  const list: Breakers['list'] = [];
+  for (let i = 0; i < BREAKER.count; i++) {
+    const deck = decks[i % decks.length];
+    const ok = spotsOf(matchId)
+      .filter((sp) => spotDeck(matchId, sp) === deck && !taken.has(sp.id) && !(key && inVault(matchId, key, sp.id)))
+      .sort((a, b) => size(a) - size(b));
+    const pool = ok.slice(0, Math.max(3, Math.ceil(ok.length * 0.5)));
+    // The first anywhere; the next as far as possible from the ones already placed.
+    const placed = list.filter((b) => b.deck === deck).map((b) => spotsOf(matchId).find((x) => x.id === b.spot)!);
+    const sp = placed.length
+      ? [...pool].sort((a, b) => Math.min(...placed.map((p) => Math.hypot(centre(p).x - centre(b).x, centre(p).y - centre(b).y))) - Math.min(...placed.map((p) => Math.hypot(centre(p).x - centre(a).x, centre(p).y - centre(a).y))))[0]
+      : pool[Math.floor(Math.random() * pool.length)];
+    if (!sp) continue;
+    taken.add(sp.id);
+    list.push({ id: `fuse-${i + 1}`, spot: sp.id, deck, room: spotRoomOf(matchId, sp) });
+  }
+  if (list.length) breakerState.set(matchId, { list, cut: null, cutAt: 0, readyAt: 0 });
+}
+
+const breakersMsg = (b: Breakers): ServerMsg => ({ t: 'breakers', list: b.list, cut: b.cut, readyMs: Math.max(0, b.readyAt - Date.now()) });
+
+function breakerAction(c: Client, id: unknown, act: unknown) {
+  const matchId = c.room;
+  const b = breakerState.get(matchId);
+  const box = b?.list.find((x) => x.id === id);
+  const now = Date.now();
+  if (!b || !box || phases.get(matchId)?.phase !== 'live') return;
+  const isSab = saboteurs.get(matchId) === c.state.id;
+  if (act === 'cut') {
+    // The Saboteur, from their camera: energy and the wait after a repair are what limit it.
+    const energy = saboteurEnergy.get(matchId);
+    if (!isSab || b.cut || now < b.readyAt || !energy || energy.current < BREAKER.cutCost) return send(c, breakersMsg(b));
+    energy.current -= BREAKER.cutCost;
+    send(c, { t: 'energy', current: energy.current, max: energy.max });
+    b.cut = box.id;
+    b.cutAt = now;
+    toMatch(matchId, breakersMsg(b));
+    toMatch(matchId, { t: 'breakerEvent', kind: 'cut', id: box.id, room: box.room });
+    console.log(`${matchId}: the lights were cut (${box.room})`);
+  } else if (act === 'fix') {
+    // A Runner at that box, who did the switch panel.
+    const spot = spotsOf(matchId).find((x) => x.id === box.spot);
+    if (isSab || b.cut !== box.id || c.state.hp <= 0 || deckOf(c) !== box.deck || !spot || distToSpot(spot, c.state.x, c.state.y) > SEARCH_REACH + 12 || now - b.cutAt < BREAKER.fixMinMs) return;
+    b.cut = null;
+    b.readyAt = now + BREAKER.cooldownMs;
+    addBonus(matchId, c.state.id, BREAKER.fixPoints, `💡 Fixed the lights +${BREAKER.fixPoints}`);
+    toMatch(matchId, breakersMsg(b));
+    toMatch(matchId, { t: 'breakerEvent', kind: 'fixed', id: box.id, room: box.room, name: c.state.name });
+  }
 }
 
 /** Open floor near the middle of the vault room, for the Crown Jewel. */
@@ -3717,6 +3796,8 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
     }
     const mission = missionOf(known.room);
     if (mission) send(known, missionMsg(mission));
+    const fuses = breakerState.get(known.room);
+    if (fuses) send(known, breakersMsg(fuses));
     const contract = contractMsg(known.room, known.state.id);
     if (contract) send(known, contract);
     send(known, grudgeMsg(known.room, known));

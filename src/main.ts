@@ -1,4 +1,6 @@
 import { HACK_MS, MISSION_STEPS } from './data/mission';
+import { BREAKER } from './data/breakers';
+import { FusePanel } from './ui/FusePanel';
 import { INSIDE } from './data/insideJob';
 import { MeetingUI } from './ui/MeetingUI';
 import { CHAOS_CARDS } from './data/chaos';
@@ -307,6 +309,10 @@ async function boot() {
    *  this round has none. And my hold at the terminal. */
   let mission: Extract<ServerMsg, { t: 'mission' }> | null = null;
   let hacking: { since: number } | null = null;
+  /** The fuse boxes (src/data/breakers.ts): where, which one is cut, and the repair panel. */
+  let breakers: Extract<ServerMsg, { t: 'breakers' }> & { readyAt: number } | null = null;
+  const fusePanel = new FusePanel();
+  const cutBox = () => (breakers?.cut ? breakers.list.find((b) => b.id === breakers!.cut) ?? null : null);
   /** My secret contract this round, and my Grudge in this game (from the server; only mine). */
   let contract: Extract<ServerMsg, { t: 'contract' }> | null = null;
   let grudge: Extract<ServerMsg, { t: 'grudge' }> | null = null;
@@ -473,6 +479,15 @@ async function boot() {
       if ((moving.deck ?? mapId) === (targetDeck ?? mapId) && Math.hypot(moving.x - tx, moving.y - ty) < 1) return toast('Choose a new spot for the trap');
       movingTrapPending = true;
       net.send({ t: 'moveTrap', id: moving.id, x: tx, y: ty, ...(targetDeck ? { deck: targetDeck } : {}) });
+      return;
+    }
+    const box = breakerUnder(x, y);
+    if (box && breakers) {
+      const wait = breakers.readyAt - performance.now();
+      if (breakers.cut) return toast('The lights are already out');
+      if (wait > 0) return toast(`The wiring was just fixed · cut again in ${Math.ceil(wait / 1000)}s`);
+      if (trapEnergy < BREAKER.cutCost) return toast(`Cutting the lights takes ${BREAKER.cutCost} energy · you have ${Math.floor(trapEnergy)}`);
+      net.send({ t: 'breaker', id: box.id, act: 'cut' });
       return;
     }
     const trap = trapUnder(x, y);
@@ -1021,6 +1036,8 @@ async function boot() {
     grudge = null;
     mission = null;
     hacking = null;
+    breakers = null;
+    fusePanel.close();
     if (!msg.resume) {
       outNow.clear();
       disturbed.clear();
@@ -1834,6 +1851,23 @@ async function boot() {
       case 'mission':
         mission = msg;
         break;
+      case 'breakers':
+        breakers = { ...msg, readyAt: performance.now() + msg.readyMs };
+        if (!msg.cut) fusePanel.close();
+        break;
+      case 'breakerEvent': {
+        const sab = !!match?.saboteur;
+        if (msg.kind === 'cut') {
+          sfx('alert');
+          trapImpact('#ffd84a', sab ? 0 : 5, 700);
+          if (!sab) showCount('LIGHTS OUT!', 'go');
+          hud.alert(sab ? `<span class="who">⚡ Lights cut</span> <b>The house is dark</b><span class="where">fuse box in the ${esc(msg.room)}</span>` : `<span class="who">⚡ LIGHTS OUT!</span> <b>Someone cut the wires</b><span class="where">fix the fuse box in the ${esc(msg.room)}</span>`, 'danger');
+        } else {
+          sfx(sab ? 'alert' : 'award');
+          hud.alert(`<span class="who">💡 ${esc(msg.name ?? 'A Runner')}</span> <b>fixed the lights</b><span class="where">${sab ? `the ${esc(msg.room)} box` : `+${BREAKER.fixPoints}`}</span>`, sab ? 'danger' : 'good');
+        }
+        break;
+      }
       case 'missionStep': {
         const mine = msg.id === myId;
         const sab = !!match?.saboteur;
@@ -2296,6 +2330,8 @@ async function boot() {
   lobby.onRoomSettings = (settings) => net.send({ t: 'roomSettings', ...settings });
   lobby.onKick = (id) => net.send({ t: 'kick', id });
   meetingUI.onVote = (target) => net.send({ t: 'meetVote', target });
+  fusePanel.onFlip = () => sfx('tap');
+  fusePanel.onDone = (box) => net.send({ t: 'breaker', id: box, act: 'fix' });
   meetingUI.onSay = (m) => net.send({ t: 'meetSay', ...m });
   lobby.onCrowdQr = () => {
     if (myRoom) showCrowdQr(myRoom.code);
@@ -3144,9 +3180,11 @@ async function boot() {
         return;
       }
     }
-    if (hud.messageOpen) {
-      if (input.action) hud.hideMessage();
+    if (fusePanel.open && (!breakers?.cut || knockedOut || phase !== 'live' || result)) fusePanel.close();
+    if (hud.messageOpen || fusePanel.open) {
+      if (input.action && hud.messageOpen) hud.hideMessage();
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
+      if (fusePanel.open) hud.setPrompt('Flip every switch to ON');
     } else {
       const now = performance.now();
       me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (1 - myDiamonds().reduce((slow, d) => slow + CARRY_SLOW + (d.kind === 'red' || d.kind === 'crown' ? RED_EXTRA_SLOW : 0), 0) * (abilities.has('heavyCarry') ? 1 - HEAVY_CARRY.slowCut : 1)) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1) * (now < crowdFastUntil ? 1.4 : 1) * (sprinting(myId) ? VELVET.speed : 1);
@@ -3211,7 +3249,9 @@ async function boot() {
       const crown = diamonds.find((d) => d.kind === 'crown');
       const crownNote = step === 3 && crown?.place.at === 'floor' ? ' (DROPPED!)' : '';
       const where = [`in the ${mission.terminal.room}`, keycard?.holder ? `keycard: ${keycard.holder === myId ? 'you' : keycard.holderName ?? 'a Runner'}` : keycard?.floor ? 'keycard dropped' : step >= 1 ? 'keycard marked in gold' : '', '', ''];
-      const list = MISSION_STEPS.map((m, i) => `${i < step ? '✔' : i === step ? '▶' : '·'} ${i + 1}. ${m.title}${i === step && where[i] ? ` · ${where[i]}` : ''}${i === 2 ? crownNote : ''}`).join('\n');
+      const out = cutBox();
+      const lights = out ? `⚡ LIGHTS OUT · fix the fuse box in the ${out.room}\n` : '';
+      const list = lights + MISSION_STEPS.map((m, i) => `${i < step ? '✔' : i === step ? '▶' : '·'} ${i + 1}. ${m.title}${i === step && where[i] ? ` · ${where[i]}` : ''}${i === 2 ? crownNote : ''}`).join('\n');
       const head = phase === 'setup'
         ? sab ? `Rig the house: the terminal is in the ${mission.terminal.room}` : 'The Saboteur is rigging the house...'
         : sab ? `Stop the mission · step ${Math.min(step + 1, 4)} of 4` : `Mission · step ${Math.min(step + 1, 4)} of 4 · diamonds = points`;
@@ -3412,6 +3452,9 @@ async function boot() {
     } else if (dropped) {
       prompt = 'E  Grab the dropped diamond';
       if (input.action) net.send({ t: 'pickup', id: dropped.id });
+    } else if (spot && cutBox() && spot.id === cutBox()!.spot && here(cutBox()!.deck) && phase === 'live') {
+      prompt = 'E  FIX THE FUSE BOX ⚡ (lights out!)';
+      if (input.action && !me.stunned) fusePanel.show(cutBox()!.id);
     } else if (spot && mission?.step === 0 && spot.id === mission.terminal.spot && here(mission.terminal.deck) && phase === 'live') {
       prompt = 'Hold E  HACK the security terminal';
       if (input.actionHeld && !me.stunned && !me.moving) {
@@ -3539,9 +3582,10 @@ async function boot() {
       const hiddenSpots = allSpots.filter((sp) => diamondIn(sp.id));
       setupPanel.update({ hidden: hiddenSpots.length, total: totalN, traps: placed.size, slots: trapSlots(match?.size ?? 2), guarded: hiddenSpots.filter(guarded).length, selected: null });
     } else if (phase === 'live') {
+      const fuse = breakers ? (breakers.cut ? 'lights are OUT' : performance.now() < breakers.readyAt ? `fuse boxes ready in ${Math.ceil((breakers.readyAt - performance.now()) / 1000)}s` : `click a ⚡ fuse box to cut the lights (${BREAKER.cutCost} energy, you have ${Math.floor(trapEnergy)})`) : '';
       hud.setPrompt(movingTrapId
         ? movingTrapPending ? 'Moving trap…' : 'Click open floor to move · right-click to cancel'
-        : 'Right-click an unused trap to reposition it once');
+        : `Right-click an unused trap to reposition it once${fuse ? ` · ${fuse}` : ''}`);
     }
   }
 
@@ -3719,6 +3763,7 @@ async function boot() {
     if (match?.saboteur && !result) drawTrapMarkers(camX, camY);
     if (match?.saboteur && phase === 'setup') drawSpotLabel(camX, camY);
     if (performance.now() < blackoutUntil && !match?.saboteur) drawBlackout(camX, camY);
+    if (breakers?.cut && !match?.saboteur && !result && phase === 'live') drawLightsOut(camX, camY);
     if (performance.now() < staticUntil && !match?.saboteur && phase === 'live') drawStatic(camX, camY);
     if (match?.saboteur && !result) drawTrackerArrows(camX, camY);
     if (!result && impactProgress < 1) drawImpactOverlay(impactProgress);
@@ -4081,6 +4126,20 @@ async function boot() {
     const grad = ctx.createRadialGradient(sx, sy, r * 0.55, sx, sy, r);
     grad.addColorStop(0, 'rgba(0,0,0,0)');
     grad.addColorStop(1, `rgba(4,2,10,${Math.min(0.96, left / 400)})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+
+  /** Lights out (a fuse box was cut): dark everywhere but a small circle round me. */
+  function drawLightsOut(camX: number, camY: number) {
+    const sx = (me.x - camX) * scale;
+    const sy = (me.y - 18 - camY) * scale;
+    const r = BREAKER.darkSight * scale;
+    ctx.save();
+    const grad = ctx.createRadialGradient(sx, sy, r * 0.45, sx, sy, r);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(4,2,10,0.95)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
@@ -4936,6 +4995,65 @@ async function boot() {
     ctx.fillRect(x + 1, y + 1, 2, 1);
   }
 
+  /** Where a fuse box hangs: just over its furniture's front edge (art px). */
+  function fuseAt(box: { spot: string }) {
+    const sp = allSpots.find((x) => x.id === box.spot);
+    if (!sp) return null;
+    const b = spotBox(sp);
+    return { x: spotCenter(sp).x, y: Math.max(b.y0, b.y1 - 24) - 8 };
+  }
+
+  /** The fuse box under the Saboteur's click, if any. */
+  function breakerUnder(x: number, y: number) {
+    return breakers?.list.find((b) => {
+      const at = here(b.deck) ? fuseAt(b) : null;
+      const reach = 14 * Math.max(1, 1.6 / scale);
+      return !!at && Math.abs(at.x - x) <= reach && Math.abs(at.y - y) <= reach;
+    }) ?? null;
+  }
+
+  /** The fuse boxes: grey panels with a lightning bolt; a cut one blinks red and sparks. */
+  function drawBreakers(camX: number, camY: number) {
+    if (!breakers || result) return;
+    const sab = !!match?.saboteur;
+    const ready = !breakers.cut && performance.now() >= breakers.readyAt;
+    for (const box of breakers.list) {
+      if (!here(box.deck)) continue;
+      const at = fuseAt(box);
+      if (!at) continue;
+      const cut = breakers.cut === box.id;
+      ctx.save();
+      // Zoomed out (the Saboteur's camera) the box is drawn bigger, so it can be found and clicked.
+      const k = Math.max(1, 1.6 / scale);
+      ctx.translate(Math.round(at.x - camX), Math.round(at.y - camY));
+      ctx.scale(k, k);
+      const x = 0;
+      const y = 0;
+      if (sab && ready && phase === 'live') {
+        ctx.strokeStyle = '#ffd84a';
+        ctx.globalAlpha = 0.5 + 0.4 * Math.sin(frame / 8);
+        ctx.strokeRect(x - 9.5, y - 10.5, 19, 21);
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = '#0e0a1a';
+      ctx.fillRect(x - 7, y - 9, 14, 18);
+      ctx.fillStyle = cut ? (frame % 20 < 10 ? '#ff3b4a' : '#5a1a22') : '#6b6f80';
+      ctx.fillRect(x - 6, y - 8, 12, 16);
+      ctx.fillStyle = cut ? '#1a0a0e' : '#ffd84a';
+      ctx.beginPath();
+      ctx.moveTo(x + 1, y - 6);
+      ctx.lineTo(x - 3, y + 1);
+      ctx.lineTo(x, y + 1);
+      ctx.lineTo(x - 1, y + 6);
+      ctx.lineTo(x + 3, y - 1);
+      ctx.lineTo(x, y - 1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      if (cut && frame % 6 === 0) particles.sparkle(at.x + (Math.random() - 0.5) * 10, at.y + (Math.random() - 0.5) * 12, Math.random() < 0.5 ? '#ffd84a' : '#ffffff');
+    }
+  }
+
   /** The security terminal: a little console over its furniture, green and pulsing until it's
    *  hacked (then red), with a ring filling while someone holds E at it. */
   function drawTerminal(camX: number, camY: number) {
@@ -4953,9 +5071,12 @@ async function boot() {
       ctx.strokeRect(b.x0 - camX + 0.5, b.y0 - camY + 0.5, b.x1 - b.x0 - 1, b.y1 - b.y0 - 1);
     }
     ctx.globalAlpha = 1;
-    const x = Math.round(c.x - camX);
-    // Floating just over the furniture's front edge, where you stand to hack it.
-    const y = Math.round(Math.max(b.y0, b.y1 - 24) - camY - 10 + (done ? 0 : Math.sin(frame / 12) * 1.5));
+    // Floating just over the furniture's front edge, where you stand to hack it (bigger zoomed out).
+    const k = Math.max(1, 1.6 / scale);
+    ctx.translate(Math.round(c.x - camX), Math.round(Math.max(b.y0, b.y1 - 24) - camY - 10 + (done ? 0 : Math.sin(frame / 12) * 1.5)));
+    ctx.scale(k, k);
+    const x = 0;
+    const y = 0;
     ctx.fillStyle = '#0e0a1a';
     ctx.fillRect(x - 8, y - 6, 16, 12);
     ctx.fillStyle = done ? '#ff4d6a' : frame % 40 < 30 ? '#3cff8a' : '#1f8a4c';
@@ -4979,6 +5100,7 @@ async function boot() {
    *  and (for the Saboteur) a gold outline on the furniture it's hidden in. */
   function drawVault(camX: number, camY: number) {
     drawTerminal(camX, camY);
+    drawBreakers(camX, camY);
     if (!keycard || !here(keycard.deck) || result) return;
     if (!keycard.unlocked) {
       for (const d of estate.data.doors) {
