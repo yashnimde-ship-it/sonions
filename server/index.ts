@@ -2436,7 +2436,8 @@ function setupMission(matchId: string, map: MapId) {
   const far = onDeck.filter((sp) => Math.hypot(centre(sp).x - v.x, centre(sp).y - v.y) >= 12 && Math.hypot(centre(sp).x - spawn.x, centre(sp).y - spawn.y) >= 10);
   const good = (far.length ? far : onDeck).sort((a, b) => size(a) - size(b));
   const pool = good.slice(0, Math.max(3, Math.ceil(good.length * 0.4)));
-  const sp = pool[Math.floor(Math.random() * pool.length)];
+  // A map can name its terminal (the bank's CCTV console); otherwise one is picked.
+  const sp = spotsOf(matchId).find((x) => x.id === MAPS[map].terminal) ?? pool[Math.floor(Math.random() * pool.length)];
   if (!sp) return;
   missions.set(matchId, { step: 0, terminal: { spot: sp.id, deck: map, room: spotRoomOf(matchId, sp) }, hackStart: new Map() });
 }
@@ -2484,9 +2485,10 @@ function setupBreakers(matchId: string) {
     const pool = ok.slice(0, Math.max(3, Math.ceil(ok.length * 0.5)));
     // The first anywhere; the next as far as possible from the ones already placed.
     const placed = list.filter((b) => b.deck === deck).map((b) => spotsOf(matchId).find((x) => x.id === b.spot)!);
-    const sp = placed.length
+    const named = MAPS[matchMaps.get(matchId) ?? 'estate'].fuses?.[i];
+    const sp = spotsOf(matchId).find((x) => x.id === named && !taken.has(x.id)) ?? (placed.length
       ? [...pool].sort((a, b) => Math.min(...placed.map((p) => Math.hypot(centre(p).x - centre(b).x, centre(p).y - centre(b).y))) - Math.min(...placed.map((p) => Math.hypot(centre(p).x - centre(a).x, centre(p).y - centre(a).y))))[0]
-      : pool[Math.floor(Math.random() * pool.length)];
+      : pool[Math.floor(Math.random() * pool.length)]);
     if (!sp) continue;
     taken.add(sp.id);
     list.push({ id: `fuse-${i + 1}`, spot: sp.id, deck, room: spotRoomOf(matchId, sp) });

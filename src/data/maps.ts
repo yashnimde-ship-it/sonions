@@ -4,7 +4,7 @@ import { CRUISE_B1_TRAPS, CRUISE_F1_TRAPS, MUSEUM_TRAPS, type TrapSpot } from '.
 
 // Each cruise deck is its own map ('cruise-b1', 'cruise-f1'; 'cruise-f2' later), and
 // stairwells in a deck's map data name the deck they lead to.
-export const MAP_IDS = ['estate', 'museum', 'cruise-b1', 'cruise-f1'] as const;
+export const MAP_IDS = ['estate', 'museum', 'cruise-b1', 'cruise-f1', 'bank'] as const;
 export type MapId = (typeof MAP_IDS)[number];
 
 export interface MapDef {
@@ -26,6 +26,10 @@ export interface MapDef {
    * `doors` (checked with the reachability script).
    */
   vault?: { room: string; doors: string[] };
+  /** The mission's security terminal and the fuse boxes, when the map has a natural place for
+   *  them (furniture ids); otherwise they're picked each round. */
+  terminal?: string;
+  fuses?: string[];
   traps: TrapSpot[];
 }
 
@@ -84,6 +88,23 @@ export const MAPS: Record<MapId, MapDef> = {
     getaway: { x: 55.4, y: 48, w: 7.4, h: 2.2 },
     vault: { room: 'Staff Room', doors: ['door-staff'] },
     traps: CRUISE_F1_TRAPS,
+  },
+  bank: {
+    id: 'bank',
+    name: 'ROYAL RESERVE BANK',
+    description: 'A grand old bank after closing. Hack the security room, crack the gold vault, walk out the front door.',
+    difficulty: 3,
+    json: '/assets/maps/bank/map.json',
+    tileset: '/assets/maps/bank/tileset.png',
+    doors: '/assets/maps/bank/doors.png',
+    preview: '/assets/maps/bank/preview.jpg',
+    // Bank loot on the front steps.
+    getaway: { x: 38, y: 69.6, w: 16, h: 3.8 },
+    vault: { room: 'Vault', doors: ['door-vault'] },
+    terminal: 'cctv',
+    fuses: ['servers', 'generator'],
+    // Like the Estate, every trap is the Saboteur's own.
+    traps: [],
   },
 };
 

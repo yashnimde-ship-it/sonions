@@ -16,6 +16,7 @@
     "museum": "node scripts/generate-museum.mjs",
     "cruise": "node scripts/generate-museum.mjs map/cruiseB1Layout.mjs public/assets/maps/cruise-b1",
     "cruise-f1": "node scripts/generate-museum.mjs map/cruiseF1Layout.mjs public/assets/maps/cruise-f1",
+    "bank": "python scripts/trace-bank-walls.py && node scripts/generate-museum.mjs map/bankLayout.mjs public/assets/maps/bank",
     "previews": "python3 scripts/make-previews.py"
   },
   "devDependencies": {

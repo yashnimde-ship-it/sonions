@@ -4,7 +4,7 @@ import { blip } from '../systems/Sound';
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 type Result = Extract<ServerMsg, { t: 'result' }>;
 type Final = Extract<ServerMsg, { t: 'final' }>;
-const MAP_NAMES: Record<string, string> = { estate: 'The Estate', museum: 'Midnight Museum', 'cruise-b1': 'Luxury Cruise B1', 'cruise-f1': 'Luxury Cruise F1' };
+const MAP_NAMES: Record<string, string> = { estate: 'The Estate', museum: 'Midnight Museum', 'cruise-b1': 'Luxury Cruise B1', 'cruise-f1': 'Luxury Cruise F1', bank: 'Royal Reserve Bank' };
 
 /**
  * The end of a round: a big WIN or LOSE card over the revealed map, this round's points, the
