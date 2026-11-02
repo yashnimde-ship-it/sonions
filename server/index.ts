@@ -14,6 +14,7 @@ import { ABILITIES, type AbilityId, BURN_ZONE, CHARACTER_INFO, carryCapacity, CL
 import { DIAMONDS_PER_ROOM, type Diamond, diamondCount, diamondKinds, diamondsToWin, distToSpot, type HidingSpot, isHidingSpot, GLINT_REACH, PICKUP_REACH, runnerView, SEARCH_MS, SEARCH_REACH, spotCenter, spotRoom, valueOf } from '../src/data/diamonds.ts';
 import { cleanName } from '../src/data/names.ts';
 import { INSIDE, INSIDE_JOB_MIN_PLAYERS, INSIDE_SCORE, MEETING_LINES } from '../src/data/insideJob.ts';
+import { HACK_MS, MISSION_POINTS, MISSION_STEPS } from '../src/data/mission.ts';
 import { newProfile, openStore, profileId, type SavedProfile } from './store.ts';
 import { CONTRACT_POINTS, type ContractDef, type ContractId, drawContract, REVENGE_POINTS } from '../src/data/contracts.ts';
 import { BOOST, FLARE, isHsAbility, SCAN, distToHideSpot, ESCAPE_MS, ESCAPE_ZONE, type GameMode, GUN, HS_SCORE, HIDE_MS, HIDE_REACH, type HideSpot, hideSpotCenter, NOISE_MS, NOISE_RANGE, HIDE_SEEK_MAP, HIDE_SEEK_MIN_PLAYERS, HIDER_SEES_SEEKER, HUNT_MS, isGameMode, SEEKER_HP, SEEKER_SEES_HIDERS, SEEKER_START } from '../src/data/hideSeek.ts';
@@ -1044,6 +1045,7 @@ function endMatch(matchId: string) {
   pastInsiders.delete(matchId);
   contracts.delete(matchId);
   bonuses.delete(matchId);
+  missions.delete(matchId);
   pendingWrongs.delete(matchId);
 }
 
@@ -1145,6 +1147,7 @@ function startRound(matchId: string) {
   else insides.delete(matchId);
   keycards.delete(matchId);
   if (!hs) setupVault(matchId, map, vaults.get(matchId)!);
+  setupMission(matchId, map);
   phases.set(matchId, { phase: 'setup', endsAt: Date.now() + (hs ? HIDE_TIME : inside ? INSIDE.briefMs : SETUP_TIME) });
   trapState.set(matchId, new Map(MAPS[map].traps.map((t) => [t.id, { firedAt: null, jammedUntil: 0, tripwired: false }])));
   overclockWindows.delete(matchId);
@@ -1190,6 +1193,8 @@ function startRound(matchId: string) {
     }
   }
   dealSecrets(matchId, crew, saboteur, insider);
+  const mission = missionOf(matchId);
+  if (mission) toMatch(matchId, missionMsg(mission));
   console.log(`${matchId}: round ${sr.round + 1}/${sr.rounds} on ${MAPS[map].name}, ${inside ? 'Insider' : 'Saboteur'} ${clients.get(inside ? insider : saboteur)?.state.name}`);
 }
 
@@ -1743,7 +1748,22 @@ function handle(c: Client, msg: ClientMsg) {
       if (!vault || !d || d.place.at !== 'floor' || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || handsFull(vault, c) || s.hp <= 0) break;
       if (onDeck(c.room, d.place.deck) !== deckOf(c) || Math.hypot(d.place.x - s.x, d.place.y - s.y) > PICKUP_REACH + 10) break;
       d.place = { at: 'carried', by: s.id };
+      const mission = missionOf(c.room);
+      if (d.kind === 'crown' && mission) missionStep(c.room, mission, c, 3);
       sendDiamonds(c.room);
+      break;
+    }
+    case 'hackStart':
+    case 'hack': {
+      // The security terminal: held E at it (the game times the hold; we check reach and time).
+      const mission = missionOf(c.room);
+      if (!mission || mission.step !== 0 || saboteurs.get(c.room) === s.id || phases.get(c.room)?.phase !== 'live' || s.hp <= 0 || deckOf(c) !== mission.terminal.deck) break;
+      const spot = spotsOf(c.room).find((x) => x.id === mission.terminal.spot);
+      if (!spot || distToSpot(spot, s.x, s.y) > SEARCH_REACH + 10) break;
+      if (msg.t === 'hackStart') {
+        mission.hackStart.set(s.id, Date.now());
+        makeNoise(c, 'search');
+      } else if (Date.now() - (mission.hackStart.get(s.id) ?? Infinity) >= HACK_MS - 600) missionStep(c.room, mission, c, 1);
       break;
     }
     case 'pickupKey': {
@@ -1760,6 +1780,8 @@ function handle(c: Client, msg: ClientMsg) {
       // The keycard holder at a vault door: it opens, for good, and the card is used up.
       const key = keycards.get(c.room);
       if (!key || key.unlocked || key.holder !== s.id || s.hp <= 0 || !key.doors.includes(msg.door) || deckOf(c) !== key.deck) break;
+      const mission = missionOf(c.room);
+      if (mission && mission.step < 1) break;
       const door = (mapData[key.deck].doors as { id: string; x: number; y: number; w: number; h: number }[]).find((d) => d.id === msg.door);
       if (!door || Math.hypot(door.x + door.w / 2 - s.x, door.y + door.h / 2 - s.y) > Math.max(door.w, door.h) / 2 + KEY_REACH) break;
       key.unlocked = true;
@@ -1771,6 +1793,14 @@ function handle(c: Client, msg: ClientMsg) {
       }
       keycardEvent(c.room, 'unlocked', c);
       sendKeycard(c.room);
+      if (mission) {
+        // The Crown Jewel is inside.
+        const at = vaultFloor(key);
+        const v = vaults.get(c.room);
+        if (at && v && !v.diamonds.some((d) => d.kind === 'crown')) v.diamonds.push({ id: 'crown', kind: 'crown', place: { at: 'floor', x: at.x, y: at.y, deck: key.deck } });
+        missionStep(c.room, mission, c, 2);
+        sendDiamonds(c.room);
+      }
       break;
     }
     case 'bank': {
@@ -1814,7 +1844,11 @@ function handle(c: Client, msg: ClientMsg) {
         if (charge.banked >= RECHARGE_BANKS) [charge.charges, charge.banked] = [CLONE.charges, 0];
         sendCharges(c);
       }
-      if (vault.banked >= vault.need) finish(c.room, 'runners');
+      const mission = missionOf(c.room);
+      if (mission && carried.some((d) => d.kind === 'crown')) {
+        missionStep(c.room, mission, c, 4);
+        finish(c.room, 'runners');
+      } else if (!mission && vault.banked >= vault.need) finish(c.room, 'runners');
       break;
     }
     case 'anchor':
@@ -2352,7 +2386,7 @@ function roomCount(matchId: string, vault: Vault, room: string, except?: Diamond
 function diamondsMsg(c: Client, matchId: string): ServerMsg {
   const vault = vaults.get(matchId)!;
   const sab = saboteurs.get(matchId) === c.state.id;
-  return { t: 'diamonds', items: vault.diamonds.map((d) => (sab ? d : runnerView(d))), searched: [...vault.searched], banked: vault.banked, need: vault.need, total: vault.diamonds.length };
+  return { t: 'diamonds', items: vault.diamonds.map((d) => (sab ? d : runnerView(d))), searched: [...vault.searched], banked: vault.banked, need: vault.need, total: vault.diamonds.filter((d) => d.kind !== 'crown').length };
 }
 
 function sendDiamonds(matchId: string) {
@@ -2367,6 +2401,68 @@ function sendDiamonds(matchId: string) {
  * The round's vault: the red diamonds go into its furniture, and the keycard into other
  * furniture on the same deck, well away from it when there's a choice.
  */
+// ---------- The heist's mission (src/data/mission.ts) ----------
+
+interface Mission {
+  /** Steps done (0-4). */
+  step: number;
+  terminal: { spot: string; deck: MapId; room: string };
+  /** When each Runner started holding E at the terminal. */
+  hackStart: Map<string, number>;
+}
+const missions = new Map<string, Mission>();
+const missionOf = (matchId: string) => (matchModes.get(matchId) === 'heist' ? missions.get(matchId) : undefined);
+
+/** The terminal: furniture away from the vault, the keycard and the entrance, new every round. */
+function setupMission(matchId: string, map: MapId) {
+  missions.delete(matchId);
+  const key = keycards.get(matchId);
+  if (matchModes.get(matchId) !== 'heist' || !key) return;
+  const centre = (sp: HidingSpot) => ({ x: (sp.rect[0] + sp.rect[2] + 1) / 2, y: (sp.rect[1] + sp.rect[3] + 1) / 2 });
+  const onDeck = spotsOf(matchId).filter((sp) => spotDeck(matchId, sp) === map && !inVault(matchId, key, sp.id) && sp.id !== key.spot);
+  const vaultSpot = spotsOf(matchId).find((sp) => inVault(matchId, key, sp.id));
+  const v = vaultSpot ? centre(vaultSpot) : { x: 0, y: 0 };
+  const spawn = mapData[map].spawn;
+  // A console sits on something desk-sized (the smaller pieces), not a pool or a garden bed.
+  const size = (sp: HidingSpot) => (sp.rect[2] - sp.rect[0] + 1) * (sp.rect[3] - sp.rect[1] + 1);
+  const far = onDeck.filter((sp) => Math.hypot(centre(sp).x - v.x, centre(sp).y - v.y) >= 12 && Math.hypot(centre(sp).x - spawn.x, centre(sp).y - spawn.y) >= 10);
+  const good = (far.length ? far : onDeck).sort((a, b) => size(a) - size(b));
+  const pool = good.slice(0, Math.max(3, Math.ceil(good.length * 0.4)));
+  const sp = pool[Math.floor(Math.random() * pool.length)];
+  if (!sp) return;
+  missions.set(matchId, { step: 0, terminal: { spot: sp.id, deck: map, room: spotRoomOf(matchId, sp) }, hackStart: new Map() });
+}
+
+const missionMsg = (m: Mission): ServerMsg => ({ t: 'mission', step: m.step, terminal: m.terminal });
+
+/** A step is done: points for who did it, and everyone hears. */
+function missionStep(matchId: string, m: Mission, c: Client, step: number) {
+  if (m.step !== step - 1) return;
+  m.step = step;
+  addBonus(matchId, c.state.id, MISSION_POINTS[step - 1], `🎯 ${MISSION_STEPS[step - 1].short} +${MISSION_POINTS[step - 1]}`);
+  toMatch(matchId, { t: 'missionStep', step, id: c.state.id, name: c.state.name });
+  toMatch(matchId, missionMsg(m));
+  // The hack shows the Runners which furniture hides the keycard.
+  if (step === 1) sendKeycard(matchId);
+  console.log(`${matchId}: mission step ${step} (${MISSION_STEPS[step - 1].short}) by ${c.state.name}`);
+}
+
+/** Open floor near the middle of the vault room, for the Crown Jewel. */
+function vaultFloor(key: Keycard): { x: number; y: number } | null {
+  const data = mapData[key.deck];
+  const room = data.areas.names.indexOf(key.vaultRoom);
+  const tiles: [number, number][] = [];
+  data.areas.data.forEach((a, i) => {
+    if (a === room) tiles.push([(i % data.width) * TILE + TILE / 2, Math.floor(i / data.width) * TILE + TILE / 2]);
+  });
+  if (!tiles.length) return null;
+  const cx = tiles.reduce((n, t) => n + t[0], 0) / tiles.length;
+  const cy = tiles.reduce((n, t) => n + t[1], 0) / tiles.length;
+  tiles.sort((a, b) => Math.hypot(a[0] - cx, a[1] - cy) - Math.hypot(b[0] - cx, b[1] - cy));
+  const at = tiles.find(([x, y]) => openFloor(key.deck, x, y, 6, 6)) ?? tiles[0];
+  return { x: at[0], y: at[1] };
+}
+
 function setupVault(matchId: string, map: MapId, vault: Vault) {
   const def = MAPS[map].vault;
   if (!def) return;
@@ -2397,7 +2493,7 @@ function inVault(matchId: string, key: Keycard, spotId: string) {
 function keycardMsg(c: Client, matchId: string): ServerMsg | null {
   const key = keycards.get(matchId);
   if (!key) return null;
-  const sab = saboteurs.get(matchId) === c.state.id;
+  const sab = saboteurs.get(matchId) === c.state.id || (missionOf(matchId)?.step ?? 0) >= 1;
   return { t: 'keycard', deck: key.deck, vaultRoom: key.vaultRoom, doors: key.doors, hintRoom: key.hintRoom, ...(sab && key.spot ? { spot: key.spot } : {}), holder: key.holder, holderName: key.holder ? clients.get(key.holder)?.state.name : undefined, floor: key.floor, unlocked: key.unlocked };
 }
 
@@ -3537,6 +3633,7 @@ function resultMsg(matchId: string): ServerMsg {
     last: !sr || r + 1 >= sr.rounds,
     ...(hunts.has(matchId) ? { hunt: huntSummary(matchId) } : {}),
     ...(insides.has(matchId) ? { inside: insideSummary(matchId) } : {}),
+    ...(missionOf(matchId) ? { mission: { step: missionOf(matchId)!.step } } : {}),
   };
 }
 
@@ -3618,6 +3715,8 @@ function hello(fresh: Client, msg: Extract<ClientMsg, { t: 'hello' }>): Client {
       if (hunt.hidden.has(known.state.id)) send(known, { t: 'hidden', spot: hunt.hidden.get(known.state.id)!, x: known.state.x, y: known.state.y });
       if (saboteurs.get(known.room) === known.state.id) sendGun(known, hunt);
     }
+    const mission = missionOf(known.room);
+    if (mission) send(known, missionMsg(mission));
     const contract = contractMsg(known.room, known.state.id);
     if (contract) send(known, contract);
     send(known, grudgeMsg(known.room, known));

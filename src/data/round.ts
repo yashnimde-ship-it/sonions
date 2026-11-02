@@ -7,7 +7,8 @@ import type { CharacterId } from '../config.ts';
 export type Phase = 'setup' | 'live' | 'over';
 
 export const SETUP_MS = 120_000;
-export const LIVE_MS = 180_000;
+// Four minutes: time for the whole mission (src/data/mission.ts) and some diamonds besides.
+export const LIVE_MS = 240_000;
 
 // A match is a few rounds, a different Saboteur each round (everyone gets a turn in crews of
 // up to MAX_ROUNDS), the map rotating so the crew sees every arena. Highest total score wins.

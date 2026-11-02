@@ -51,7 +51,11 @@ export class ResultScreen {
           : [h.escaped.length ? `Escaped: ${list(h.escaped)}.` : '', h.survived.length ? `Stayed hidden: ${list(h.survived)}.` : '', h.caught.length ? `Caught: ${list(h.caught)}.` : ''].filter(Boolean).join(' ')
       : r.winner === 'none'
         ? 'The Saboteur left, so this round is called off.'
-        : r.winner === 'runners'
+        : r.mission
+          ? r.winner === 'runners'
+            ? `The Runners escaped with the Crown Jewel! (${r.banked} diamond points banked too)`
+            : `Time's up: the mission stopped at step ${r.mission.step + 1} of 4.`
+          : r.winner === 'runners'
           ? `The Runners banked ${r.banked} of ${r.total} diamonds (needed ${r.need}).`
           : `Time's up: only ${r.banked} of ${r.total} diamonds were banked (needed ${r.need}).`;
     const sides = ij ? (['THIEVES WIN', 'INSIDER WINS'] as const) : h ? (['HIDERS WIN', 'SEEKER WINS'] as const) : (['RUNNERS WIN', 'SABOTEUR WINS'] as const);

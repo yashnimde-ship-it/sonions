@@ -1,3 +1,4 @@
+import { HACK_MS, MISSION_STEPS } from './data/mission';
 import { INSIDE } from './data/insideJob';
 import { MeetingUI } from './ui/MeetingUI';
 import { CHAOS_CARDS } from './data/chaos';
@@ -302,6 +303,10 @@ async function boot() {
   let aimAt: [number, number] = [0, 0];
   const meetingUI = new MeetingUI();
   const amOut = () => outNow.has(myId);
+  /** The heist's mission (src/data/mission.ts): steps done and where the terminal is; null when
+   *  this round has none. And my hold at the terminal. */
+  let mission: Extract<ServerMsg, { t: 'mission' }> | null = null;
+  let hacking: { since: number } | null = null;
   /** My secret contract this round, and my Grudge in this game (from the server; only mine). */
   let contract: Extract<ServerMsg, { t: 'contract' }> | null = null;
   let grudge: Extract<ServerMsg, { t: 'grudge' }> | null = null;
@@ -687,6 +692,7 @@ async function boot() {
   const carryLine = () => {
     const mine = myDiamonds();
     if (mine.length > 1) return `CARRYING ${mine.length} DIAMONDS · TAKE THEM TO THE GETAWAY`;
+    if (mine.some((d) => d.kind === 'crown')) return 'THE CROWN JEWEL · HEAVY · GET IT TO THE GETAWAY TO WIN';
     if (mine[0]?.kind === 'red') return 'RED DIAMOND · WORTH 3 · HEAVY · TAKE IT TO THE GETAWAY';
     return mine.length ? 'CARRYING A DIAMOND · TAKE IT TO THE GETAWAY' : null;
   };
@@ -1013,6 +1019,8 @@ async function boot() {
     meetingUI.close();
     contract = null;
     grudge = null;
+    mission = null;
+    hacking = null;
     if (!msg.resume) {
       outNow.clear();
       disturbed.clear();
@@ -1823,6 +1831,21 @@ async function boot() {
       case 'trapFired':
         trapFired(msg);
         break;
+      case 'mission':
+        mission = msg;
+        break;
+      case 'missionStep': {
+        const mine = msg.id === myId;
+        const sab = !!match?.saboteur;
+        const lines = ['', 'SECURITY HACKED', 'VAULT OPEN', 'CROWN JEWEL TAKEN', 'ESCAPED WITH THE CROWN'];
+        const next = MISSION_STEPS[msg.step]?.title;
+        sfx(sab ? 'alert' : msg.step === 4 ? 'banked' : 'award');
+        trapImpact(sab ? '#ff4d6a' : '#ffd84a', msg.step === 4 ? 8 : 3, 600);
+        if (msg.step < 4) showCount(lines[msg.step], 'go');
+        hud.alert(`<span class="who">🎯 ${mine ? 'You' : esc(msg.name)}</span> <b>${lines[msg.step]} (${msg.step}/4)</b><span class="where">${sab ? 'stop them!' : next ? `next: ${esc(next)}` : 'mission complete'}</span>`, sab ? 'danger' : 'good');
+        if (msg.step === 1 && !sab) toast('The keycard\'s hiding place is marked in gold');
+        break;
+      }
       case 'profile':
         profile.fromServer(msg.matches);
         lobby.setMe(myName, myCharacter, profile);
@@ -3126,7 +3149,7 @@ async function boot() {
       me.update({ dx: 0, dy: 0, sprint: false }, estate);
     } else {
       const now = performance.now();
-      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (1 - myDiamonds().reduce((slow, d) => slow + CARRY_SLOW + (d.kind === 'red' ? RED_EXTRA_SLOW : 0), 0) * (abilities.has('heavyCarry') ? 1 - HEAVY_CARRY.slowCut : 1)) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1) * (now < crowdFastUntil ? 1.4 : 1) * (sprinting(myId) ? VELVET.speed : 1);
+      me.carryMult = (now < boostUntil ? BOOST.speed : 1) * (1 - myDiamonds().reduce((slow, d) => slow + CARRY_SLOW + (d.kind === 'red' || d.kind === 'crown' ? RED_EXTRA_SLOW : 0), 0) * (abilities.has('heavyCarry') ? 1 - HEAVY_CARRY.slowCut : 1)) * (now < dazzledUntil ? 0.5 : 1) * (now < slowUntil ? 0.4 : 1) * (now < crowdFastUntil ? 1.4 : 1) * (sprinting(myId) ? VELVET.speed : 1);
       // Confusion Gas: left is right and up is down.
       // (In a hiding place you can't move.)
       const move = hiddenIn ? { ...input, dx: 0, dy: 0, sprint: false } : input;
@@ -3168,6 +3191,7 @@ async function boot() {
     const mine = myDiamonds();
     const order = { banked: 0, mine: 1, carried: 2, floor: 3, hidden: 4 } as const;
     const gems = diamonds
+      .filter((d) => d.kind !== 'crown')
       .map((d) => ({ state: (d.place.at === 'banked' ? 'banked' : d.place.at === 'carried' ? (mine.includes(d) ? 'mine' : 'carried') : d.place.at === 'floor' ? 'floor' : 'hidden') as keyof typeof order, kind: d.kind }))
       .sort((a, b) => order[a.state] - order[b.state])
       .map((g) => (g.kind ? `${g.state} ${g.kind}` : g.state));
@@ -3182,6 +3206,18 @@ async function boot() {
         : sab
           ? `Stop them banking ${needN} pts · ${bankedN}/${needN} banked`
           : `Bank ${needN} pts at the GETAWAY · ${bankedN}/${needN} · red = 3`;
+    if (mission && !insideJob()) {
+      const step = mission.step;
+      const crown = diamonds.find((d) => d.kind === 'crown');
+      const crownNote = step === 3 && crown?.place.at === 'floor' ? ' (DROPPED!)' : '';
+      const where = [`in the ${mission.terminal.room}`, keycard?.holder ? `keycard: ${keycard.holder === myId ? 'you' : keycard.holderName ?? 'a Runner'}` : keycard?.floor ? 'keycard dropped' : step >= 1 ? 'keycard marked in gold' : '', '', ''];
+      const list = MISSION_STEPS.map((m, i) => `${i < step ? '✔' : i === step ? '▶' : '·'} ${i + 1}. ${m.title}${i === step && where[i] ? ` · ${where[i]}` : ''}${i === 2 ? crownNote : ''}`).join('\n');
+      const head = phase === 'setup'
+        ? sab ? `Rig the house: the terminal is in the ${mission.terminal.room}` : 'The Saboteur is rigging the house...'
+        : sab ? `Stop the mission · step ${Math.min(step + 1, 4)} of 4` : `Mission · step ${Math.min(step + 1, 4)} of 4 · diamonds = points`;
+      hud.setObjective(sab ? 'STOP THE MISSION' : 'THE MISSION', gems, head, list);
+      return;
+    }
     hud.setObjective(insideJob() ? (insiderMe ? 'KEEP THE DIAMONDS' : 'FIND THE DIAMONDS') : sab ? 'GUARD THE DIAMONDS' : 'FIND THE DIAMONDS', gems, text, vaultLine(sab));
   }
 
@@ -3347,6 +3383,9 @@ async function boot() {
         if (connected) takeStairs(stair);
         else hud.showMessage(stairMessage(stair.to.deck));
       }
+    } else if (door && vaultLocked(door) && mission && mission.step < 1) {
+      prompt = 'VAULT SEALED · hack the security terminal first';
+      if (input.action) hud.showMessage(`The vault is sealed by the security system. Hack the terminal in the ${mission.terminal.room} first (hold E at it).`);
     } else if (door && vaultLocked(door)) {
       const mine = keycard?.holder === myId;
       prompt = mine ? `E  Unlock the VAULT with the keycard` : `VAULT LOCKED · needs the keycard`;
@@ -3373,6 +3412,18 @@ async function boot() {
     } else if (dropped) {
       prompt = 'E  Grab the dropped diamond';
       if (input.action) net.send({ t: 'pickup', id: dropped.id });
+    } else if (spot && mission?.step === 0 && spot.id === mission.terminal.spot && here(mission.terminal.deck) && phase === 'live') {
+      prompt = 'Hold E  HACK the security terminal';
+      if (input.actionHeld && !me.stunned && !me.moving) {
+        if (!hacking) {
+          hacking = { since: now };
+          net.send({ t: 'hackStart' });
+        } else if (now - hacking.since >= HACK_MS) {
+          net.send({ t: 'hack' });
+          hacking = null;
+        }
+        if (hacking) prompt = `Hacking... ${Math.floor(((now - hacking.since) / HACK_MS) * 100)}%`;
+      }
     } else if (spot && insiderMe && holding && phase === 'live') {
       prompt = `Hold E  Stash the diamond in the ${spot.name}`;
       if (input.actionHeld && !me.stunned) {
@@ -3410,6 +3461,7 @@ async function boot() {
     const passTo = holding && (!prompt || prompt.startsWith('Hands full')) ? handoffTarget() : null;
     if (passTo) prompt = `H  Pass the diamond to ${passTo.name}`;
     if (!input.actionHeld || me.moving || !spot || searching?.spot !== spot.id) searching = null;
+    if (!input.actionHeld || me.moving || !spot || spot.id !== mission?.terminal.spot) hacking = null;
     if (!input.actionHeld || me.moving || !downed || reviving?.id !== downed.state.id) reviving = null;
     hud.setPrompt(now < trapNoticeUntil ? trapNotice : now < toastUntil ? hud.promptText : prompt);
   }
@@ -4884,9 +4936,49 @@ async function boot() {
     ctx.fillRect(x + 1, y + 1, 2, 1);
   }
 
+  /** The security terminal: a little console over its furniture, green and pulsing until it's
+   *  hacked (then red), with a ring filling while someone holds E at it. */
+  function drawTerminal(camX: number, camY: number) {
+    if (!mission || result || !here(mission.terminal.deck)) return;
+    const sp = allSpots.find((x) => x.id === mission!.terminal.spot);
+    if (!sp) return;
+    const b = spotBox(sp);
+    const c = spotCenter(sp);
+    const done = mission.step >= 1;
+    ctx.save();
+    if (!done) {
+      ctx.strokeStyle = '#3cff8a';
+      ctx.globalAlpha = 0.5 + 0.4 * Math.sin(frame / 9);
+      ctx.lineWidth = 1;
+      ctx.strokeRect(b.x0 - camX + 0.5, b.y0 - camY + 0.5, b.x1 - b.x0 - 1, b.y1 - b.y0 - 1);
+    }
+    ctx.globalAlpha = 1;
+    const x = Math.round(c.x - camX);
+    // Floating just over the furniture's front edge, where you stand to hack it.
+    const y = Math.round(Math.max(b.y0, b.y1 - 24) - camY - 10 + (done ? 0 : Math.sin(frame / 12) * 1.5));
+    ctx.fillStyle = '#0e0a1a';
+    ctx.fillRect(x - 8, y - 6, 16, 12);
+    ctx.fillStyle = done ? '#ff4d6a' : frame % 40 < 30 ? '#3cff8a' : '#1f8a4c';
+    ctx.fillRect(x - 7, y - 5, 14, 8);
+    ctx.fillStyle = '#0e0a1a';
+    for (let i = 0; i < 3; i++) ctx.fillRect(x - 5, y - 3 + i * 2, 4 + ((frame / 6 + i * 3) % 7), 1);
+    ctx.fillStyle = '#5a5470';
+    ctx.fillRect(x - 3, y + 6, 6, 2);
+    if (hacking && !done) {
+      const t = Math.min(1, (performance.now() - hacking.since) / HACK_MS);
+      ctx.strokeStyle = '#3cff8a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 12, -Math.PI / 2, -Math.PI / 2 + t * Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   /** The vault: padlocks on its doors until opened, the keycard on the floor or over its holder,
    *  and (for the Saboteur) a gold outline on the furniture it's hidden in. */
   function drawVault(camX: number, camY: number) {
+    drawTerminal(camX, camY);
     if (!keycard || !here(keycard.deck) || result) return;
     if (!keycard.unlocked) {
       for (const d of estate.data.doors) {
@@ -4906,7 +4998,7 @@ async function boot() {
         ctx.fillRect(x - 1, y + 1, 2, 3);
       }
     }
-    if (keycard.spot && match?.saboteur) {
+    if (keycard.spot && (match?.saboteur || (mission?.step ?? 0) >= 1)) {
       const sp = spots.find((x) => x.id === keycard!.spot);
       if (sp) {
         const b = spotBox(sp);
@@ -4935,7 +5027,7 @@ async function boot() {
   }
 
   /** A diamond's colour: red ones red, a cursed one purple (only the Saboteur knows which). */
-  const gemColor = (d: Diamond | undefined) => (d?.kind === 'red' ? '#ff4b5c' : d?.kind === 'cursed' ? '#9b6bff' : '#7ceaff');
+  const gemColor = (d: Diamond | undefined) => (d?.kind === 'crown' ? '#ffd84a' : d?.kind === 'red' ? '#ff4b5c' : d?.kind === 'cursed' ? '#9b6bff' : '#7ceaff');
 
   /**
    * Scout's knife spinning through the air; then the EMP: a crackling ring of its reach with the
@@ -5555,7 +5647,7 @@ async function boot() {
     ctx.translate(Math.round(x), 0);
     ctx.scale(Math.max(0.25, Math.abs(turn)), 1);
     ctx.translate(-Math.round(x), 0);
-    gem(x, y, d?.kind === 'red' ? 6 : 5, gemColor(d));
+    gem(x, y, d?.kind === 'crown' ? 8 : d?.kind === 'red' ? 6 : 5, gemColor(d));
     ctx.restore();
     if (Math.abs(turn) > 0.96 || frame % 40 < 8) twinkle(x + 4, y - 4, 2);
     // A trail of sparkles behind whoever's carrying it while they move.
@@ -5857,7 +5949,7 @@ async function boot() {
       ctx.ellipse(x, y + 2, 9, 4, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
-      gem(x, y - 3 - Math.abs(Math.sin(frame / 12)) * 2, 4, gemColor(d));
+      gem(x, y - 3 - Math.abs(Math.sin(frame / 12)) * 2, d.kind === 'crown' ? 8 : 4, gemColor(d));
     }
   }
 

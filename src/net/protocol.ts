@@ -97,6 +97,9 @@ export type ClientMsg =
   | { t: 'reload' }
   /** Inside Job: call my meeting; vote (null: skip); say a quick line (about a player) or type one. */
   | { t: 'callMeeting' }
+  /** Heist mission: I started holding E at the security terminal; I finished (HACK_MS later). */
+  | { t: 'hackStart' }
+  | { t: 'hack' }
   | { t: 'meetVote'; target: string | null }
   | { t: 'meetSay'; line?: number; about?: string; text?: string }
   /** Inside Job: the Insider puts the diamond they carry back in this furniture (held E). */
@@ -236,6 +239,8 @@ export type ServerMsg =
       hunt?: { caught: string[]; escaped: string[]; survived: string[] };
       /** Inside Job rounds: who the Insider was, how it ended for them, who was taken out. */
       inside?: { insider: string; name: string; caught: 'shot' | 'vote' | null; out: string[] };
+      /** Heist rounds: how far the mission got (steps done, of 4). */
+      mission?: { step: number };
     }
   /** The match is over: everyone's totals, and what happened each round. */
   | { t: 'final'; standings: Standing[]; rounds: { map: MapId; saboteur: string; winner: 'runners' | 'saboteur' | 'none' }[]; mode?: GameMode; awards?: Award[] }
@@ -386,6 +391,10 @@ export type ServerMsg =
   | { t: 'bang'; x: number; y: number; deck?: MapId }
   /** Furniture near you was disturbed just now (someone put something in it). */
   | { t: 'disturbed'; spot: string; ms: number }
+  /** Heist mission: how many steps are done (0-4), and where the security terminal is. */
+  | { t: 'mission'; step: number; terminal: { spot: string; deck: MapId; room: string } }
+  /** A mission step was just completed, and by whom. */
+  | { t: 'missionStep'; step: number; id: string; name: string }
   /** My saved profile (from the database): what the server has on record for me. */
   | { t: 'profile'; matches: number; wins: number; points: number; saved: boolean }
   /** My secret contract this round (only I get it), and how far along it is. */

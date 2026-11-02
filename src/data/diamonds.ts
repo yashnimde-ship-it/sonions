@@ -43,8 +43,9 @@ export type DiamondPlace =
  * Most diamonds are plain (worth 1). A red one is worth 3 but heavy to carry. A cursed one is a
  * fake: it looks like any other until it's banked, then it's worth nothing and sets off the alarm.
  */
-export type DiamondKind = 'red' | 'cursed';
-export const DIAMOND_VALUE = { plain: 1, red: 3, cursed: 0 } as const;
+export type DiamondKind = 'red' | 'cursed' | 'crown';
+/** The Crown Jewel (src/data/mission.ts) isn't counted with the diamonds: it's the mission's prize. */
+export const DIAMOND_VALUE = { plain: 1, red: 3, cursed: 0, crown: 0 } as const;
 export const valueOf = (d: Diamond) => DIAMOND_VALUE[d.kind ?? 'plain'];
 /** A red diamond slows its carrier this much more than a plain one. */
 export const RED_EXTRA_SLOW = 0.15;
